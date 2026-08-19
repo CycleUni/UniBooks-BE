@@ -11,9 +11,11 @@ from listings.serializers import ListingSerializer
 from django.core.cache import cache
 
 from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key
+from core.authentication import OptionalJWTAuthentication
 
 class BookDetailView(views.APIView):
     permission_classes = [AllowAny]
+    authentication_classes = [OptionalJWTAuthentication]
 
     def get(self, request):
         isbn = request.query_params.get('isbn')
@@ -39,7 +41,9 @@ class BookDetailView(views.APIView):
         # The `page` component is why this needs a generation at all: it made
         # the key space unbounded, so these entries could never be invalidated
         # and a sold or deleted listing stayed advertised until the TTL lapsed.
-        cache_key = versioned_key("book_detail", book_id or '', valid_isbn or '', page_param)
+        from core.i18n import resolve_language
+        lang = resolve_language(request)
+        cache_key = versioned_key("book_detail", lang, book_id or '', valid_isbn or '', page_param)
         data = cache.get(cache_key)
 
         book = None
@@ -129,6 +133,17 @@ class BookDetailView(views.APIView):
             if sub:
                 response_data['is_subscribed'] = True
                 response_data['subscription_id'] = sub.id
+
+        school_param = request.query_params.get('school')
+        if school_param and response_data.get('id'):
+            from listings.models import Listing
+            response_data['local_listings_count'] = Listing.objects.filter(
+                book_id=response_data['id'],
+                status='active',
+                seller__school__name=school_param
+            ).count()
+        else:
+            response_data['local_listings_count'] = None
 
         return Response(response_data)
 

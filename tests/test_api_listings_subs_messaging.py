@@ -628,7 +628,12 @@ def test_home_metadata_defaults_to_english(api, school, buyer, book):
         "College of Law",
         "College of Social Sciences",
     ]
-    assert body["waitlist"][0] == {"title": "Listing Book", "count": 1}
+    assert body["waitlist"][0] == {
+        "title": "Listing Book",
+        "count": 1,
+        "book_id": book.id,
+        "cover_url": book.cover_url,
+    }
 
 
 def test_home_metadata_localizes_to_zh_tw(api, school):

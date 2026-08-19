@@ -90,12 +90,21 @@ class RecentBooksView(views.APIView):
 
         from catalog.models import Book
         from collections import Counter
-        from django.db.models import Max
+        from django.db.models import Max, Q
         from rest_framework.pagination import PageNumberPagination
 
-        books_qs = Book.objects.filter(listings__status='active')
+        # Both conditions go into a single filter() call on purpose. Chaining a
+        # second .filter() over the same multi-valued relation lets Django
+        # satisfy each one from a *different* listing row, so a book qualified
+        # as long as it had some active listing anywhere and some listing at
+        # this school — even if that school had none active. Those books then
+        # found no rows in the per-book aggregation below and rendered with a
+        # null price and zero sellers. search/views.py already builds its
+        # filter this way.
+        book_filter = Q(listings__status='active')
         if school:
-            books_qs = books_qs.filter(listings__seller__school__name=school)
+            book_filter &= Q(listings__seller__school__name=school)
+        books_qs = Book.objects.filter(book_filter)
 
         books_qs = books_qs.annotate(
             latest_listing=Max('listings__created_at')
@@ -132,7 +141,7 @@ class RecentBooksView(views.APIView):
         results = []
         for book in books_to_process:
             stats = book_stats.get(book.id, {'prices': [], 'conditions': Counter()})
-            avg_price = sum(stats['prices']) / len(stats['prices']) if stats['prices'] else 0
+            avg_price = sum(stats['prices']) / len(stats['prices']) if stats['prices'] else None
 
             results.append({
                 'id': book.id,
@@ -140,7 +149,7 @@ class RecentBooksView(views.APIView):
                 'title': book.title,
                 'authors': book.authors,
                 'cover_url': book.cover_url,
-                'avg_price': round(avg_price),
+                'avg_price': round(avg_price) if avg_price is not None else None,
                 'conditions': dict(stats['conditions'])
             })
 

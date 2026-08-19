@@ -4,6 +4,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
+from core.authentication import OptionalJWTAuthentication
 from catalog.services import (
     search_google_books, get_google_books_by_isbn,
     search_open_library_books, get_open_library_book_by_isbn,
@@ -18,6 +19,7 @@ VALID_SEARCH_ENGINES = {'google', 'openlibrary'}
 
 
 class BookSearchView(views.APIView):
+    authentication_classes = [OptionalJWTAuthentication]
     permission_classes = [AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'search'

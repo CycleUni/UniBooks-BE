@@ -17,6 +17,7 @@ class ListingSerializer(serializers.ModelSerializer):
     seller_name = serializers.SerializerMethodField()
     seller_avatar_url = serializers.SerializerMethodField()
     school_name = serializers.SerializerMethodField()
+    seller_school_id = serializers.IntegerField(source='seller.school_id', read_only=True, default=None)
     book_title = serializers.CharField(source='book.title', read_only=True, default='')
     book_authors = serializers.CharField(source='book.authors', read_only=True, default='')
     book_cover_url = serializers.CharField(source='book.cover_url', read_only=True, default='')

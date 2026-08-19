@@ -94,10 +94,18 @@ class HomeMetadataView(views.APIView):
 
             if waitlist is None:
                 if school_id is not None:
-                    top_books = Subscription.objects.filter(user__school_id=school_id).values('book__title').annotate(count=Count('user')).order_by('-count')[:7]
+                    top_books = Subscription.objects.filter(user__school_id=school_id).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
                 else:
-                    top_books = Subscription.objects.values('book__title').annotate(count=Count('user')).order_by('-count')[:7]
-                waitlist = [{"title": item['book__title'], "count": item['count']} for item in top_books]
+                    top_books = Subscription.objects.values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
+                waitlist = [
+                    {
+                        "title": item['book__title'],
+                        "count": item['count'],
+                        "book_id": item['book_id'],
+                        "cover_url": item['book__cover_url'],
+                    }
+                    for item in top_books
+                ]
                 cache.set(waitlist_cache_key, waitlist, timeout=HOME_WAITLIST_TTL)
 
         # 3. Combine and return

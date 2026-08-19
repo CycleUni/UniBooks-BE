@@ -34,3 +34,7 @@ coverage.xml
 
 # --- collectstatic 產物（容器 / CI 重新產生）---
 staticfiles_build/
+
+# --- 執行期伺服器 --- 
+*.pid
+*_server.log

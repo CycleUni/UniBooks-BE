@@ -141,6 +141,15 @@ def test_bumping_a_generation_changes_every_key_in_it():
     assert before != after
 
 
+def test_book_detail_cache_key_varies_by_language():
+    from core.cache import versioned_key
+
+    key_en = versioned_key("book_detail", "en", "1", "9781234567890", "1")
+    key_zh = versioned_key("book_detail", "zh-TW", "1", "9781234567890", "1")
+
+    assert key_en != key_zh
+
+
 def test_generation_never_goes_backwards_after_eviction():
     """A counter evicted from Redis must not restart low enough to re-issue a
     generation that older, still-unexpired entries were written under —
