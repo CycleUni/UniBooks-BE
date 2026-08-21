@@ -56,6 +56,7 @@ class Listing(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
 
     course_name = models.CharField(max_length=255, blank=True, default='')
+    professor_name = models.CharField(max_length=255, blank=True, default='')
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -65,6 +66,11 @@ class Listing(models.Model):
             GinIndex(
                 name='listing_course_trgm_idx',
                 fields=['course_name'],
+                opclasses=['gin_trgm_ops']
+            ),
+            GinIndex(
+                name='listing_professor_trgm_idx',
+                fields=['professor_name'],
                 opclasses=['gin_trgm_ops']
             )
         ]

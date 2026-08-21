@@ -102,15 +102,18 @@ class BookSearchView(views.APIView):
                 for gb_book in gb_results:
                     gb_book['source'] = 'google_api' if engine_used == 'google' else 'openlibrary_api'
                     gb_book['debug_source'] = debug_source
-                course_match = Q(listings__course_name__icontains=query, listings__status='active')
+                listing_text_match = Q(listings__status='active') & (
+                    Q(listings__course_name__icontains=query) |
+                    Q(listings__professor_name__icontains=query)
+                )
                 if school:
-                    course_match &= Q(listings__seller__school__name=school)
+                    listing_text_match &= Q(listings__seller__school__name=school)
 
                 local_books = Book.objects.filter(
                     Q(title__icontains=query) | 
                     Q(authors__icontains=query) | 
                     Q(isbn13__icontains=query) |
-                    course_match
+                    listing_text_match
                 )
                 if course:
                     course_filter = Q(listings__course_name=course, listings__status='active')

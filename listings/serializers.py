@@ -23,6 +23,7 @@ class ListingSerializer(serializers.ModelSerializer):
     book_cover_url = serializers.CharField(source='book.cover_url', read_only=True, default='')
     book_source = serializers.CharField(source='book.source', read_only=True, default='')
     course_name = serializers.CharField(required=False, allow_blank=True, default='')
+    professor_name = serializers.CharField(required=False, allow_blank=True, default='')
     isbn = serializers.CharField(source='book.isbn13', read_only=True, default='')
     category = serializers.SlugRelatedField(
         slug_field='slug',
