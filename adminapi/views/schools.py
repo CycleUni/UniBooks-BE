@@ -1,6 +1,8 @@
 import logging
-from django.db.models import Q
+from django.db.models import Count, Q
 
+from django.utils.translation import gettext_lazy as _
+from rest_framework.exceptions import ValidationError
 from rest_framework import generics, status, views
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
@@ -21,7 +23,7 @@ class AdminSchoolListView(generics.ListCreateAPIView):
     pagination_class = PageNumberPagination
     
     def get_queryset(self):
-        qs = School.objects.all().order_by('id')
+        qs = School.objects.annotate(user_count_annotated=Count('users')).order_by('id')
         q = self.request.query_params.get('q')
         if q:
             qs = qs.filter(
@@ -47,6 +49,15 @@ class AdminSchoolDetailView(generics.RetrieveUpdateDestroyAPIView):
         invalidate_home_static_cache()
 
     def perform_destroy(self, instance):
+        # A school with accounts attached cannot be removed: users would silently
+        # lose their school (FK is SET_NULL) and every listing under it would be
+        # cascade-deleted. Admins must reassign or remove the accounts first.
+        user_count = instance.users.count()
+        if user_count:
+            raise ValidationError({
+                'detail': _('This school still has %(count)d account(s) and cannot be deleted. '
+                            'Reassign or remove those accounts first.') % {'count': user_count}
+            })
         instance.delete()
         invalidate_home_static_cache()
 

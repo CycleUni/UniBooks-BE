@@ -69,9 +69,17 @@ class AdminAdSerializer(serializers.ModelSerializer):
 
 
 class AdminSchoolSerializer(serializers.ModelSerializer):
+    user_count = serializers.SerializerMethodField()
+
+    def get_user_count(self, obj):
+        # Prefer the annotation from the list view; fall back to a query so the
+        # detail view and bulk import keep working without it.
+        annotated = getattr(obj, 'user_count_annotated', None)
+        return annotated if annotated is not None else obj.users.count()
+
     class Meta:
         model = School
-        fields = ('id', 'name', 'email_domain', 'translations')
+        fields = ('id', 'name', 'email_domain', 'translations', 'user_count')
 
 
 class AdminCategorySerializer(serializers.ModelSerializer):

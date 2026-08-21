@@ -381,6 +381,23 @@ def test_orders_force_cancel_short_reason_rejected(api, staff_header, order):
 
 
 # ---------------------------------------------------------------------
+# Schools: delete
+# ---------------------------------------------------------------------
+
+
+def test_school_delete_prevented_if_users_exist(api, staff_header, school, normal_user):
+    resp = api.delete(f"/api/v1/admin/schools/{school.id}/", **staff_header)
+    assert resp.status_code == 400
+    assert School.objects.filter(id=school.id).exists()
+
+
+def test_school_delete_allowed_if_no_users(api, staff_header, school):
+    resp = api.delete(f"/api/v1/admin/schools/{school.id}/", **staff_header)
+    assert resp.status_code == 204
+    assert not School.objects.filter(id=school.id).exists()
+
+
+# ---------------------------------------------------------------------
 # Moderation ReportActionView AuditEvent addition
 # ---------------------------------------------------------------------
 
