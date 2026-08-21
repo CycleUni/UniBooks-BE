@@ -10,6 +10,10 @@ from ads.models import Ad
 from ads.serializers import PublicAdSerializer
 from adminapi.pagination import AdminPagination
 
+from core.cache import versioned_key
+from django.core.cache import cache
+from core.i18n import resolve_language
+
 class ActiveAdsListView(generics.ListAPIView):
     """GET /api/v1/ads/active/"""
     permission_classes = [AllowAny]
@@ -39,6 +43,23 @@ class ActiveAdsListView(generics.ListAPIView):
             qs = qs.filter(advertiser__all_schools=True)
             
         return qs
+
+    def list(self, request, *args, **kwargs):
+        position = request.query_params.get('position', '')
+        school = request.query_params.get('school', '')
+        page = request.query_params.get('page', '1')
+        lang = resolve_language(request)
+        
+        cache_key = versioned_key('ads', position, school, page, lang)
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+            
+        response = super().list(request, *args, **kwargs)
+        
+        # 300s is safe for start/end date transitions while absorbing spikes
+        cache.set(cache_key, response.data, timeout=300)
+        return response
 
 class AdRecordViewView(views.APIView):
     """POST /api/v1/ads/<id>/view/"""
