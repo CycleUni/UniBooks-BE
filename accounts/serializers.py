@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password as django_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from core.i18n import DEFAULT_LANGUAGE, resolve_language
@@ -66,6 +68,17 @@ class RegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('email', 'first_name', 'last_name', 'password')
+
+    def validate_password(self, value):
+        # Same AUTH_PASSWORD_VALIDATORS (min length, common-password check,
+        # etc.) already enforced on password reset/change — registration
+        # never ran them, so a one-character password sailed straight
+        # through this serializer's plain CharField.
+        try:
+            django_validate_password(value)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(e.messages)
+        return value
 
     def create(self, validated_data):
         # Inactive until they click the verification link mailed on
