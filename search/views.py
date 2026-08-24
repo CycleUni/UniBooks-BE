@@ -15,7 +15,7 @@ from listings.models import Listing
 from subscriptions.models import Subscription
 from django.db.models import Count, Min, Q
 
-VALID_SEARCH_ENGINES = {'google', 'openlibrary'}
+VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary'}
 
 
 class BookSearchView(views.APIView):
@@ -29,9 +29,9 @@ class BookSearchView(views.APIView):
         category = request.GET.get('category', '')
         course = request.GET.get('course', '')
         school = request.GET.get('school', '')
-        engine = request.GET.get('engine', 'google')
+        engine = request.GET.get('engine', 'googlebooks')
         if engine not in VALID_SEARCH_ENGINES:
-            engine = 'google'
+            engine = 'googlebooks'
 
         if not query and not category and not course:
             return Response([])
@@ -81,7 +81,7 @@ class BookSearchView(views.APIView):
                         meta = {}
                         gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
                 if gb_book:
-                    gb_book['source'] = 'google_api' if engine_used == 'google' else 'openlibrary_api'
+                    gb_book['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
                 local_books = Book.objects.filter(isbn13=query_stripped)
@@ -100,7 +100,7 @@ class BookSearchView(views.APIView):
                         gb_results = search_open_library_books(query, _meta=meta)
                 debug_source = describe_source(engine_used, meta.get('cache_hit', False))
                 for gb_book in gb_results:
-                    gb_book['source'] = 'google_api' if engine_used == 'google' else 'openlibrary_api'
+                    gb_book['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
                     gb_book['debug_source'] = debug_source
                 listing_text_match = Q(listings__status='active') & (
                     Q(listings__course_name__icontains=query) |

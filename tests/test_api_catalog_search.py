@@ -537,8 +537,8 @@ def test_search_endpoint_invalid_engine_falls_back_to_google_default(api, db):
 
 
 def test_describe_source_labels():
-    assert describe_source('google', False) == 'google books'
-    assert describe_source('google', True) == 'google books cache'
+    assert describe_source('googlebooks', False) == 'google books'
+    assert describe_source('googlebooks', True) == 'google books cache'
     assert describe_source('openlibrary', False) == 'Open Library API'
     assert describe_source('openlibrary', True) == 'Open Library API cache'
 
