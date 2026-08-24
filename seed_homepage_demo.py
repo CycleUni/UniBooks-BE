@@ -13,6 +13,7 @@ resolve.
 Run:  .venv/bin/python seed_homepage_demo.py
 """
 import os
+import random
 import sys
 import django
 from django.utils import timezone
@@ -69,6 +70,15 @@ LISTINGS = [
 WAITLIST = [(6, 4), (1, 2)]
 
 SELLER_COUNT = 5
+
+# Pagination fixture for the home page's first book (Effective Java): enough
+# listings to exercise the book/listing-detail pager, spread across many
+# distinct sellers rather than one — the whole point of this script over
+# seed_books_and_listings.py is avoiding the "667 sellers" look of one person
+# owning everything.
+BULK_LISTING_BOOK_INDEX = 0
+BULK_LISTING_COUNT = 200
+BULK_LISTING_SELLER_COUNT = 40
 
 
 def get_user(tag, school):
@@ -137,6 +147,28 @@ def run():
         )
         created += int(was_created)
     print(f"{created} new listings created ({len(LISTINGS)} defined).")
+
+    bulk_book = books[BULK_LISTING_BOOK_INDEX]
+    bulk_sellers = [get_user(f'bulkseller{n}', school) for n in range(BULK_LISTING_SELLER_COUNT)]
+    existing_bulk = Listing.objects.filter(book=bulk_book, description='Pagination fixture listing.').count()
+    conditions = ['new', 'like_new', 'noted', 'damaged']
+    statuses = ['active', 'reserved', 'sold']
+    to_create = []
+    for n in range(existing_bulk, BULK_LISTING_COUNT):
+        to_create.append(Listing(
+            book=bulk_book,
+            seller=bulk_sellers[n % BULK_LISTING_SELLER_COUNT],
+            price=random.randint(100, 1000),
+            condition=random.choice(conditions),
+            category=category,
+            school=school,
+            status=random.choice(statuses),
+            description='Pagination fixture listing.',
+        ))
+    if to_create:
+        Listing.objects.bulk_create(to_create)
+    print(f"{len(to_create)} new pagination-fixture listings created for "
+          f"'{bulk_book.title}' ({existing_bulk + len(to_create)}/{BULK_LISTING_COUNT} total).")
 
     subs = 0
     for book_idx, want_count in WAITLIST:
