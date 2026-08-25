@@ -85,6 +85,26 @@ class BookSearchView(views.APIView):
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
                 local_books = Book.objects.filter(isbn13=query_stripped)
+
+                # The dedicated isbn: lookup occasionally misses a book that
+                # Google/Open Library do have indexed under this exact ISBN
+                # (observed for at least one Taiwanese publisher title) even
+                # though their plain keyword search finds it. Only spend the
+                # extra call when the strict lookup came up empty, and only
+                # keep results whose own ISBN matches what was searched, so
+                # this stays a precise ISBN lookup rather than a fuzzy one.
+                if not gb_book and not local_books.exists():
+                    try:
+                        if engine_used == 'openlibrary':
+                            fallback_results = search_open_library_books(query_stripped, _meta={})
+                        else:
+                            fallback_results = search_google_books(query_stripped, _meta={})
+                    except GoogleBooksRateLimited:
+                        fallback_results = []
+                    fallback_results = [item for item in fallback_results if item.get('isbn') == query_stripped]
+                    for item in fallback_results:
+                        item['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
+                    gb_results = fallback_results
             else:
                 engine_used = engine
                 meta = {}

@@ -512,6 +512,36 @@ def test_search_endpoint_isbn_falls_back_to_open_library_on_google_429(api, db):
     assert hit["source"] == "openlibrary_api"
 
 
+def test_search_endpoint_isbn_falls_back_to_keyword_search_when_isbn_lookup_empty(api, db):
+    # Real-world case: Google's `isbn:` operator misses a book it does have
+    # indexed (observed for a Taiwanese-publisher title), even though a plain
+    # keyword search using the same digits finds it. The ISBN branch should
+    # not give up just because the dedicated lookup came up empty.
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.search_google_books", return_value=[
+                {"title": "Found via keyword", "authors": "A", "publisher": "", "published_date": "", "cover_url": "", "isbn": "9786264140720"},
+                {"title": "Unrelated match", "authors": "B", "publisher": "", "published_date": "", "cover_url": "", "isbn": "9780000000000"},
+            ]) as gb_search:
+        resp = api.get("/api/v1/search/books/?q=9786264140720")
+    assert resp.status_code == 200
+    gb_search.assert_called_once_with("9786264140720", _meta=mock.ANY)
+    results = resp.json()["results"]
+    assert len(results) == 1
+    assert results[0]["isbn"] == "9786264140720"
+    assert results[0]["title"] == "Found via keyword"
+    assert results[0]["source"] == "google_api"
+
+
+def test_search_endpoint_isbn_skips_keyword_fallback_when_local_match_exists(api, book, db):
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.search_google_books") as gb_search:
+        resp = api.get(f"/api/v1/search/books/?q={book.isbn13}")
+    assert resp.status_code == 200
+    gb_search.assert_not_called()
+    hit = next(item for item in resp.json()["results"] if item["isbn"] == book.isbn13)
+    assert hit["title"] == book.title
+
+
 def test_search_endpoint_explicit_openlibrary_engine_skips_google(api, db):
     with mock.patch("search.views.search_google_books") as gb_search, \
             mock.patch("search.views.search_open_library_books", return_value=[
