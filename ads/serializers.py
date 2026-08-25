@@ -6,4 +6,4 @@ class PublicAdSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Ad
-        fields = ('id', 'title', 'image_url', 'target_url', 'position', 'headline', 'subheadline', 'slot_index', 'advertiser_name', 'labels')
+        fields = ('id', 'title', 'image_url', 'target_url', 'position', 'headline', 'subheadline', 'slot_index', 'advertiser_name', 'labels', 'show_in_hero')

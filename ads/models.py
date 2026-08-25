@@ -57,6 +57,7 @@ class Ad(models.Model):
     end_date = models.DateTimeField(help_text="End date")
     
     is_active = models.BooleanField(default=True, help_text="Whether it is active")
+    show_in_hero = models.BooleanField(default=False, help_text="Whether to display this ad as the first card in the home page hero cover stack")
     # NOTE: This field **MUST** be updated via F() expression only to avoid concurrent race conditions
     clicks_count = models.IntegerField(default=0, help_text="Click count statistics (update via F() expression only)")
     views_count = models.IntegerField(default=0, help_text="View count statistics (update via F() expression only)")
