@@ -46,5 +46,10 @@ def describe_source(engine, cache_hit):
     """Human-readable provenance label for developer monitoring only (not
     shown in the UI, not the persisted Book.source enum) — distinguishes a
     live external-API call from a cache hit, per engine."""
-    label = 'google books' if engine == 'googlebooks' else 'Open Library API'
+    if engine == 'googlebooks':
+        label = 'google books'
+    elif engine == 'isbnnet':
+        label = 'ISBNnet'
+    else:
+        label = 'Open Library API'
     return f"{label} cache" if cache_hit else label

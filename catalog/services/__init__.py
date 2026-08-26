@@ -26,6 +26,9 @@ from .open_library import (
     get_open_library_book_by_isbn,
     search_open_library_books,
 )
+from .isbn_net import (
+    get_isbnnet_book_by_isbn,
+)
 
 __all__ = [
     "clean_and_validate_isbn",
@@ -34,6 +37,7 @@ __all__ = [
     "search_google_books",
     "get_open_library_book_by_isbn",
     "search_open_library_books",
+    "get_isbnnet_book_by_isbn",
     "describe_source",
     "GOOGLE_BOOKS_API_URL",
     "OPEN_LIBRARY_SEARCH_URL",

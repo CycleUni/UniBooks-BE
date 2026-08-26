@@ -12,6 +12,7 @@ from catalog.models import Book
 from catalog.services import (
     get_google_books_by_isbn, search_google_books,
     get_open_library_book_by_isbn, search_open_library_books,
+    get_isbnnet_book_by_isbn,
     GoogleBooksRateLimited, describe_source,
     _NOT_FOUND_CACHE_TTL,
 )
@@ -571,6 +572,8 @@ def test_describe_source_labels():
     assert describe_source('googlebooks', True) == 'google books cache'
     assert describe_source('openlibrary', False) == 'Open Library API'
     assert describe_source('openlibrary', True) == 'Open Library API cache'
+    assert describe_source('isbnnet', False) == 'ISBNnet'
+    assert describe_source('isbnnet', True) == 'ISBNnet cache'
 
 
 def test_search_endpoint_debug_source_reflects_live_call_then_cache_hit(api, db):
@@ -588,6 +591,17 @@ def test_search_endpoint_debug_source_for_open_library_engine(api, db):
     with mock.patch("catalog.services.requests.get", return_value=_fake_response(OPEN_LIBRARY_SEARCH_PAYLOAD)):
         resp = api.get("/api/v1/search/books/?q=ol-query&engine=openlibrary")
     assert resp.json()["results"][0]["debug_source"] == "Open Library API"
+
+
+def test_search_endpoint_debug_source_for_isbnnet_engine(api, db):
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response(ISBNNET_PAYLOAD)) as get:
+        resp1 = api.get("/api/v1/search/books/?q=9786264048668&engine=isbnnet")
+        assert resp1.json()["results"][0]["debug_source"] == "ISBNnet"
+
+        resp2 = api.get("/api/v1/search/books/?q=9786264048668&engine=isbnnet")
+        assert resp2.json()["results"][0]["debug_source"] == "ISBNnet cache"
+
+        assert get.call_count == 1
 
 
 def test_search_endpoint_debug_source_marks_fallback_as_open_library(api, db):
@@ -636,3 +650,102 @@ def test_google_unavailable_flag_false_when_explicit_openlibrary_chosen(api, db)
         resp = api.get("/api/v1/search/books/?q=anything5&engine=openlibrary")
     gb_search.assert_not_called()
     assert resp.json()["google_unavailable"] is False
+
+
+# ---------------------------------------------------------------------
+# ISBNnet service (mocked HTTP) & Search / BookDetail integration
+# ---------------------------------------------------------------------
+
+ISBNNET_PAYLOAD = {
+    "title": "公職考試試題大補帖. 2027: 電路學與電子學",
+    "authors": "張鼎, 曾誠, 劉強編著",
+    "publisher": "大碩教育",
+    "published_date": "2026-10",
+    "cover_url": "https://pdsapp.ncl.edu.tw/api/v1/viewer/public/cover/9786264048668",
+    "isbn": "9786264048668",
+}
+
+
+def test_get_isbnnet_book_by_isbn_parses_and_caches(db):
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response(ISBNNET_PAYLOAD)) as get:
+        result = get_isbnnet_book_by_isbn("9786264048668")
+        assert result["title"] == "公職考試試題大補帖. 2027: 電路學與電子學"
+        assert result["authors"] == "張鼎, 曾誠, 劉強編著"
+        assert result["publisher"] == "大碩教育"
+        assert result["published_date"] == "2026-10"
+        assert result["cover_url"] == "https://pdsapp.ncl.edu.tw/api/v1/viewer/public/cover/9786264048668"
+        assert result["isbn"] == "9786264048668"
+        # Second call hits the cache, not the network
+        again = get_isbnnet_book_by_isbn("9786264048668")
+        assert again == result
+        assert get.call_count == 1
+
+
+def test_get_isbnnet_book_by_isbn_negative_caches_not_found(db):
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response({"error": "not_found"}, status_code=404)) as get:
+        assert get_isbnnet_book_by_isbn("0000000000000") is None
+        assert get_isbnnet_book_by_isbn("0000000000000") is None
+        assert get.call_count == 1
+
+
+def test_get_isbnnet_book_by_isbn_does_not_cache_on_502_or_error(db):
+    # Upstream scrape failure (502) is transient, should not be cached.
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response({"error": "upstream_error"}, status_code=502)) as get:
+        assert get_isbnnet_book_by_isbn("9786264048668") is None
+        assert get.call_count == 1
+
+    # Network exception should not be cached either
+    with mock.patch("catalog.services.requests.get", side_effect=__import__("requests").RequestException("timeout")) as get:
+        assert get_isbnnet_book_by_isbn("9786264048668") is None
+        assert get.call_count == 1
+
+    # Subsequent successful request should succeed and call live
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response(ISBNNET_PAYLOAD)) as get:
+        result = get_isbnnet_book_by_isbn("9786264048668")
+        assert result is not None
+        assert result["isbn"] == "9786264048668"
+        assert get.call_count == 1
+
+
+def test_get_isbnnet_book_by_isbn_degrades_gracefully_on_cache_backend_error(db):
+    with mock.patch("catalog.services.cache.get", side_effect=ConnectionError("redis unreachable")), \
+            mock.patch("catalog.services.cache.set", side_effect=ConnectionError("redis unreachable")), \
+            mock.patch("catalog.services.requests.get", return_value=_fake_response(ISBNNET_PAYLOAD)):
+        result = get_isbnnet_book_by_isbn("9786264048668")
+    assert result["title"] == "公職考試試題大補帖. 2027: 電路學與電子學"
+
+
+def test_search_endpoint_explicit_isbnnet_engine_with_isbn_query(api, db):
+    with mock.patch("search.views.get_isbnnet_book_by_isbn", return_value=dict(ISBNNET_PAYLOAD)):
+        resp = api.get("/api/v1/search/books/?q=9786264048668&engine=isbnnet")
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert len(results) == 1
+    hit = results[0]
+    assert hit["isbn"] == "9786264048668"
+    assert hit["title"] == "公職考試試題大補帖. 2027: 電路學與電子學"
+    assert hit["source"] == "isbnnet_api"
+    assert hit["debug_source"] == "ISBNnet"
+
+
+def test_search_endpoint_isbnnet_engine_keyword_query_falls_back_to_googlebooks(api, db):
+    with mock.patch("search.views.search_google_books", return_value=FAKE_RESULTS) as gb_search:
+        resp = api.get("/api/v1/search/books/?q=circuit&engine=isbnnet")
+    assert resp.status_code == 200
+    gb_search.assert_called_once()
+    results = resp.json()["results"]
+    assert len(results) >= 1
+    assert results[0]["source"] == "google_api"
+    assert results[0]["debug_source"] == "google books"
+
+
+def test_book_detail_with_isbnnet_engine(api, db):
+    with mock.patch("catalog.views.get_isbnnet_book_by_isbn", return_value=dict(ISBNNET_PAYLOAD)):
+        resp = api.get("/api/v1/books/?isbn=9786264048668&engine=isbnnet")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["isbn13"] == "9786264048668"
+    assert body["title"] == "公職考試試題大補帖. 2027: 電路學與電子學"
+    assert body["source"] == "isbnnet_api"
+    assert body["debug_source"] == "ISBNnet"
+

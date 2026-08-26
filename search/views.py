@@ -8,6 +8,7 @@ from core.authentication import OptionalJWTAuthentication
 from catalog.services import (
     search_google_books, get_google_books_by_isbn,
     search_open_library_books, get_open_library_book_by_isbn,
+    get_isbnnet_book_by_isbn,
     GoogleBooksRateLimited, describe_source,
 )
 from catalog.models import Book
@@ -15,7 +16,7 @@ from listings.models import Listing
 from subscriptions.models import Subscription
 from django.db.models import Count, Min, Q
 
-VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary'}
+VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
 
 
 class BookSearchView(views.APIView):
@@ -72,6 +73,8 @@ class BookSearchView(views.APIView):
                 meta = {}
                 if engine == 'openlibrary':
                     gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
+                elif engine == 'isbnnet':
+                    gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
                 else:
                     try:
                         gb_book = get_google_books_by_isbn(query_stripped, _meta=meta)
@@ -81,7 +84,12 @@ class BookSearchView(views.APIView):
                         meta = {}
                         gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
                 if gb_book:
-                    gb_book['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
+                    if engine_used == 'isbnnet':
+                        gb_book['source'] = 'isbnnet_api'
+                    elif engine_used == 'openlibrary':
+                        gb_book['source'] = 'openlibrary_api'
+                    else:
+                        gb_book['source'] = 'google_api'
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
                 local_books = Book.objects.filter(isbn13=query_stripped)
@@ -103,12 +111,22 @@ class BookSearchView(views.APIView):
                         fallback_results = []
                     fallback_results = [item for item in fallback_results if item.get('isbn') == query_stripped]
                     for item in fallback_results:
-                        item['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
+                        if engine_used == 'isbnnet':
+                            item['source'] = 'isbnnet_api'
+                        elif engine_used == 'openlibrary':
+                            item['source'] = 'openlibrary_api'
+                        else:
+                            item['source'] = 'google_api'
                     gb_results = fallback_results
             else:
                 engine_used = engine
+                if engine_used == 'isbnnet':
+                    # ISBNnet has no keyword/free-text search endpoint; fall back
+                    # to the default Google Books engine for keyword queries.
+                    engine_used = 'googlebooks'
+
                 meta = {}
-                if engine == 'openlibrary':
+                if engine_used == 'openlibrary':
                     gb_results = search_open_library_books(query, _meta=meta)
                 else:
                     try:

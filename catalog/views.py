@@ -5,6 +5,7 @@ from catalog.models import Book
 from catalog.serializers import BookSerializer
 from catalog.services import (
     get_google_books_by_isbn, get_open_library_book_by_isbn,
+    get_isbnnet_book_by_isbn,
     GoogleBooksRateLimited, describe_source,
 )
 from listings.serializers import ListingSerializer
@@ -17,7 +18,7 @@ from core.authentication import OptionalJWTAuthentication
 # imported from there — catalog is the lower-level app (search already
 # imports catalog.services), so importing the other way round would invert
 # that dependency.
-VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary'}
+VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
 
 
 class BookDetailView(views.APIView):
@@ -29,7 +30,7 @@ class BookDetailView(views.APIView):
         book_id = request.query_params.get('id')
         page_param = request.query_params.get('page', '1')
         # Same default and validation as BookSearchView: Google stays the
-        # default engine, callers opt into Open Library explicitly rather
+        # default engine, callers opt into Open Library / ISBNnet explicitly rather
         # than the backend silently preferring one source over the other.
         engine = request.query_params.get('engine', 'googlebooks')
         if engine not in VALID_SEARCH_ENGINES:
@@ -66,7 +67,7 @@ class BookDetailView(views.APIView):
                     book = Book.objects.filter(isbn13=valid_isbn).first()
                 if not book:
                     # Serve dynamically from the requested engine. Open
-                    # Library, when explicitly requested, is used as-is with
+                    # Library / ISBNnet, when explicitly requested, is used as-is with
                     # no Google fallback — the caller asked for that source
                     # on purpose (e.g. to match what a search result on the
                     # same page already showed), so silently substituting a
@@ -79,6 +80,11 @@ class BookDetailView(views.APIView):
                         engine_used = 'openlibrary'
                         meta = {}
                         gb_data = get_open_library_book_by_isbn(valid_isbn, _meta=meta)
+                    elif engine == 'isbnnet':
+                        source = 'isbnnet_api'
+                        engine_used = 'isbnnet'
+                        meta = {}
+                        gb_data = get_isbnnet_book_by_isbn(valid_isbn, _meta=meta)
                     else:
                         source = 'google_api'
                         engine_used = 'googlebooks'

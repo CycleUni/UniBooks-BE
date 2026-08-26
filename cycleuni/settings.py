@@ -46,6 +46,10 @@ GOOGLE_BOOKS_API_KEY = conf.require(env, "GOOGLE_BOOKS_API_KEY")
 EDGE_CHAT_JWT_SECRET = env.str("EDGE_CHAT_JWT_SECRET", default="")
 EDGE_CHAT_URL = env.str("EDGE_CHAT_URL", default="http://localhost:8787")
 
+# ISBNnet Resolver (Cloudflare Worker microservice for exact-ISBN lookups):
+# local dev default, must be overridden in prod.
+ISBNNET_RESOLVER_URL = env.str("ISBNNET_RESOLVER_URL", default="http://localhost:8789")
+
 # Must match the `appId` path segment the frontend uses when it builds
 # CFEdgeChat room URLs (`/ws/<app_id>/<room_id>`, `/api/<app_id>/<room_id>/...`
 # — see CycleUni-FE's message.service.ts, currently the literal "cycleuni").

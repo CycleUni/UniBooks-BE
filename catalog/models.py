@@ -8,6 +8,7 @@ class Book(models.Model):
         ('manual', 'Manual'),
         ('google_api', 'Google Books API'),
         ('openlibrary_api', 'Open Library API'),
+        ('isbnnet_api', 'ISBNnet API'),
     ]
 
     isbn13 = models.CharField(max_length=13, unique=True, null=True, blank=True)
