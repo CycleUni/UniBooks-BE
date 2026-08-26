@@ -34,7 +34,11 @@ def get_isbnnet_book_by_isbn(isbn, _meta=None):
 
     try:
         url = f"{settings.ISBNNET_RESOLVER_URL.rstrip('/')}/isbn/{isbn}"
-        response = requests.get(url, timeout=5)
+        response = requests.get(
+            url,
+            headers={'User-Agent': 'CycleUni Backend Service'},
+            timeout=5,
+        )
         logger.debug("ISBNnet ISBN lookup response status=%s", response.status_code)
         if response.status_code == 200:
             data = response.json()
