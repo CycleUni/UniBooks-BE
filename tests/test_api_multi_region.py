@@ -744,3 +744,40 @@ def test_currency_conversion(tw_region, hk_region):
         
     with pytest.raises(ValidationError, match="Invalid currency"):
         validate_minor(100, 'XYZ')
+
+
+@pytest.mark.django_db
+def test_metadata_with_school_filter_returns_that_school_waitlist(client, django_user_model):
+    """The ?school= branch of /core/metadata/ reaches the subscriber's school
+    through RegionVerification. It shipped broken (500) because every existing
+    metadata test omitted ?school=, leaving this branch unexercised."""
+    from accounts.models import School, RegionVerification
+    from catalog.models import Book
+    from subscriptions.models import Subscription
+    from core.models import Region
+    from django.utils import timezone
+
+    tw = Region.objects.get(code='TW')
+    ntu = School.objects.create(name='NTU Waitlist', email_domain='ntu-wl.edu.tw', region=tw)
+    other = School.objects.create(name='Other Waitlist', email_domain='other-wl.edu.tw', region=tw)
+
+    book_a = Book.objects.create(isbn13='9780000000101', title='Wanted At NTU', region=tw)
+    book_b = Book.objects.create(isbn13='9780000000102', title='Wanted Elsewhere', region=tw)
+
+    def student(email, school):
+        u = django_user_model.objects.create_user(email=email, password='x', first_name='T', last_name='S')
+        RegionVerification.objects.create(
+            user=u, region=tw, school=school, edu_email=email,
+            verified_at=timezone.now(), is_active=True,
+        )
+        return u
+
+    Subscription.objects.create(user=student('a@ntu-wl.edu.tw', ntu), book=book_a, region=tw)
+    Subscription.objects.create(user=student('b@other-wl.edu.tw', other), book=book_b, region=tw)
+
+    resp = client.get(f'/api/v1/core/metadata/?school={ntu.name}&lang=en', HTTP_X_REGION='TW')
+    assert resp.status_code == 200
+
+    titles = [w['title'] for w in resp.json()['waitlist']]
+    assert 'Wanted At NTU' in titles
+    assert 'Wanted Elsewhere' not in titles

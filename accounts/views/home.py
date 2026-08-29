@@ -98,7 +98,21 @@ class HomeMetadataView(views.APIView):
 
             if waitlist is None:
                 if school_id is not None:
-                    top_books = Subscription.objects.filter(region=region, user__school_id=school_id).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
+                    # School moved off User onto RegionVerification, so the
+                    # subscriber's school is reached through that. All four
+                    # conditions stay in ONE filter() call on purpose: split
+                    # across chained .filter()s, Django is free to satisfy each
+                    # from a *different* verification row, so a user verified
+                    # at school A in TW and at school B in HK would match a
+                    # query for either school. Same trap RecentBooksView
+                    # documents.
+                    top_books = Subscription.objects.filter(
+                        region=region,
+                        user__region_verifications__school_id=school_id,
+                        user__region_verifications__region=region,
+                        user__region_verifications__is_active=True,
+                        user__region_verifications__verified_at__isnull=False,
+                    ).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
                 else:
                     top_books = Subscription.objects.filter(region=region).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
                 waitlist = [
