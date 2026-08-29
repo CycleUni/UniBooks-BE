@@ -15,7 +15,7 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SETTINGS_PATH = BASE_DIR / "cycleuni" / "settings.py"
+SETTINGS_PATH = BASE_DIR / "unibooks" / "settings.py"
 
 # §8.1 "required, no defaults" keys
 REQUIRED_KEYS = [
@@ -33,7 +33,7 @@ FULL_ENV = {
     "GOOGLE_CLIENT_SECRET": "test-only-google-client-secret-fake-value",
     "POSTGRES_PASSWORD": "fake_pass",
     "POSTGRES_HOST": "db.invalid",
-    "POSTGRES_DATABASE": "cycleuni_test",
+    "POSTGRES_DATABASE": "unibooks_test",
     "POSTGRES_USER": "fake_user",
     "DB_PORT": "5432",
     "REDIS_URL": "redis://redis.invalid:6379/0",
@@ -52,7 +52,7 @@ def load_settings(env_vars):
     """Re-execute settings.py in a controlled environment (clear=True wipes existing vars)."""
     with mock.patch.dict(os.environ, env_vars, clear=True):
         spec = importlib.util.spec_from_file_location(
-            "cycleuni_settings_under_test", SETTINGS_PATH
+            "unibooks_settings_under_test", SETTINGS_PATH
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)

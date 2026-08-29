@@ -1,9 +1,9 @@
-# CycleUni 易校網 — 後端（CycleUni-BE）
+# UniBooks — 後端（UniBooks-BE）
 
 台灣大專院校二手教科書搜尋與媒合平台之後端服務。
 
 - 技術棧：Python 3.14 / Django 6 / Django REST Framework / django-environ
-- 架構依據：`docs/backend-ssd.md`（於 CycleUni 工作根目錄；§8.1 組態政策為紅線）
+- 架構依據：`docs/backend-ssd.md`（於 UniBooks 工作根目錄；§8.1 組態政策為紅線）
 
 ## 專案結構
 
@@ -88,7 +88,7 @@ ruff check .
 ### 1️⃣ Settings 分層
 
 ```
-cycleuni/
+unibooks/
 ├─ settings/
 │  ├─ __init__.py          # from .base import *
 │  ├─ base.py               # 通用設定（INSTALLED_APPS、MIDDLEWARE 等）
@@ -98,7 +98,7 @@ cycleuni/
 ```
 
 - `base.py` 包含所有 **非環境特定** 的設定。
-- `dev.py` 與 `prod.py` 僅在 `DJANGO_SETTINGS_MODULE=cycleuni.settings.dev|prod` 時被載入。
+- `dev.py` 與 `prod.py` 僅在 `DJANGO_SETTINGS_MODULE=unibooks.settings.dev|prod` 時被載入。
 - `secrets.py` 放置 `conf.require()` 呼叫，所有機密（`SECRET_KEY`、`JWT_SIGNING_KEY`、`EMAIL_API_KEY`…）僅在此處驗證，避免在程式碼其他位置硬編碼。
 
 ### 2️⃣ API 設計（ViewSet + Router）
@@ -145,7 +145,7 @@ core/
 
 | 平台 | 步驟 |
 |------|------|
-| **Docker** | `docker build -t cycleuni-be .` → `docker run -p 8000:8000 -e DJANGO_SETTINGS_MODULE=cycleuni.settings.prod cycleuni-be` |
+| **Docker** | `docker build -t unibooks-be .` → `docker run -p 8000:8000 -e DJANGO_SETTINGS_MODULE=unibooks.settings.prod unibooks-be` |
 | **Heroku / Render** | 設定所有必填環境變數 → 自動載入 `settings/prod.py` |
 | **Cloudflare Workers (SSR)** | 後端仍以傳統 API 部署（Fly.io、Railway…），前端 SSR 透過 Workers 代理，兩者皆遵循相同的安全組態。
 

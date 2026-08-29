@@ -45,7 +45,7 @@ def test_api_routes_are_versioned():
     ecosystem's `/api/cron/*` convention rather than this project's own
     versioning scheme.
     """
-    from cycleuni import urls
+    from unibooks import urls
 
     unversioned_exceptions = {"api/cron/"}
 

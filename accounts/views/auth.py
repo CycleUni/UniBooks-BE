@@ -117,11 +117,11 @@ class RegisterView(views.APIView):
 
             lang = resolve_language(request)
             if lang == 'zh-TW':
-                subject = 'CycleUni 帳號啟用信'
-                message = f'感謝您註冊 CycleUni！請點擊以下連結以啟用您的帳號：\n\n{verify_link}\n\n如果您沒有註冊此帳號，請忽略這封信件。'
+                subject = 'UniBooks 帳號啟用信'
+                message = f'感謝您註冊 UniBooks！請點擊以下連結以啟用您的帳號：\n\n{verify_link}\n\n如果您沒有註冊此帳號，請忽略這封信件。'
             else:
-                subject = 'CycleUni Account Activation'
-                message = f'Thanks for signing up for CycleUni! Click the link below to activate your account:\n\n{verify_link}\n\nIf you did not sign up for this account, please ignore this email.'
+                subject = 'UniBooks Account Activation'
+                message = f'Thanks for signing up for UniBooks! Click the link below to activate your account:\n\n{verify_link}\n\nIf you did not sign up for this account, please ignore this email.'
 
             name = f"{user.last_name}{user.first_name}".strip() or "User"
             recipient = f'"{name}" <{user.email}>'
@@ -161,10 +161,10 @@ class RequestEduVerificationView(views.APIView):
 
         lang = resolve_language(request)
         if lang == 'zh-TW':
-            subject = 'CycleUni 學生信箱驗證'
+            subject = 'UniBooks 學生信箱驗證'
             message = f'請點擊以下連結以驗證您的學生信箱：\n\n{verify_link}\n\n如果您沒有請求此驗證，請忽略這封信件。'
         else:
-            subject = 'CycleUni Student Email Verification'
+            subject = 'UniBooks Student Email Verification'
             message = f'Click the link below to verify your student email:\n\n{verify_link}\n\nIf you did not request this verification, please ignore this email.'
 
         name = f"{request.user.last_name}{request.user.first_name}".strip() or "User"
@@ -619,10 +619,10 @@ class RequestPasswordResetView(views.APIView):
 
         lang = resolve_language(request)
         if lang == 'zh-TW':
-            subject = 'CycleUni 密碼重設'
+            subject = 'UniBooks 密碼重設'
             message = f'請點擊以下連結以重設您的密碼（1 小時內有效）：\n\n{reset_link}\n\n如果您沒有請求重設密碼，請忽略這封信件，您的密碼不會被更動。'
         else:
-            subject = 'CycleUni Password Reset'
+            subject = 'UniBooks Password Reset'
             message = f'Click the link below to reset your password (valid for 1 hour):\n\n{reset_link}\n\nIf you did not request this, you can ignore this email — your password will not be changed.'
 
         _send_verification_email(subject, message, user.email, f"password reset for user {user.id}")

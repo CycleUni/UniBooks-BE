@@ -15,7 +15,7 @@ from subscriptions.models import Subscription
 logger = logging.getLogger(__name__)
 
 # The only two languages the frontend ever requests (see
-# CycleUni-FE/src/app/core/i18n.service.ts) — kept in sync manually since
+# UniBooks-FE/src/app/core/i18n.service.ts) — kept in sync manually since
 # `translations` fields accept arbitrary language tags, but the UI itself
 # only ever renders these two, so only these two cache entries can exist.
 HOME_STATIC_CACHE_LANGUAGES = ('en', 'zh-TW')

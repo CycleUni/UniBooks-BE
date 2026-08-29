@@ -548,7 +548,7 @@ def test_request_verification_email_uses_region_default_language(api, user, auth
     )
     assert resp.status_code == 200
     assert len(mailoutbox) == 1
-    assert mailoutbox[0].subject == "CycleUni 學生信箱驗證"
+    assert mailoutbox[0].subject == "UniBooks 學生信箱驗證"
 
 
 def test_request_verification_email_zh_tw_via_lang_param(api, user, auth_header, mailoutbox, ntu_school):
@@ -560,7 +560,7 @@ def test_request_verification_email_zh_tw_via_lang_param(api, user, auth_header,
     )
     assert resp.status_code == 200
     assert len(mailoutbox) == 1
-    assert mailoutbox[0].subject == "CycleUni 學生信箱驗證"
+    assert mailoutbox[0].subject == "UniBooks 學生信箱驗證"
 
 
 def test_verification_full_flow(api, user, auth_header, ntu_school):

@@ -8,7 +8,7 @@ import os
 
 _TEST_ENV_DEFAULTS = {
     # Declared here (not in pyproject.toml) so fake env vars are injected before settings load
-    "DJANGO_SETTINGS_MODULE": "cycleuni.settings",
+    "DJANGO_SETTINGS_MODULE": "unibooks.settings",
     # Tests must not read the developer's local .env, keeping results reproducible
     "DJANGO_READ_DOT_ENV_FILE": "0",
     # Fake values for the §8.1 required variables (fictitious)

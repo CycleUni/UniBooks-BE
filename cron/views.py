@@ -90,12 +90,12 @@ class WaitlistNotifyView(views.APIView):
                 book_lines.append(f"- {sub.book.title}: {book_url}")
             books_block = "\n".join(book_lines)
 
-            subject = "CycleUni 到貨通知 / New listings for your waitlist"
+            subject = "UniBooks 到貨通知 / New listings for your waitlist"
             message = (
                 f"您求書清單中的以下書籍已有新上架商品：\n\n{books_block}\n\n"
-                "登入 CycleUni 查看詳情。\n\n---\n\n"
-                f"New listings are available for books on your CycleUni waitlist:\n\n{books_block}\n\n"
-                "Log in to CycleUni to view them."
+                "登入 UniBooks 查看詳情。\n\n---\n\n"
+                f"New listings are available for books on your UniBooks waitlist:\n\n{books_block}\n\n"
+                "Log in to UniBooks to view them."
             )
 
             try:

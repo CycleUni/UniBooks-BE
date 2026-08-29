@@ -1,7 +1,7 @@
 import os
 import django
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "cycleuni.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "unibooks.settings")
 django.setup()
 
 from allauth.socialaccount.adapter import get_adapter

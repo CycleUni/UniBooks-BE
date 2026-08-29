@@ -70,7 +70,7 @@ def get_google_books_by_isbn(isbn, _meta=None):
         response = requests.get(
             GOOGLE_BOOKS_API_URL,
             params=params,
-            headers={'User-Agent': 'CycleUni Backend Service'},
+            headers={'User-Agent': 'UniBooks Backend Service'},
             timeout=5,
         )
         logger.debug("Google Books ISBN lookup response status=%s", response.status_code)
@@ -131,7 +131,7 @@ def search_google_books(query, _meta=None):
         response = requests.get(
             GOOGLE_BOOKS_API_URL,
             params=params,
-            headers={'User-Agent': 'CycleUni Backend Service'},
+            headers={'User-Agent': 'UniBooks Backend Service'},
             timeout=5,
         )
         logger.debug("Google Books search response status=%s", response.status_code)

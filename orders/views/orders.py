@@ -33,7 +33,7 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
         import urllib.error
         import json
         from rest_framework_simplejwt.backends import TokenBackend
-        app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'cycleuni')
+        app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
         token = TokenBackend(algorithm="HS256", signing_key=jwt_secret).encode({
             "user_id": str(sender.id),
             "room_id": str(conv.id),
@@ -50,7 +50,7 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
                 "Content-Type": "application/json",
                 # cfedgechaft.workers.dev blocks bot-like requests
                 # (Cloudflare error 1010). A proper User-Agent avoids that.
-                "User-Agent": "CycleUni-BE/1.0",
+                "User-Agent": "UniBooks-BE/1.0",
             },
             method="POST",
         )

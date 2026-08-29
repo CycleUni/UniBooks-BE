@@ -6,10 +6,10 @@
 # (pytest would try to collect and execute it as a test module and fail on
 # both the network call and unguarded DB access outside a `django_db`
 # fixture). Run manually with `python manage.py shell` env active, e.g.:
-#   DJANGO_SETTINGS_MODULE=cycleuni.settings python scripts/debug_edge_chat_messages.py
+#   DJANGO_SETTINGS_MODULE=unibooks.settings python scripts/debug_edge_chat_messages.py
 import os
 import django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cycleuni.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'unibooks.settings')
 django.setup()
 
 from django.conf import settings
@@ -25,7 +25,7 @@ conv = Conversation.objects.get(id=conv_id)
 user_id = str(conv.buyer_id)
 seller_id = str(conv.listing.seller_id)
 
-app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'cycleuni')
+app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
 token_backend = TokenBackend(algorithm="HS256", signing_key=settings.EDGE_CHAT_JWT_SECRET)
 token = token_backend.encode({
     "user_id": user_id,

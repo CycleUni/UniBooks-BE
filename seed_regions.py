@@ -3,7 +3,7 @@ import django
 
 # Setup django environment if executed directly
 if __name__ == '__main__' and not os.environ.get('DJANGO_SETTINGS_MODULE'):
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cycleuni.settings')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'unibooks.settings')
     django.setup()
 
 from core.models import Currency, Language, Region

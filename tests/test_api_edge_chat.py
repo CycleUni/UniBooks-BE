@@ -100,8 +100,8 @@ def test_chat_token_issues_verifiable_jwt(api, user, auth_header, conversation):
     # claim matching the `appId` URL segment (its ChatRoom DO is keyed by
     # `${appId}:${roomId}`), or it rejects the request with 403. Must equal
     # settings.EDGE_CHAT_APP_ID, which in turn must match the frontend's
-    # hardcoded appId ("cycleuni") used to build /ws/<app_id>/<room_id>.
-    assert payload["app_id"] == "cycleuni"
+    # hardcoded appId ("unibooks") used to build /ws/<app_id>/<room_id>.
+    assert payload["app_id"] == "unibooks"
 
     # CFEdgeChat's ChatRoom DO trusts this claim (not client input) to learn
     # who to notify on the per-user hub connection when a message lands.
@@ -231,7 +231,7 @@ def test_edge_chat_webhook_tolerates_malformed_room_id(api, db):
     # conversation) must 404, not crash with an uncaught ValidationError.
     resp = api.post(
         "/api/v1/messaging/webhook/edge-chat/",
-        {"room_id": "cycleuni:42", "sender_id": "7", "content": "hello", "timestamp": 1234567890},
+        {"room_id": "unibooks:42", "sender_id": "7", "content": "hello", "timestamp": 1234567890},
         content_type="application/json",
         HTTP_X_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET,
     )

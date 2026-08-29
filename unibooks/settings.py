@@ -1,4 +1,4 @@
-"""CycleUni backend — Django settings.
+"""UniBooks backend — Django settings.
 
 Configuration policy per backend-ssd §8.1 (hard rules):
 - Missing required variables → raise ImproperlyConfigured at startup; no
@@ -52,14 +52,14 @@ ISBNNET_RESOLVER_URL = env.str("ISBNNET_RESOLVER_URL", default="http://localhost
 
 # Must match the `appId` path segment the frontend uses when it builds
 # CFEdgeChat room URLs (`/ws/<app_id>/<room_id>`, `/api/<app_id>/<room_id>/...`
-# — see CycleUni-FE's message.service.ts, currently the literal "cycleuni").
+# — see UniBooks-FE's message.service.ts, currently the literal "unibooks").
 # CFEdgeChat's ChatRoom Durable Object is keyed by `${appId}:${roomId}`, and
 # now requires every room-scoped JWT to carry a matching `app_id` claim
 # (strict equality, no fallback) to prevent a token minted for one app's room
 # "X" from also authorizing a different app's identically-named room "X".
 # Non-secret, so a default matching the frontend's current hardcoded value is
 # fine here (backend-ssd §8.1 allows safe defaults for non-secret config).
-EDGE_CHAT_APP_ID = env.str("EDGE_CHAT_APP_ID", default="cycleuni")
+EDGE_CHAT_APP_ID = env.str("EDGE_CHAT_APP_ID", default="unibooks")
 
 # Shared secret CFEdgeChat must send in the `X-Webhook-Secret` header when
 # calling back into messaging.views.EdgeChatWebhookView. Same optional-feature
@@ -119,7 +119,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 # Sender address for outbound transactional email.
 _raw_from_email = env.str("DEFAULT_FROM_EMAIL", default="noreply@cycleuni.com")
 if "<" not in _raw_from_email:
-    DEFAULT_FROM_EMAIL = f'"CycleUni" <{_raw_from_email}>'
+    DEFAULT_FROM_EMAIL = f'"UniBooks" <{_raw_from_email}>'
 else:
     DEFAULT_FROM_EMAIL = _raw_from_email
 
@@ -172,7 +172,7 @@ INSTALLED_APPS = [
     "allauth.account",
     "allauth.socialaccount",
     "allauth.socialaccount.providers.google",
-    # CycleUni domain apps (backend-ssd §4)
+    # UniBooks domain apps (backend-ssd §4)
     "accounts",
     "catalog",
     "listings",
@@ -200,7 +200,7 @@ MIDDLEWARE = [
     "allauth.account.middleware.AccountMiddleware",
 ]
 
-ROOT_URLCONF = "cycleuni.urls"
+ROOT_URLCONF = "unibooks.urls"
 
 TEMPLATES = [
     {
@@ -229,7 +229,7 @@ SOCIALACCOUNT_PROVIDERS = {
     }
 }
 
-WSGI_APPLICATION = "cycleuni.wsgi.application"
+WSGI_APPLICATION = "unibooks.wsgi.application"
 
 # Lambda + Neon pooled connection:
 # CONN_MAX_AGE=0 closes the connection after every request so the Lambda

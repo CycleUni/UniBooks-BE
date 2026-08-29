@@ -2,7 +2,7 @@ import os
 import sys
 import django
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cycleuni.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'unibooks.settings')
 django.setup()
 
 from django.conf import settings

@@ -24,7 +24,7 @@ import django
 from django.utils import timezone
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cycleuni.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'unibooks.settings')
 django.setup()
 
 from accounts.models import School, User, RegionVerification

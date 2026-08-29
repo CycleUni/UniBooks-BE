@@ -4,7 +4,7 @@ import django
 import random
 from django.utils import timezone
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cycleuni.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'unibooks.settings')
 django.setup()
 
 from django.conf import settings

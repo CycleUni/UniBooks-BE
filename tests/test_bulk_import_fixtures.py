@@ -23,15 +23,18 @@ User = get_user_model()
 def _find_fixture(subpath):
     candidates_tried = []
     
-    env_dir = os.environ.get("CYCLEUNI_FIXTURES_DIR")
+    env_dir = os.environ.get("UNIBOOKS_FIXTURES_DIR")
     if env_dir:
         candidate = Path(env_dir) / subpath
-        candidates_tried.append(f"$CYCLEUNI_FIXTURES_DIR ({candidate})")
+        candidates_tried.append(f"$UNIBOOKS_FIXTURES_DIR ({candidate})")
         if candidate.exists():
             return candidate, ""
 
     repo_root = Path(__file__).resolve().parent.parent.parent
     
+    # Still CycleUniProject: this is a directory on disk in a sibling repo
+    # tree, not a name this project controls. The rename swept it up and the
+    # seven fixture tests went straight back to skipping.
     c1 = repo_root.parent / "CycleUniProject" / subpath
     candidates_tried.append(str(c1))
     if c1.exists():
@@ -42,7 +45,7 @@ def _find_fixture(subpath):
     if c2.exists():
         return c2, ""
 
-    reason = f"Fixture not present. Tried: " + " | ".join(candidates_tried) + ". You can set CYCLEUNI_FIXTURES_DIR env var to the fixture root."
+    reason = f"Fixture not present. Tried: " + " | ".join(candidates_tried) + ". You can set UNIBOOKS_FIXTURES_DIR env var to the fixture root."
     return c1, reason
 
 SCHOOLS_FIXTURE, SCHOOLS_SKIP_REASON = _find_fixture("SchoolList/schools.TW.json")

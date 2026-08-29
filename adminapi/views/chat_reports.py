@@ -119,7 +119,7 @@ class AdminChatReportTokenView(views.APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'cycleuni')
+        app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
         payload = {
             'user_id': str(request.user.id),
             'room_id': str(conv.id),
