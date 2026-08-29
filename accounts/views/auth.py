@@ -64,7 +64,10 @@ def _is_valid_edu_email(email):
 
     from core.region import _get_active_regions
     active_regions = _get_active_regions()
-    return any(email.endswith(r.edu_email_suffix) for r in active_regions.values() if r.edu_email_suffix)
+    return any(
+        any(email.endswith(suffix) for suffix in r.edu_email_suffix)
+        for r in active_regions.values() if r.edu_email_suffix
+    )
 
 logger = logging.getLogger(__name__)
 

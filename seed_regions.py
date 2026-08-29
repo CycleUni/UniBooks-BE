@@ -68,7 +68,7 @@ def run():
             'default_language': zh_tw,
             'timezone': 'Asia/Taipei',
             'search_engines': ['googlebooks', 'openlibrary', 'isbnnet'],
-            'edu_email_suffix': '.edu.tw',
+            'edu_email_suffix': ['.edu.tw'],
             'is_active': True,
             'sort_order': 10,
         }
@@ -84,7 +84,7 @@ def run():
             'default_language': zh_hk,
             'timezone': 'Asia/Hong_Kong',
             'search_engines': ['googlebooks', 'openlibrary'],
-            'edu_email_suffix': '.edu.hk',
+            'edu_email_suffix': ['.edu.hk', '.edu', '.hk', 's.eduhk.hk'],
             'is_active': True,
             'sort_order': 20,
         }

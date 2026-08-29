@@ -87,7 +87,7 @@ class Region(models.Model):
     languages = models.ManyToManyField(Language, related_name='regions')
     timezone = models.CharField(max_length=64, default='Asia/Taipei')
     search_engines = models.JSONField(default=list)                  # ['googlebooks','openlibrary','isbnnet']
-    edu_email_suffix = models.CharField(max_length=64, blank=True)   # '.edu.tw' / '.edu.hk'
+    edu_email_suffix = models.JSONField(default=list, blank=True)    # ['.edu.tw'] or ['.edu.hk', '.edu']
     is_active = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
 

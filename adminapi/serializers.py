@@ -286,10 +286,16 @@ class AdminCurrencySerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 class AdminRegionSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+
+    def get_display_name(self, obj):
+        lang = self.context.get('lang')
+        return obj.localized_name(lang) if lang else obj.name
+
     class Meta:
         model = Region
         fields = [
-            'code', 'name', 'translations', 'currency', 'default_language', 
+            'code', 'name', 'display_name', 'translations', 'currency', 'default_language', 
             'languages', 'timezone', 'search_engines', 'edu_email_suffix', 
             'is_active', 'sort_order'
         ]
