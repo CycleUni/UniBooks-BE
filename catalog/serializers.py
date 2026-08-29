@@ -5,4 +5,4 @@ class BookSerializer(serializers.ModelSerializer):
     class Meta:
         model = Book
         fields = '__all__'
-        read_only_fields = ('source', 'created_at')
+        read_only_fields = ('source', 'created_at', 'region')

@@ -7,6 +7,7 @@ from rest_framework import status, views
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from core.region import get_region
 from django.contrib.auth import get_user_model
 
 from accounts.models import School
@@ -29,7 +30,8 @@ class MyProfileView(views.APIView):
         data = serializer.data
 
         # Related data the frontend My Account page needs
-        my_listings = user.listings.select_related('book', 'seller', 'school').order_by('-created_at')
+        region = get_region(request)
+        my_listings = user.listings.filter(region=region).select_related('book', 'seller', 'school').order_by('-created_at')
 
         q = request.query_params.get('q', '').strip()
         if q:
@@ -57,7 +59,7 @@ class MyProfileView(views.APIView):
                 'results': ListingSerializer(my_listings, many=True, context={'request': request}).data
             }
 
-        my_subs = subscriptions_with_new_listings_count(user.subscriptions.all())
+        my_subs = subscriptions_with_new_listings_count(user.subscriptions.filter(region=region))
         data['mySubscriptions'] = SubscriptionSerializer(my_subs, many=True).data
 
         return Response(data)

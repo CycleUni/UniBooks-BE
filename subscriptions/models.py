@@ -25,6 +25,7 @@ def subscriptions_with_new_listings_count(queryset):
     )
 
 class Subscription(models.Model):
+    region = models.ForeignKey('core.Region', on_delete=models.CASCADE)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='subscriptions')
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='subscriptions')
@@ -34,6 +35,12 @@ class Subscription(models.Model):
 
     class Meta:
         unique_together = ('user', 'book')
+        indexes = [
+            models.Index(fields=['user', 'region']),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'region']),
+        ]
 
     def __str__(self):
         return f"{self.user.email} -> {self.book.title}"

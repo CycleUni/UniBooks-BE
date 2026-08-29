@@ -13,7 +13,7 @@ environment. Only the mechanism differs, and only because of key shape:
    since these run inside model signals and request handlers where a Redis
    hiccup must not take the surrounding write down with it.
 
-The one exception is `recent_books_*`, which has no invalidation hook and
+The one exception is `[REGION]_recent_books_*`, which has no invalidation hook and
 relies purely on its (short) TTL.
 
 There is deliberately no dev/production switch. An earlier version gated the
@@ -107,6 +107,12 @@ def bump_cache_version(namespace):
     except Exception:
         logger.exception("Cache backend error bumping generation for %s", namespace)
 
+
+def region_versioned_key(region, namespace, *parts):
+    """Cache key inside `namespace`'s current generation, specific to a region."""
+    # Prefix with region code to ensure strict hard-isolation of caches per region.
+    suffix = "_".join(str(part) for part in parts)
+    return f"{region.code}_{namespace}_v{cache_version(namespace)}_{suffix}"
 
 def versioned_key(namespace, *parts):
     """Cache key inside `namespace`'s current generation."""

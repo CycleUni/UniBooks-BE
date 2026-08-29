@@ -25,16 +25,16 @@ def api():
 @pytest.fixture
 def buyer(db):
     u = User.objects.create_user(email="buyer@example.com", first_name="Bu", last_name="Yer", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
 @pytest.fixture
 def seller(db):
     u = User.objects.create_user(email="seller@example.com", first_name="Se", last_name="Ller", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -54,14 +54,14 @@ def seller_header(seller):
 
 @pytest.fixture
 def listing(db, seller):
-    book = Book.objects.create(title="Orders Test Book", source="manual")
-    return Listing.objects.create(book=book, seller=seller, price=100, condition="new")
+    book = Book.objects.create(region_id='TW', title="Orders Test Book", source="manual")
+    return Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new")
 
 
 @pytest.fixture
 def order(db, buyer, seller, listing, status="pending"):
     Conversation.objects.get_or_create(listing=listing, buyer=buyer)
-    return Order.objects.create(buyer=buyer, seller=seller, listing=listing, total_amount=listing.price, status=status)
+    return Order.objects.create(region_id='TW', currency_id='TWD', buyer=buyer, seller=seller, listing=listing, total_amount=listing.price, status=status)
 
 
 def _patch_status(api, order, new_status, header):
@@ -140,7 +140,7 @@ def test_outsider_cannot_touch_order_status(api, order, db):
 
 
 def test_duplicate_review_returns_clean_400_not_500(api, buyer, seller, listing, buyer_header):
-    completed_order = Order.objects.create(
+    completed_order = Order.objects.create(region_id='TW', currency_id='TWD', 
         buyer=buyer, seller=seller, listing=listing, total_amount=listing.price, status="completed"
     )
     Review.objects.create(order=completed_order, reviewer=buyer, reviewee=seller, rating=5)
@@ -156,12 +156,14 @@ def test_duplicate_review_returns_clean_400_not_500(api, buyer, seller, listing,
 
 
 def test_review_of_others_order_returns_clean_400_not_500(api, buyer, seller, listing, db):
-    completed_order = Order.objects.create(
+    completed_order = Order.objects.create(region_id='TW', currency_id='TWD', 
         buyer=buyer, seller=seller, listing=listing, total_amount=listing.price, status="completed"
     )
     outsider = User.objects.create_user(
         email="review-outsider@example.com", first_name="Out", last_name="Sider", password=PASSWORD
     )
+    from accounts.models import RegionVerification
+    RegionVerification.objects.create(user=outsider, region_id='TW', edu_email='out@ntu.edu.tw', is_active=True, is_manual_verification=True, verified_at=timezone.now())
     resp = api.post(
         "/api/v1/orders/reviews/",
         {"order": str(completed_order.id), "rating": 4, "comment": "hi"},

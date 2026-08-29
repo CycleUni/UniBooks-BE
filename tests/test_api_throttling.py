@@ -63,7 +63,7 @@ def test_verification_request_is_rate_limited_after_three_attempts(api, db):
     from accounts.models import School
     from accounts.services import issue_tokens
 
-    School.objects.create(email_domain="school.edu.tw", name="Throttle Test School")
+    School.objects.create(region_id='TW', email_domain="school.edu.tw", name="Throttle Test School")
 
     user = User.objects.create_user(
         email="throttle-verify@example.com", first_name="Th", last_name="Rottle", password=PASSWORD

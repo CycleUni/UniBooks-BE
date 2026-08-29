@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from core.models import AuditEvent
 from listings.models import Listing
 
+from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
 
 logger = logging.getLogger(__name__)
@@ -16,12 +17,14 @@ logger = logging.getLogger(__name__)
 
 class AdminListingListView(generics.ListAPIView):
     """GET /api/v1/admin/listings/"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminListingSerializer
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
         qs = Listing.objects.select_related('book', 'seller', 'school').order_by('-created_at')
+        if not self.request.user.is_superuser:
+            qs = qs.filter(region__in=self.request.user.managed_regions.all())
         q = self.request.query_params.get('q')
         if q:
             qs = qs.filter(
@@ -38,16 +41,28 @@ class AdminListingListView(generics.ListAPIView):
         school = self.request.query_params.get('school')
         if school:
             qs = qs.filter(school_id=school)
+        # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
+        # region the way the URL does (lowercase) and ApiUrlInterceptor
+        # appends it to every request — so an unnormalized comparison made
+        # every admin list come back empty.
+        region = (self.request.query_params.get('region') or '').upper()
+        if region:
+            qs = qs.filter(region_id=region)
         return qs
 
 
 class AdminListingDetailView(generics.RetrieveUpdateAPIView):
     """GET / PATCH /api/v1/admin/listings/<id>/"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminListingSerializer
-    queryset = Listing.objects.select_related('book', 'seller', 'school').all()
     lookup_field = 'pk'
     http_method_names = ['get', 'patch']
+
+    def get_queryset(self):
+        qs = Listing.objects.select_related('book', 'seller', 'school').all()
+        if not self.request.user.is_superuser:
+            qs = qs.filter(region__in=self.request.user.managed_regions.all())
+        return qs
 
     def patch(self, request, *args, **kwargs):
         allowed_fields = {'status'}

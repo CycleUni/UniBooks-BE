@@ -3,6 +3,8 @@ from django.conf import settings
 from django.core.validators import MinValueValidator, MaxValueValidator
 
 class Advertiser(models.Model):
+    all_regions = models.BooleanField(default=False)
+    regions = models.ManyToManyField('core.Region', blank=True, related_name='advertisers')
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

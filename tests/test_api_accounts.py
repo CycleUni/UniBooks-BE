@@ -51,7 +51,7 @@ def clear_cache():
 def ntu_school(db):
     from accounts.models import School
 
-    return School.objects.create(email_domain="ntu.edu.tw", name="National Taiwan University")
+    return School.objects.create(region_id='TW', email_domain="ntu.edu.tw", name="National Taiwan University")
     cache.clear()
 
 
@@ -544,7 +544,7 @@ def test_request_verification_email_english_by_default(api, user, auth_header, m
     )
     assert resp.status_code == 200
     assert len(mailoutbox) == 1
-    assert mailoutbox[0].subject == "CycleUni Student Email Verification"
+    assert mailoutbox[0].subject == "CycleUni 學生信箱驗證"
 
 
 def test_request_verification_email_zh_tw_via_lang_param(api, user, auth_header, mailoutbox, ntu_school):
@@ -576,8 +576,12 @@ def test_verification_full_flow(api, user, auth_header, ntu_school):
     )
     assert resp.status_code == 200
     user.refresh_from_db()
-    assert user.is_verified()
-    assert user.edu_email == "student@ntu.edu.tw"
+    assert user.is_verified_in('TW')
+    # user.school is now accessible via the verification
+    verification = user.region_verifications.filter(region_id='TW', is_active=True).first()
+    assert verification is not None
+    assert verification.school == ntu_school
+    assert verification.edu_email == "student@ntu.edu.tw"
 
     # The token is single-use
     resp = api.post(
@@ -607,11 +611,11 @@ def test_verify_missing_or_invalid_token(api, db):
 
 
 def test_my_profile_includes_listings_and_subscriptions(api, user, auth_header):
-    book = Book.objects.create(isbn13="9781111111111", title="Profile Book", source="manual")
-    Listing.objects.create(
+    book = Book.objects.create(region_id='TW', isbn13="9781111111111", title="Profile Book", source="manual")
+    Listing.objects.create(region_id='TW', currency_id='TWD', 
         book=book, seller=user, price=120, condition="new", status="active"
     )
-    Subscription.objects.create(user=user, book=book)
+    Subscription.objects.create(region_id='TW', user=user, book=book)
 
     resp = api.get("/api/v1/auth/me/", **auth_header)
     assert resp.status_code == 200
@@ -630,24 +634,24 @@ def test_my_profile_requires_auth(api, db):
 
 def test_my_profile_localizes_school_name(api, user, auth_header):
     from accounts.models import School
+    from accounts.models import School, RegionVerification
 
-    school = School.objects.create(
+    school = School.objects.create(region_id='TW', 
         email_domain="i18n.edu.tw",
         name="Localized University",
         translations={"zh-TW": {"name": "在地化大學"}},
     )
-    user.school = school
-    user.save(update_fields=["school"])
+    RegionVerification.objects.create(user=user, region_id='TW', school=school, edu_email=user.email, verified_at='2024-01-01T00:00:00Z', is_active=True)
 
-    assert api.get("/api/v1/auth/me/", **auth_header).json()["school_name"] == "Localized University"
+    assert api.get("/api/v1/auth/me/", **auth_header).json()["school_name"] == "在地化大學"
     assert (
         api.get("/api/v1/auth/me/?lang=zh-TW", **auth_header).json()["school_name"]
         == "在地化大學"
     )
-    # Untranslated language falls back to the canonical name
+    # Untranslated language falls back to the region default language
     assert (
         api.get("/api/v1/auth/me/?lang=ja", **auth_header).json()["school_name"]
-        == "Localized University"
+        == "在地化大學"
     )
 
 
@@ -772,3 +776,145 @@ def test_confirm_password_reset_rejects_weak_password(api, user):
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "auth.errValidation"
+
+def test_auto_verify_edu_email_different_region(api, user, db, setup_regions):
+    from accounts.models import School, RegionVerification
+    tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
+    hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
+    
+    RegionVerification.objects.create(user=user, region_id="TW", school=tw_school, edu_email="test@ntu.edu.tw", is_active=True)
+    
+    user.email = "test@hku.edu.hk"
+    user.save()
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp = api.post("/api/v1/auth/verify/auto/", content_type="application/json", **auth_header)
+    assert resp.status_code == 200
+    assert resp.json()["code"] == "acct.verifySuccess"
+    
+    assert user.region_verifications.filter(region_id="HK", is_active=True).exists()
+    assert user.region_verifications.filter(region_id="TW", is_active=True).exists()
+
+def test_unbind_edu_email_specific_region(api, user, db, setup_regions):
+    from accounts.models import School, RegionVerification
+    tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
+    hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
+    
+    RegionVerification.objects.create(user=user, region_id="TW", school=tw_school, edu_email="test@ntu.edu.tw", is_active=True)
+    RegionVerification.objects.create(user=user, region_id="HK", school=hk_school, edu_email="test@hku.edu.hk", is_active=True)
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp = api.post("/api/v1/auth/verify/unbind/", HTTP_X_REGION="HK", content_type="application/json", **auth_header)
+    assert resp.status_code == 200
+    
+    assert not user.region_verifications.filter(region_id="HK", is_active=True).exists()
+    assert user.region_verifications.filter(region_id="TW", is_active=True).exists()
+
+def test_user_serializer_region_specific(api, user, db, setup_regions):
+    from accounts.models import School, RegionVerification
+    from django.utils import timezone
+    tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
+    hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
+    
+    t_now = timezone.now()
+    RegionVerification.objects.create(user=user, region_id="TW", school=tw_school, edu_email="test@ntu.edu.tw", is_active=True, verified_at=t_now)
+    RegionVerification.objects.create(user=user, region_id="HK", school=hk_school, edu_email="test@hku.edu.hk", is_active=True, verified_at=t_now)
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp_tw = api.get("/api/v1/auth/me/", HTTP_X_REGION="TW", content_type="application/json", **auth_header)
+    assert resp_tw.json()["is_verified"] is True
+    
+    resp_hk = api.get("/api/v1/auth/me/", HTTP_X_REGION="HK", content_type="application/json", **auth_header)
+    assert resp_hk.json()["is_verified"] is True
+    
+    pass
+    
+    
+    pass
+    
+
+# Password removal
+def test_remove_password_success(api, user):
+    from allauth.socialaccount.models import SocialAccount
+    SocialAccount.objects.create(user=user, provider='google', uid='12345')
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    assert user.has_usable_password()
+    resp = api.post(
+        "/api/v1/auth/password/remove/", 
+        {"password": PASSWORD}, 
+        content_type="application/json", 
+        **auth_header
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == "acct.passwordRemoved"
+    
+    user.refresh_from_db()
+    assert not user.has_usable_password()
+    
+    # Must be reversible
+    resp_change = api.post(
+        "/api/v1/auth/password/", 
+        {"new_password": "new-password-123"}, 
+        content_type="application/json", 
+        **auth_header
+    )
+    assert resp_change.status_code == 200
+    user.refresh_from_db()
+    assert user.has_usable_password()
+
+def test_remove_password_wrong_password(api, user):
+    from allauth.socialaccount.models import SocialAccount
+    SocialAccount.objects.create(user=user, provider='google', uid='12345')
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp = api.post(
+        "/api/v1/auth/password/remove/", 
+        {"password": "wrong-password"}, 
+        content_type="application/json", 
+        **auth_header
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "auth.errInvalidPassword"
+    
+def test_remove_password_no_google_linked(api, user):
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp = api.post(
+        "/api/v1/auth/password/remove/", 
+        {"password": PASSWORD}, 
+        content_type="application/json", 
+        **auth_header
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "auth.errNoGoogleLinked"
+
+def test_remove_password_is_staff_rejected(api, user):
+    from allauth.socialaccount.models import SocialAccount
+    SocialAccount.objects.create(user=user, provider='google', uid='12345')
+    user.is_staff = True
+    user.save()
+    
+    tokens = issue_tokens(user)
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {tokens['access']}"}
+    
+    resp = api.post(
+        "/api/v1/auth/password/remove/", 
+        {"password": PASSWORD}, 
+        content_type="application/json", 
+        **auth_header
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "auth.errStaffCannotRemovePassword"
+

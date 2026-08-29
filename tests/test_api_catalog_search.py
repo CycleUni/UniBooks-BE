@@ -44,8 +44,8 @@ def auth_header(user):
 
 @pytest.fixture
 def book(db, user):
-    book = Book.objects.create(isbn13="9782222222222", title="Catalog Book", source="manual")
-    Listing.objects.create(book=book, seller=user, price=150, condition="noted", status="active")
+    book = Book.objects.create(region_id='TW', isbn13="9782222222222", title="Catalog Book", source="manual")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=150, condition="noted", status="active")
     return book
 
 
@@ -62,7 +62,7 @@ def clear_cache():
 
 
 def test_book_detail_includes_listings_and_waitlist(api, book, user):
-    Subscription.objects.create(user=user, book=book)
+    Subscription.objects.create(region_id='TW', user=user, book=book)
     resp = api.get(f"/api/v1/books/?id={book.id}")
     assert resp.status_code == 200
     body = resp.json()
@@ -75,7 +75,7 @@ def test_book_detail_includes_listings_and_waitlist(api, book, user):
 
 
 def test_book_detail_reports_subscription_for_authed_user(api, book, user, auth_header):
-    sub = Subscription.objects.create(user=user, book=book)
+    sub = Subscription.objects.create(region_id='TW', user=user, book=book)
     resp = api.get(f"/api/v1/books/?id={book.id}", **auth_header)
     assert resp.status_code == 200
     body = resp.json()
@@ -291,7 +291,7 @@ def test_search_requires_query(api, db):
 
 
 def test_search_enriches_local_books(api, book, user):
-    Subscription.objects.create(user=user, book=book)
+    Subscription.objects.create(region_id='TW', user=user, book=book)
     with mock.patch("search.views.search_google_books", return_value=FAKE_RESULTS):
         resp = api.get("/api/v1/search/books/?q=catalog")
     assert resp.status_code == 200
@@ -316,7 +316,7 @@ def test_search_enriches_local_books(api, book, user):
 
 
 def test_search_reports_subscription_for_authed_user(api, book, user, auth_header):
-    sub = Subscription.objects.create(user=user, book=book)
+    sub = Subscription.objects.create(region_id='TW', user=user, book=book)
     with mock.patch("search.views.search_google_books", return_value=FAKE_RESULTS):
         resp = api.get("/api/v1/search/books/?q=catalog", **auth_header)
     hit = next(item for item in resp.json()["results"] if item["isbn"] == "9782222222222")
@@ -749,3 +749,10 @@ def test_book_detail_with_isbnnet_engine(api, db):
     assert body["source"] == "isbnnet_api"
     assert body["debug_source"] == "ISBNnet"
 
+
+@pytest.fixture(autouse=True)
+def setup_region_engines_fix(db):
+    from core.models import Region
+    from django.core.cache import cache
+    Region.objects.filter(code='TW').update(search_engines=['googlebooks', 'openlibrary', 'isbnnet'])
+    cache.delete('active_regions')

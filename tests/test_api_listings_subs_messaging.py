@@ -19,11 +19,10 @@ PASSWORD = "test-only-password-123"
 
 
 def make_user(email, verified=True, school=None):
+    from accounts.models import RegionVerification
     user = User.objects.create_user(email=email, first_name=email.split("@")[0], last_name="Test", password=PASSWORD)
     if verified:
-        user.verified_at = timezone.now()
-    user.school = school
-    user.save()
+        RegionVerification.objects.create(user=user, region_id='TW', school=school, edu_email=email, verified_at=timezone.now())
     return user
 
 
@@ -45,7 +44,7 @@ def clear_cache():
 
 @pytest.fixture
 def school(db):
-    return School.objects.create(name="Test University", email_domain="test.edu.tw")
+    return School.objects.create(region_id='TW', name="Test University", email_domain="test.edu.tw")
 
 
 @pytest.fixture
@@ -60,12 +59,13 @@ def buyer(db, school):
 
 @pytest.fixture
 def book(db):
-    return Book.objects.create(isbn13="9785555555555", title="Listing Book", source="manual")
+    return Book.objects.create(region_id='TW', isbn13="9785555555555", title="Listing Book", source="manual")
 
 
 @pytest.fixture
 def listing(db, seller, book, school):
     return Listing.objects.create(
+        region_id='TW', currency_id='TWD', 
         book=book, seller=seller, school=school, price=200, condition="new", status="active"
     )
 
@@ -76,7 +76,7 @@ def listing(db, seller, book, school):
 
 
 def test_listing_list_filters_by_school_and_status(api, listing, seller, book):
-    Listing.objects.create(book=book, seller=seller, price=90, condition="noted", status="sold")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=90, condition="noted", status="sold")
     resp = api.get("/api/v1/listings/")
     assert resp.status_code == 200
     assert [item["price"] for item in resp.json()["results"]] == [200]
@@ -90,6 +90,12 @@ def test_listing_list_filters_by_school_and_status(api, listing, seller, book):
 def test_listing_create_requires_login_and_verification(api, db, book, school):
     resp = api.post("/api/v1/listings/", {}, content_type="application/json")
     assert resp.status_code == 401
+    # Assert the body, not just the status. Moving this view onto DRF's
+    # IsAuthenticatedOrReadOnly kept the 401 but replaced the response with
+    # DRF's own {"detail": ...}, which the frontend cannot localize — and a
+    # status-only assertion stayed green through it. core.exception_handler
+    # maps it back; this line is what keeps it mapped.
+    assert resp.json() == {"error": {"code": "auth.errNotLoggedIn"}}
 
     unverified = make_user("unverified@test.edu.tw", verified=False)
     resp = api.post(
@@ -115,8 +121,8 @@ def test_listing_create_success_sets_seller_and_school(api, seller, book, school
     # school (`seller.school`) is the single source of truth used for
     # school-scoped filtering (see ListingListCreateView.get), so the
     # listing's own `school` FK is intentionally left unset here.
-    assert created.school is None
-    assert created.seller.school == school
+    assert created.school == school
+    
 
 
 def test_listing_create_validation_error(api, seller, book):
@@ -179,6 +185,7 @@ def test_listing_delete_cleans_up_r2_photos(api, seller, book):
     default_storage.delete() — failures are swallowed so the DB row
     is always removed."""
     listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', 
         book=book, seller=seller, price=200, condition="new", status="active",
         photos=[
             "https://media.example.invalid/listings/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.png",
@@ -193,6 +200,7 @@ def test_listing_delete_cleans_up_r2_photos(api, seller, book):
 
     # Repeat with empty photos — should also succeed
     listing2 = Listing.objects.create(
+        region_id='TW', currency_id='TWD', 
         book=book, seller=seller, price=20, condition="new", status="active",
         photos=[],
     )
@@ -491,7 +499,7 @@ def test_subscription_create_list_delete_flow(api, buyer, book, listing):
 def test_subscription_counts_listings_created_after_subscribing(api, buyer, seller, book):
     header = bearer(buyer)
     api.post("/api/v1/subscriptions/", {"book_id": book.isbn13}, content_type="application/json", **header)
-    Listing.objects.create(book=book, seller=seller, price=100, condition="new", status="active")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new", status="active")
 
     resp = api.get("/api/v1/subscriptions/", **header)
     assert resp.json()[0]["newListingsCount"] == 1
@@ -609,24 +617,24 @@ def test_conversation_list_shows_other_party_and_latest_message(api, listing, se
 # ---------------------------------------------------------------------
 
 
-def test_home_metadata_defaults_to_english(api, school, buyer, book):
-    Subscription.objects.create(user=buyer, book=book)
+def test_home_metadata_defaults_to_region_default(api, school, buyer, book):
+    Subscription.objects.create(region_id='TW', user=buyer, book=book)
     resp = api.get("/api/v1/core/metadata/")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["lang"] == "en"
+    assert body["lang"] == "zh-TW"
     assert body["schools"][0]["name"] == "Test University"
     assert body["schools"][0]["display_name"] == "Test University"
     # Categories are real records seeded by migration, not hardcoded mock data
     assert [c["title"] for c in body["categories"]] == [
-        "College of Management",
-        "College of Engineering",
-        "College of Science",
-        "College of Liberal Arts",
-        "College of Medicine",
-        "College of EECS",
-        "College of Law",
-        "College of Social Sciences",
+        "商管學院",
+        "工學院",
+        "理學院",
+        "文學院",
+        "醫學院",
+        "電資學院",
+        "法學院",
+        "社科院",
     ]
     assert body["waitlist"][0] == {
         "title": "Listing Book",

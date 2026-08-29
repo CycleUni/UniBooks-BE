@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 
 from ..models import ChatReport
+from core.region import get_region
 from ..serializers import (
     ChatReportCreateSerializer, ChatReportSerializer, ChatReportStatusUpdateSerializer,
 )
@@ -25,6 +26,7 @@ class ChatReportCreateView(generics.CreateAPIView):
         already_pending = ChatReport.objects.filter(
             reporter=request.user,
             conversation_id=conversation_id,
+            conversation__listing__region=get_region(request),
             status='open'
         ).exists()
         if already_pending:
@@ -46,7 +48,8 @@ class MyChatReportsView(generics.ListAPIView):
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
-        return ChatReport.objects.filter(reporter=self.request.user).order_by('-created_at')
+        region = get_region(self.request)
+        return ChatReport.objects.filter(reporter=self.request.user, conversation__listing__region=region).order_by('-created_at')
 
 
 class ChatReportListView(generics.ListAPIView):

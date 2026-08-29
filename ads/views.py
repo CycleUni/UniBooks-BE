@@ -10,7 +10,8 @@ from ads.models import Ad
 from ads.serializers import PublicAdSerializer
 from adminapi.pagination import AdminPagination
 
-from core.cache import versioned_key
+from core.cache import versioned_key, region_versioned_key
+from core.region import get_region
 from django.core.cache import cache
 from core.i18n import resolve_language
 
@@ -21,12 +22,14 @@ class ActiveAdsListView(generics.ListAPIView):
     pagination_class = AdminPagination
 
     def get_queryset(self):
+        region = get_region(self.request)
         now = timezone.now()
         qs = Ad.objects.select_related('advertiser').filter(
             is_active=True,
             start_date__lte=now,
             end_date__gte=now,
             advertiser__is_active=True,
+            advertiser__regions=region,
         ).order_by('-created_at')
         
         position = self.request.query_params.get('position')
@@ -49,8 +52,9 @@ class ActiveAdsListView(generics.ListAPIView):
         school = request.query_params.get('school', '')
         page = request.query_params.get('page', '1')
         lang = resolve_language(request)
+        region = get_region(request)
         
-        cache_key = versioned_key('ads', position, school, page, lang)
+        cache_key = region_versioned_key(region, 'ads', position, school, page, lang)
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)

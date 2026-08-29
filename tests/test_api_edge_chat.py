@@ -29,8 +29,8 @@ def user(db):
     u = User.objects.create_user(
         email="chat-user@example.com", first_name="Chat", last_name="User", password=PASSWORD
     )
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -45,8 +45,8 @@ def conversation(db, user):
     seller = User.objects.create_user(
         email="chat-seller@example.com", first_name="Chat", last_name="Seller", password=PASSWORD
     )
-    book = Book.objects.create(title="Chat Test Book", source="manual")
-    listing = Listing.objects.create(book=book, seller=seller, price=100, condition="new")
+    book = Book.objects.create(region_id='TW', title="Chat Test Book", source="manual")
+    listing = Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new")
     return Conversation.objects.create(listing=listing, buyer=user)
 
 

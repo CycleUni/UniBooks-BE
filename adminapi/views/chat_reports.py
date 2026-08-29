@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from core.models import AuditEvent
 from moderation.models import ChatReport
 
+from ..permissions import IsRegionManager
 from ..serializers import AdminChatReportSerializer
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class AdminChatReportListView(generics.ListAPIView):
     """GET /api/v1/admin/chat-reports/ (read-only list)"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminChatReportSerializer
     pagination_class = PageNumberPagination
 
@@ -30,22 +31,36 @@ class AdminChatReportListView(generics.ListAPIView):
             'conversation', 'conversation__listing', 'conversation__listing__book',
             'reporter', 'reported_party'
         ).order_by('-created_at')
+        if not self.request.user.is_superuser:
+            qs = qs.filter(conversation__listing__region__in=self.request.user.managed_regions.all())
         status_param = self.request.query_params.get('status')
         if status_param:
             qs = qs.filter(status=status_param)
+        # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
+        # region the way the URL does (lowercase) and ApiUrlInterceptor
+        # appends it to every request — so an unnormalized comparison made
+        # every admin list come back empty.
+        region = (self.request.query_params.get('region') or '').upper()
+        if region:
+            qs = qs.filter(conversation__listing__region_id=region)
         return qs
 
 
 class AdminChatReportDetailView(generics.RetrieveUpdateAPIView):
     """GET / PATCH /api/v1/admin/chat-reports/<id>/"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminChatReportSerializer
-    queryset = ChatReport.objects.select_related(
-        'conversation', 'conversation__listing', 'conversation__listing__book',
-        'reporter', 'reported_party'
-    ).all()
     lookup_field = 'pk'
     http_method_names = ['get', 'patch']
+
+    def get_queryset(self):
+        qs = ChatReport.objects.select_related(
+            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'reporter', 'reported_party'
+        ).all()
+        if not self.request.user.is_superuser:
+            qs = qs.filter(conversation__listing__region__in=self.request.user.managed_regions.all())
+        return qs
 
     def patch(self, request, *args, **kwargs):
         allowed_fields = {'status'}
@@ -88,10 +103,13 @@ class AdminChatReportDetailView(generics.RetrieveUpdateAPIView):
 
 class AdminChatReportTokenView(views.APIView):
     """GET /api/v1/admin/chat-reports/<id>/chat-token/ — issue room-scoped JWT for admin message viewing."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
 
     def get(self, request, pk):
-        chat_report = get_object_or_404(ChatReport.objects.select_related('conversation'), pk=pk)
+        qs = ChatReport.objects.select_related('conversation')
+        if not request.user.is_superuser:
+            qs = qs.filter(conversation__listing__region__in=request.user.managed_regions.all())
+        chat_report = get_object_or_404(qs, pk=pk)
         conv = chat_report.conversation
 
         edge_jwt_secret = os.getenv('EDGE_CHAT_JWT_SECRET', '')

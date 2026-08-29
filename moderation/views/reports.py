@@ -6,19 +6,32 @@ from rest_framework.pagination import PageNumberPagination
 
 from listings.models import Listing
 from ..models import Report
+from core.region import get_region
 from ..serializers import (
     ReportCreateSerializer, ReportSerializer, ReportStatusUpdateSerializer,
 )
 
 
+from core.permissions import IsVerifiedInRegion
+
 class ReportCreateView(generics.CreateAPIView):
     """POST /api/v1/moderation/ submits a report."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsVerifiedInRegion]
     serializer_class = ReportCreateSerializer
+
+    def get_target_region(self, request):
+        if request.method == 'POST':
+            listing_id = request.data.get('listing')
+            if listing_id:
+                listing = Listing.objects.filter(id=listing_id).first()
+                if listing:
+                    return listing.region
+        return None
 
     def create(self, request, *args, **kwargs):
         listing_id = request.data.get('listing')
-        listing = get_object_or_404(Listing, pk=listing_id)
+        region = get_region(request)
+        listing = get_object_or_404(Listing.objects.filter(region=region), pk=listing_id)
 
         if listing.seller_id == request.user.id:
             return Response(
@@ -48,7 +61,8 @@ class MyReportsView(generics.ListAPIView):
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
-        return Report.objects.filter(reporter=self.request.user).order_by('-created_at')
+        region = get_region(self.request)
+        return Report.objects.filter(reporter=self.request.user, listing__region=region).order_by('-created_at')
 
 
 class ReportListView(generics.ListAPIView):

@@ -2,6 +2,7 @@ from django.db import models
 from django.contrib.postgres.indexes import GinIndex
 
 class Book(models.Model):
+    region = models.ForeignKey('core.Region', on_delete=models.CASCADE, related_name='books')
     SOURCE_CHOICES = [
         ('listed', 'Listed'),
         ('preseed', 'Preseed'),

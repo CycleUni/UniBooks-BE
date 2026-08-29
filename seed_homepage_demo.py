@@ -10,7 +10,7 @@ believable cold-start catalogue and at the specific states the UI has to cope
 with: a free listing, a book nobody is selling yet, and covers that fail to
 resolve.
 
-Run:  .venv/bin/python seed_homepage_demo.py
+Run:  .venv/bin/python seed_homepage_demo.py [region_code]
 """
 import os
 import random
@@ -30,10 +30,27 @@ if not settings.DEBUG:
     )
     sys.exit(1)
 
+from core.money import to_minor
+
+# Seed prices are written in *major* units and converted with the region's
+# currency. No per-region branch is needed: to_minor() is a no-op for a
+# zero-decimal currency like TWD, so TW keeps its existing values byte for
+# byte while HKD gets its two decimal places. A third region needs no edit
+# here beyond a range.
+SEED_PRICE_RANGE = {  # major units, per region code
+    'TW': (100, 1000),
+    'HK': (25, 250),
+}
+
+
+def seed_price(region, low_high=None):
+    low, high = low_high or SEED_PRICE_RANGE.get(region.code, SEED_PRICE_RANGE['TW'])
+    return to_minor(random.randint(low, high), region.currency.code)
+
 from catalog.models import Book
 from listings.models import Listing
-from core.models import Category
-from accounts.models import User, School
+from core.models import Category, Region
+from accounts.models import User, School, RegionVerification
 from subscriptions.models import Subscription
 
 # (isbn13, title, authors, publisher)
@@ -81,35 +98,51 @@ BULK_LISTING_COUNT = 200
 BULK_LISTING_SELLER_COUNT = 40
 
 
-def get_user(tag, school):
+def get_user(tag, school, region):
     """A verified campus user; /sell gates on both login and verification."""
     user, created = User.objects.get_or_create(
-        email=f'demo_{tag}@test.com',
+        email=f'demo_{region.code.lower()}_{tag}@test.com',
         defaults={
-            'first_name': f'Demo{tag}',
+            'first_name': f'Demo{region.code}{tag}',
             'last_name': 'User',
-            'edu_email': f'demo_{tag}@ntu.edu.tw',
-            'verified_at': timezone.now(),
-            'school': school,
         },
     )
     if created:
         user.set_password('demopassword')
         user.save()
+        
+    RegionVerification.objects.update_or_create(
+        user=user,
+        region=region,
+        defaults={
+            'school': school,
+            'edu_email': f'demo_{region.code.lower()}_{tag}@{school.email_domain}',
+            'verified_at': timezone.now(),
+            'is_active': True,
+        }
+    )
     return user
 
 
-def run():
-    school = School.objects.first()
+def run(region_code='TW'):
+    region = Region.objects.get(code=region_code)
+    school = School.objects.filter(region=region).first()
     if school is None:
-        print("WARNING: no School rows exist — users and listings will have school=None,")
+        print(f"WARNING: no School rows exist for region {region.code} — users and listings will have school=None,")
         print("         and the school filter on the home page will not match them.")
-    category = Category.objects.first()
+    category = Category.objects.filter(region=region).first()
 
     books = []
     for isbn, title, authors, publisher in BOOKS:
+        # Make ISBN unique per region to satisfy globally unique isbn13 constraint
+        if region.code == 'HK':
+            isbn = isbn.replace('978', '979')
+        elif region.code != 'TW':
+            isbn = f"{isbn[:-2]}{region.code}"
+            
         book, _ = Book.objects.get_or_create(
             isbn13=isbn,
+            region=region,
             defaults={
                 'title': title,
                 'authors': authors,
@@ -129,16 +162,18 @@ def run():
 
     created = 0
     for i, (book_idx, price, condition) in enumerate(LISTINGS):
-        seller = get_user(f'seller{i % SELLER_COUNT}', school)
+        seller = get_user(f'seller{i % SELLER_COUNT}', school, region)
         # created one at a time rather than bulk_create, so save() and any
         # signals still run. The volume here is trivial, so there is nothing
         # to gain from skipping them.
         _, was_created = Listing.objects.get_or_create(
             book=books[book_idx],
             seller=seller,
-            price=price,
+            price=to_minor(price if region.code == 'TW' else price / 4, region.currency.code),
             condition=condition,
+            region=region,
             defaults={
+                'currency': region.currency,
                 'category': category,
                 'school': school,
                 'status': 'active',
@@ -149,7 +184,7 @@ def run():
     print(f"{created} new listings created ({len(LISTINGS)} defined).")
 
     bulk_book = books[BULK_LISTING_BOOK_INDEX]
-    bulk_sellers = [get_user(f'bulkseller{n}', school) for n in range(BULK_LISTING_SELLER_COUNT)]
+    bulk_sellers = [get_user(f'bulkseller{n}', school, region) for n in range(BULK_LISTING_SELLER_COUNT)]
     existing_bulk = Listing.objects.filter(book=bulk_book, description='Pagination fixture listing.').count()
     conditions = ['new', 'like_new', 'noted', 'damaged']
     statuses = ['active', 'reserved', 'sold']
@@ -158,7 +193,9 @@ def run():
         to_create.append(Listing(
             book=bulk_book,
             seller=bulk_sellers[n % BULK_LISTING_SELLER_COUNT],
-            price=random.randint(100, 1000),
+            region=region,
+            currency=region.currency,
+            price=seed_price(region),
             condition=random.choice(conditions),
             category=category,
             school=school,
@@ -176,12 +213,13 @@ def run():
             # unique_together is (user, book), so those are the lookup keys.
             # created_at is auto_now_add and cannot be set from here.
             _, was_created = Subscription.objects.get_or_create(
-                user=get_user(f'wanter{n}', school),
+                user=get_user(f'wanter{n}', school, region),
                 book=books[book_idx],
+                region=region,
                 defaults={'school': school},
             )
             subs += int(was_created)
-    print(f"{subs} new subscriptions created.")
+    print(f"{subs} new subscriptions created for region {region.code}.")
 
     print("\nExpected on the home page:")
     print("  Recently added : 6 books, seller counts of 1-3 (not 667)")
@@ -194,4 +232,5 @@ def run():
 
 
 if __name__ == '__main__':
-    run()
+    region_code = sys.argv[1] if len(sys.argv) > 1 else 'TW'
+    run(region_code)

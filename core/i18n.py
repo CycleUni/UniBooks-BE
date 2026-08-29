@@ -10,17 +10,35 @@ Accept-Language header; unknown languages fall back to the canonical fields.
 DEFAULT_LANGUAGE = 'en'
 
 
-def normalize_language(lang):
-    """Normalize a raw language tag. Any Chinese variant maps to zh-TW (the
-    only Chinese localization we ship); other tags pass through unchanged so
-    custom languages stored in `translations` keep working."""
+def normalize_language(lang, region=None):
+    """Normalize a raw language tag considering the active region.
+    
+    - `zh-HK` / `zh-Hant-HK` / `yue` / `zh-yue` → `zh-HK`
+    - `zh-TW` / `zh-Hant-TW` / `zh-hant` / `zh` → if region defaults to zh, use it, else `zh-TW`
+    - `zh-CN` / `zh-Hans` → fallback to region default, else `zh-TW`
+    - others pass through unchanged.
+    """
     if not lang:
         return DEFAULT_LANGUAGE
     lang = lang.strip().replace('_', '-')
     if not lang:
         return DEFAULT_LANGUAGE
-    if lang.lower().startswith('zh'):
+        
+    lang_lower = lang.lower()
+    
+    if lang_lower in ('zh-hk', 'zh-hant-hk', 'yue', 'zh-yue'):
+        return 'zh-HK'
+        
+    if lang_lower in ('zh-cn', 'zh-hans'):
+        if region and region.default_language_id:
+            return region.default_language_id
         return 'zh-TW'
+        
+    if lang_lower in ('zh-tw', 'zh-hant-tw', 'zh-hant', 'zh'):
+        if region and region.default_language_id and region.default_language_id.startswith('zh'):
+            return region.default_language_id
+        return 'zh-TW'
+        
     return lang
 
 
@@ -30,7 +48,17 @@ def resolve_language(request):
     if not lang:
         accept = request.headers.get('Accept-Language', '')
         lang = accept.split(',')[0].split(';')[0].strip()
-    return normalize_language(lang)
+        
+    from core.region import get_region
+    region = get_region(request)
+    normalized = normalize_language(lang, region)
+    
+    if region:
+        supported_langs = [l.code for l in region.languages.all()]
+        if normalized not in supported_langs:
+            return region.default_language_id
+            
+    return normalized
 
 
 def pick_translation(translations, lang):

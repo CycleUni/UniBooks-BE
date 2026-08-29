@@ -7,6 +7,7 @@ from core.models import Category
 # Shared with messaging/ — `photos` is populated straight from client input,
 # not derived from the upload endpoints, so without a host allowlist it could
 # point anywhere (a tracking pixel or phishing image on an attacker domain).
+from core.region import get_region
 from core.uploads import allowed_storage_hosts
 from listings.utils import promote_tmp_photos
 
@@ -17,7 +18,7 @@ class ListingSerializer(serializers.ModelSerializer):
     seller_name = serializers.SerializerMethodField()
     seller_avatar_url = serializers.SerializerMethodField()
     school_name = serializers.SerializerMethodField()
-    seller_school_id = serializers.IntegerField(source='seller.school_id', read_only=True, default=None)
+    seller_school_id = serializers.IntegerField(source='school_id', read_only=True, default=None)
     book_title = serializers.CharField(source='book.title', read_only=True, default='')
     book_authors = serializers.CharField(source='book.authors', read_only=True, default='')
     book_cover_url = serializers.CharField(source='book.cover_url', read_only=True, default='')
@@ -36,7 +37,7 @@ class ListingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Listing
         fields = '__all__'
-        read_only_fields = ('seller', 'created_at', 'updated_at')
+        read_only_fields = ('seller', 'school', 'region', 'currency', 'created_at', 'updated_at')
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
@@ -67,6 +68,24 @@ class ListingSerializer(serializers.ModelSerializer):
             return obj.photos[0]
         return ''
 
+    def validate_book(self, value):
+        """A listing may only point at a book from its own region.
+
+        `region` is read-only on this serializer, so a seller cannot move a
+        listing between regions — but `book` is writable, and on PATCH that
+        was enough: repointing a TW listing at an HK book left region=TW with
+        book.region=HK, so HK catalogue content surfaced inside TW's listing
+        feed. Listing.clean() already forbids the combination, but DRF never
+        calls full_clean(), so nothing enforced it on the write path.
+
+        On create there is no instance yet; the region comes from the request
+        and the view sets it at save() time, so validate against that instead.
+        """
+        region = self.instance.region if self.instance else get_region(self.context['request'])
+        if region and value.region_id != region.pk:
+            raise serializers.ValidationError('listing.errBookRegionMismatch')
+        return value
+
     def validate_photos(self, value):
         if not isinstance(value, list):
             raise serializers.ValidationError('listing.errInvalidPhotos')
@@ -85,7 +104,7 @@ class ListingSerializer(serializers.ModelSerializer):
         return value
 
     def get_school_name(self, obj):
-        school = obj.seller.school if obj.seller else None
+        school = obj.school
         if not school:
             return ''
         request = self.context.get('request')

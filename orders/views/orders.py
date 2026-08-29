@@ -1,3 +1,4 @@
+from core.region import get_region
 import logging
 
 from django.conf import settings
@@ -100,8 +101,20 @@ def send_order_notification(order, message_key, sender=None, recipient=None):
         logger.exception("[OrderNotify] Failed to send notification")
 
 
+from core.permissions import IsVerifiedInRegion
+
 class OrderViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsVerifiedInRegion]
+
+    def get_target_region(self, request):
+        if request.method == 'POST':
+            listing_id = request.data.get('listing')
+            if listing_id:
+                from listings.models import Listing
+                listing = Listing.objects.filter(id=listing_id).first()
+                if listing:
+                    return listing.region
+        return None
 
     # Which party is allowed to trigger each status transition. Transitions not
     # listed here are illegal state-machine edges and are already rejected by
@@ -122,7 +135,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Order.objects.filter(Q(buyer=user) | Q(seller=user)).order_by('-created_at')
+        region = get_region(self.request)
+        qs = Order.objects.filter(Q(buyer=user) | Q(seller=user), region=region).order_by('-created_at')
         
         q = self.request.query_params.get('q')
         if q:
@@ -166,12 +180,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         listing = serializer.validated_data['listing']
 
         # In the new flow, we don't reserve immediately on request, wait for seller to accept.
-
+        region = get_region(self.request)
         order = serializer.save(
             buyer=self.request.user,
             seller=listing.seller,
             total_amount=listing.price,
-            status='pending'
+            status='pending',
+            region=region,
+            currency=region.currency
         )
 
         conv, _ = Conversation.objects.get_or_create(

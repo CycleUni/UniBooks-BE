@@ -28,7 +28,7 @@ def _auth_header(user):
 
 @pytest.fixture
 def school(db):
-    return School.objects.create(email_domain="admin-test.edu.tw", name="Admin Test University")
+    return School.objects.create(region_id='TW', email_domain="admin-test.edu.tw", name="Admin Test University")
 
 
 @pytest.fixture
@@ -36,8 +36,27 @@ def staff(db):
     u = User.objects.create_user(
         email="adm-staff@example.com", first_name="St", last_name="Aff", password=PASSWORD, is_staff=True
     )
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    from core.models import Region, Currency, Language
+    twd, _ = Currency.objects.get_or_create(code="TWD", defaults={'symbol': "NT$", 'decimal_places': 0})
+    lang, _ = Language.objects.get_or_create(code="zh-TW", defaults={'name': "Traditional Chinese"})
+    tw, _ = Region.objects.get_or_create(code="TW", defaults={'name': "Taiwan", 'currency': twd, 'default_language': lang})
+    u.managed_regions.add(tw)
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
+    return u
+
+
+@pytest.fixture
+def superuser(db):
+    u = User.objects.create_user(
+        email="adm-super@example.com", first_name="Su", last_name="Per", password=PASSWORD, is_staff=True, is_superuser=True
+    )
+    from accounts.models import RegionVerification
+    from core.models import Region, Currency, Language
+    twd, _ = Currency.objects.get_or_create(code="TWD", defaults={'symbol': "NT$", 'decimal_places': 0})
+    lang, _ = Language.objects.get_or_create(code="zh-TW", defaults={'name': "Traditional Chinese"})
+    tw, _ = Region.objects.get_or_create(code="TW", defaults={'name': "Taiwan", 'currency': twd, 'default_language': lang})
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -47,16 +66,24 @@ def normal_user(db, school):
         email="adm-normal@example.com", first_name="No", last_name="Rmal", password=PASSWORD
     )
     u.school = school
-    u.verified_at = timezone.now()
-    u.save(update_fields=["school", "verified_at"])
+    from accounts.models import RegionVerification
+    from core.models import Region, Currency, Language
+    twd, _ = Currency.objects.get_or_create(code="TWD", defaults={'symbol': "NT$", 'decimal_places': 0})
+    lang, _ = Language.objects.get_or_create(code="zh-TW", defaults={'name': "Traditional Chinese"})
+    Region.objects.get_or_create(code="TW", defaults={'name': "Taiwan", 'currency': twd, 'default_language': lang})
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
 @pytest.fixture
 def seller(db):
     u = User.objects.create_user(email="adm-seller@example.com", first_name="Se", last_name="Ller", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    from core.models import Region, Currency, Language
+    twd, _ = Currency.objects.get_or_create(code="TWD", defaults={'symbol': "NT$", 'decimal_places': 0})
+    lang, _ = Language.objects.get_or_create(code="zh-TW", defaults={'name': "Traditional Chinese"})
+    Region.objects.get_or_create(code="TW", defaults={'name': "Taiwan", 'currency': twd, 'default_language': lang})
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -72,13 +99,13 @@ def normal_header(normal_user):
 
 @pytest.fixture
 def listing(db, seller):
-    book = Book.objects.create(title="Admin Test Book", source="manual")
-    return Listing.objects.create(book=book, seller=seller, price=100, condition="new")
+    book = Book.objects.create(region_id='TW', title="Admin Test Book", source="manual")
+    return Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new")
 
 
 @pytest.fixture
 def order(db, normal_user, seller, listing):
-    return Order.objects.create(
+    return Order.objects.create(region_id='TW', currency_id='TWD', 
         buyer=normal_user, seller=seller, listing=listing, total_amount=100, status="pending"
     )
 
@@ -197,17 +224,45 @@ def test_users_list_filter_school(api, staff_header, normal_user, school):
     assert normal_user.id in ids
 
 
+def test_users_list_includes_unverified_users(api, superuser, staff):
+    User.objects.create_user(email="unverified@example.com", first_name="Un", last_name="Verified", password=PASSWORD)
+
+    super_header = _auth_header(superuser)
+    resp = api.get("/api/v1/admin/users/", **super_header)
+    assert resp.status_code == 200
+    emails = [r["email"] for r in resp.json()["results"]]
+    assert "unverified@example.com" in emails
+
+    staff_header = _auth_header(staff)
+    resp = api.get("/api/v1/admin/users/", **staff_header)
+    assert resp.status_code == 200
+    emails = [r["email"] for r in resp.json()["results"]]
+    assert "unverified@example.com" in emails
+
+
+def test_user_is_verified_false_when_verified_at_null(api, staff_header, normal_user):
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=normal_user, region_id='TW', defaults={'school': None, 'edu_email': normal_user.email, 'verified_at': None})
+
+    resp = api.get(f"/api/v1/admin/users/{normal_user.id}/", **staff_header)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["is_verified"] is False
+    assert data["verified_at"] is None
+
+
 def test_users_patch_is_active_and_school(api, staff_header, staff, normal_user, school):
     resp = api.patch(
         f"/api/v1/admin/users/{normal_user.id}/",
-        {"is_active": False, "school": None},
+        {"is_active": False, "school": None, "region": "TW"},
         content_type="application/json",
         **staff_header,
     )
     assert resp.status_code == 200
     normal_user.refresh_from_db()
     assert normal_user.is_active is False
-    assert normal_user.school_id is None
+    verification = normal_user.region_verifications.filter(is_active=True).first()
+    assert verification is None or verification.school_id is None
 
     event = AuditEvent.objects.filter(kind="admin.user_updated").order_by("-id").first()
     assert event is not None
@@ -217,28 +272,60 @@ def test_users_patch_is_active_and_school(api, staff_header, staff, normal_user,
 
 
 def test_users_patch_verified_toggle(api, staff_header, normal_user):
-    normal_user.verified_at = None
-    normal_user.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=normal_user, region_id='TW', defaults={'school': None, 'edu_email': normal_user.email, 'verified_at': None})
 
     resp = api.patch(
         f"/api/v1/admin/users/{normal_user.id}/",
-        {"verified": True},
+        {"verified": True, "region": "TW"},
         content_type="application/json",
         **staff_header,
     )
     assert resp.status_code == 200
     normal_user.refresh_from_db()
-    assert normal_user.verified_at is not None
+    verification = normal_user.region_verifications.filter(is_active=True).first()
+    assert verification.verified_at is not None
 
-    resp2 = api.patch(
+    resp = api.patch(
         f"/api/v1/admin/users/{normal_user.id}/",
-        {"verified": False},
+        {"verified": False, "region": "TW"},
         content_type="application/json",
         **staff_header,
     )
-    assert resp2.status_code == 200
+    assert resp.status_code == 200
     normal_user.refresh_from_db()
-    assert normal_user.verified_at is None
+    verification = normal_user.region_verifications.filter(is_active=True).first()
+    assert verification.verified_at is None
+
+
+def test_users_patch_reactivates_unbinded_region(api, staff_header, normal_user, school):
+    from accounts.models import RegionVerification
+    # 1. Ensure user has a verified TW record
+    rv, _ = RegionVerification.objects.update_or_create(
+        user=normal_user, region_id='TW',
+        defaults={'school': school, 'is_active': True, 'verified_at': timezone.now()}
+    )
+    
+    # 2. Call unbind (simulate soft delete by setting is_active=False)
+    rv.is_active = False
+    rv.save(update_fields=['is_active'])
+
+    # 3. Patch user with region=TW and school (should reactivate the same row, not insert a new one)
+    resp = api.patch(
+        f"/api/v1/admin/users/{normal_user.id}/",
+        {"school": school.id, "region": "TW"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 200
+
+    # 4. Assert response success, only one TW record, is_active=True, school correct
+    tw_records = RegionVerification.objects.filter(user=normal_user, region_id='TW')
+    assert tw_records.count() == 1
+    
+    record = tw_records.first()
+    assert record.is_active is True
+    assert record.school_id == school.id
 
 
 @pytest.mark.parametrize("field,value", [
@@ -422,3 +509,30 @@ def test_report_action_creates_audit_event(api, staff_header, staff, listing):
     assert event.meta["report_id"] == str(report.id)
     assert event.meta["action"] == "dismissed"
     assert event.meta["listing_id"] is None
+
+def test_admin_schools_list_pagination(api, superuser):
+    """
+    Test that the admin schools list supports the page_size parameter to fetch all schools,
+    overcoming the default pagination limit.
+    """
+    from accounts.models import School
+    from accounts.services import issue_tokens
+    
+    # Create 30 schools (more than default page size 20)
+    schools = [
+        School(name=f"Test School {i}", email_domain=f"test{i}.edu", region_id="TW")
+        for i in range(30)
+    ]
+    School.objects.bulk_create(schools)
+    
+    auth_header = {"HTTP_AUTHORIZATION": f"Bearer {issue_tokens(superuser)['access']}"}
+    
+    # page_size=1000 should return all items
+    url = "/api/v1/admin/schools/?region=TW&page_size=1000"
+    resp = api.get(url, **auth_header)
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    assert data["count"] >= 30
+    assert len(data["results"]) == data["count"], "The page_size parameter should allow fetching all items in one page"
+

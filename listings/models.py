@@ -29,6 +29,8 @@ def default_payment():
     return ['cash']
 
 class Listing(models.Model):
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT)
+    currency = models.ForeignKey('core.Currency', on_delete=models.PROTECT)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     CONDITION_CHOICES = [
         ('new', 'new'),

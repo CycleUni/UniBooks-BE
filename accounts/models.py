@@ -14,6 +14,7 @@ class School(models.Model):
     email_domain = models.CharField(max_length=255, unique=True, help_text="e.g.: ntu.edu.tw")
     name = models.CharField(max_length=255, help_text="Canonical English name, e.g. National Taiwan University")
     translations = models.JSONField(default=dict, blank=True, help_text='Localized fields per language, e.g. {"zh-TW": {"name": "國立台灣大學"}}')
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT, related_name='schools')
 
     def localized_name(self, lang):
         """Name in the requested language, falling back to the canonical name."""
@@ -66,14 +67,10 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
     """Custom user model keyed by email, linked to the user's school."""
     email = models.EmailField(unique=True, help_text="Registration email, can be any email")
-    edu_email = models.EmailField(null=True, blank=True, help_text="Verified campus email")
-    school = models.ForeignKey(School, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
     first_name = models.CharField(max_length=150, default='')
     last_name = models.CharField(max_length=150, default='')
     avatar_url = models.URLField(max_length=500, null=True, blank=True, help_text="Avatar URL")
     
-    verified_at = models.DateTimeField(null=True, blank=True, help_text="Time of first successful .edu.tw verification")
-    last_reverified_at = models.DateTimeField(null=True, blank=True, help_text="Time of last student identity re-verification")
     
     last_seen_bought_orders_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp of the most recent bought order seen by the user")
     last_seen_sold_orders_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp of the most recent sold order seen by the user")
@@ -86,22 +83,28 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['first_name', 'last_name']
+    managed_regions = models.ManyToManyField('core.Region', blank=True, related_name='managers')
 
     class Meta:
         indexes = [
             GinIndex(
                 name='user_trgm_idx',
-                fields=['email', 'first_name', 'last_name', 'edu_email'],
-                opclasses=['gin_trgm_ops', 'gin_trgm_ops', 'gin_trgm_ops', 'gin_trgm_ops']
+                fields=['email', 'first_name', 'last_name'],
+                opclasses=['gin_trgm_ops', 'gin_trgm_ops', 'gin_trgm_ops']
             )
         ]
 
     def __str__(self):
         return self.email
 
-    def is_verified(self):
-        """Whether the user has completed .edu.tw email verification."""
-        return self.verified_at is not None
+    def is_verified_in(self, region):
+        """Check if user is verified in the specified region (by Region instance or string code)."""
+        return self.region_verifications.verified_in(region).exists()
+
+    @property
+    def verified_regions(self):
+        from core.models import Region
+        return Region.objects.filter(verifications__user=self, verifications__is_active=True, verifications__verified_at__isnull=False)
 
     @property
     def display_name(self):
@@ -129,3 +132,37 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def no_show_count(self):
         return self.reviews_received.filter(is_no_show=True).count()
+
+
+
+class RegionVerificationQuerySet(models.QuerySet):
+    def active(self):
+        return self.filter(is_active=True)
+
+    def active_in(self, region):
+        code = region.code if hasattr(region, 'code') else region
+        return self.active().filter(region_id=code)
+
+    def verified(self):
+        return self.active().filter(verified_at__isnull=False)
+
+    def verified_in(self, region):
+        code = region.code if hasattr(region, 'code') else region
+        return self.verified().filter(region_id=code)
+
+class RegionVerification(models.Model):
+    objects = RegionVerificationQuerySet.as_manager()
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='region_verifications')
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT, related_name='verifications') # Will make null=False
+    school = models.ForeignKey(School, on_delete=models.SET_NULL, null=True, blank=True, related_name='verifications')
+    edu_email = models.EmailField(unique=True, null=True, blank=True, help_text="Null for manual verifications.")
+    is_manual_verification = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    last_reverified_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'region'], name='one_verification_per_user_region'),
+        ]

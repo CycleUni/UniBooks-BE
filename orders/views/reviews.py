@@ -10,9 +10,21 @@ from ..serializers import ReviewSerializer
 logger = logging.getLogger(__name__)
 
 
+from core.permissions import IsVerifiedInRegion
+
 class ReviewViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsVerifiedInRegion]
     serializer_class = ReviewSerializer
+
+    def get_target_region(self, request):
+        if request.method == 'POST':
+            order_id = request.data.get('order')
+            if order_id:
+                from orders.models import Order
+                order = Order.objects.filter(id=order_id).first()
+                if order:
+                    return order.region
+        return None
 
     def get_queryset(self):
         user = self.request.user

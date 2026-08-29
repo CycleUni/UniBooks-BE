@@ -14,7 +14,11 @@ if not settings.DEBUG:
     )
     sys.exit(1)
 
-from core.models import Category
+from core.models import Category, Region
+
+# Get regions
+tw = Region.objects.get(code='TW')
+hk = Region.objects.get(code='HK')
 
 categories_data = [
     {
@@ -83,21 +87,23 @@ categories_data = [
     }
 ]
 
-for cd in categories_data:
-    Category.objects.update_or_create(
-        slug=cd['slug'],
-        defaults={
-            "title": cd['title'],
-            "description": cd['desc'],
-            "sort_order": cd['sort_order'],
-            "translations": {
-                "en": {
-                    "title": cd['en_title'],
-                    "description": cd['en_desc']
-                }
-            },
-            "is_active": True
-        }
-    )
+for region, lang_code in [(tw, 'zh-TW'), (hk, 'zh-HK')]:
+    for cd in categories_data:
+        Category.objects.update_or_create(
+            slug=cd['slug'],
+            region=region,
+            defaults={
+                "title": cd['en_title'],
+                "description": cd['en_desc'],
+                "sort_order": cd['sort_order'],
+                "translations": {
+                    lang_code: {
+                        "title": cd['title'],
+                        "description": cd['desc']
+                    }
+                },
+                "is_active": True
+            }
+        )
 
 print("Categories seeded!")

@@ -85,3 +85,43 @@ class HealthCheckView(APIView):
             status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE
         )
         return Response(data, status=http_status)
+
+
+class RegionsView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        from core.models import Region
+        from core.i18n import resolve_language
+
+        lang = resolve_language(request)
+        regions = (
+            Region.objects.filter(is_active=True)
+            .select_related('currency')
+            .prefetch_related('languages')
+            .order_by('sort_order', 'code')
+        )
+        data = []
+        for r in regions:
+            data.append({
+                "code": r.code,
+                "name": r.name,
+                "localized_name": r.localized_name(lang),
+                # An object, not the bare code: the frontend divides minor
+                # units back to major by `decimal_places` and cannot format a
+                # price without it. Returning just "TWD" left that undefined
+                # and every price rendered as NaN.
+                "currency": {
+                    "code": r.currency.code,
+                    "symbol": r.currency.symbol,
+                    "decimal_places": r.currency.decimal_places,
+                    "symbol_position": r.currency.symbol_position,
+                },
+                "languages": [lang_obj.code for lang_obj in r.languages.all()],
+                "default_language": r.default_language_id,
+                "timezone": r.timezone,
+                "search_engines": r.search_engines,
+                "edu_email_suffix": r.edu_email_suffix,
+            })
+        return Response(data, status=status.HTTP_200_OK)

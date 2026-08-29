@@ -35,14 +35,14 @@ def user(db):
     u = User.objects.create_user(
         email="cachepolicy@test.edu.tw", first_name="Cache", last_name="Policy", password=PASSWORD
     )
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
 @pytest.fixture
 def book(db):
-    return Book.objects.create(isbn13="9786666666660", title="Cache Policy Book", source="manual")
+    return Book.objects.create(region_id='TW', isbn13="9786666666660", title="Cache Policy Book", source="manual")
 
 
 @pytest.fixture
@@ -55,8 +55,8 @@ def seller(db):
     u = User.objects.create_user(
         email="cachepolicy-seller@test.edu.tw", first_name="Sell", last_name="Er", password=PASSWORD
     )
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -90,7 +90,7 @@ def test_safe_cache_delete_survives_a_cache_backend_error():
 def test_subscription_write_clears_the_waitlist_cache(user, book):
     cache.set("home_waitlist", ["stale"], timeout=300)
 
-    sub = Subscription.objects.create(user=user, book=book)
+    sub = Subscription.objects.create(region_id='TW', user=user, book=book)
     assert cache.get("home_waitlist") is None
 
     cache.set("home_waitlist", ["stale"], timeout=300)
@@ -110,19 +110,27 @@ def test_admin_school_change_clears_cache(db):
         email="cachepolicy-staff@example.com", first_name="St", last_name="Aff",
         password=PASSWORD, is_staff=True,
     )
+    from accounts.models import RegionVerification
+    from core.models import Region, Currency, Language
+    twd, _ = Currency.objects.get_or_create(code="TWD", defaults={'symbol': "NT$", 'decimal_places': 0})
+    lang, _ = Language.objects.get_or_create(code="zh-TW", defaults={'name': "Traditional Chinese"})
+    tw, _ = Region.objects.get_or_create(code="TW", defaults={'name': "Taiwan", 'currency': twd, 'default_language': lang})
+    staff.managed_regions.add(tw)
+    RegionVerification.objects.update_or_create(user=staff, region_id='TW', defaults={'school': getattr(staff, 'school', None), 'edu_email': staff.email, 'verified_at': timezone.now()})
+
     header = {"HTTP_AUTHORIZATION": f"Bearer {issue_tokens(staff)['access']}"}
 
-    cache.set("home_static_en", {"schools": [], "categories": []}, timeout=86400)
+    cache.set("home_static_TW_en", {"schools": [], "categories": []}, timeout=86400)
 
     resp = Client().post(
         "/api/v1/admin/schools/",
-        data='{"name": "Cache Policy University", "email_domain": "cachepolicy.edu.tw", "translations": {}}',
+        data='{"name": "Cache Policy University", "email_domain": "cachepolicy.edu.tw", "translations": {}, "region": "TW"}',
         content_type="application/json",
         **header,
     )
 
     assert resp.status_code == 201
-    assert cache.get("home_static_en") is None
+    assert cache.get("home_static_TW_en") is None
 
 
 # ---------------------------------------------------------------------
@@ -167,7 +175,7 @@ def test_generation_never_goes_backwards_after_eviction():
 def test_new_listing_appears_in_a_cached_list_immediately(api, seller, book):
     assert api.get("/api/v1/listings/").json()["results"] == []
 
-    Listing.objects.create(book=book, seller=seller, price=100, condition="new", status="active")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new", status="active")
 
     results = api.get("/api/v1/listings/").json()["results"]
     assert len(results) == 1, "the list cache must not outlive the write that invalidated it"
@@ -177,7 +185,7 @@ def test_deleted_listing_disappears_from_the_book_page_immediately(api, seller, 
     """The case that makes caching /book risky: a cached page keeps
     advertising an item that no longer exists, so buyers click through to a
     dead listing or message a seller about a book they already sold."""
-    listing = Listing.objects.create(book=book, seller=seller, price=100, condition="new", status="active")
+    listing = Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new", status="active")
 
     resp = api.get(f"/api/v1/books/?isbn={book.isbn13}")
     assert resp.json()["listings"]["count"] == 1
@@ -189,7 +197,7 @@ def test_deleted_listing_disappears_from_the_book_page_immediately(api, seller, 
 
 
 def test_sold_listing_is_not_served_from_a_stale_detail_cache(api, seller, book):
-    listing = Listing.objects.create(book=book, seller=seller, price=100, condition="new", status="active")
+    listing = Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new", status="active")
 
     assert api.get(f"/api/v1/listings/{listing.id}/").json()["status"] == "active"
 

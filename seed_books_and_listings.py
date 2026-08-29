@@ -16,15 +16,33 @@ if not settings.DEBUG:
     )
     sys.exit(1)
 
+from core.money import to_minor
+
+# Seed prices are written in *major* units and converted with the region's
+# currency. No per-region branch is needed: to_minor() is a no-op for a
+# zero-decimal currency like TWD, so TW keeps its existing values byte for
+# byte while HKD gets its two decimal places. A third region needs no edit
+# here beyond a range.
+SEED_PRICE_RANGE = {  # major units, per region code
+    'TW': (100, 1000),
+    'HK': (25, 250),
+}
+
+
+def seed_price(region, low_high=None):
+    low, high = low_high or SEED_PRICE_RANGE.get(region.code, SEED_PRICE_RANGE['TW'])
+    return to_minor(random.randint(low, high), region.currency.code)
+
 from catalog.models import Book
 from listings.models import Listing
-from core.models import Category
-from accounts.models import User, School
+from core.models import Category, Region
+from accounts.models import User, School, RegionVerification
 
-def seed_data():
+def seed_data(region_code='TW'):
+    region = Region.objects.get(code=region_code)
     book_count = 1
     listing_count = 2000
-    print(f"Seeding {book_count} books and {listing_count} listings per book...")
+    print(f"Seeding {book_count} books and {listing_count} listings per book for region {region.code}...")
 
     # Ensure a test user exists
     user, created = User.objects.get_or_create(
@@ -32,8 +50,6 @@ def seed_data():
         defaults={
             'first_name': 'Test',
             'last_name': 'User',
-            'edu_email': 'test@ntu.edu.tw',
-            'verified_at': timezone.now()
         }
     )
     if created:
@@ -43,23 +59,40 @@ def seed_data():
     else:
         print(f"Using existing test user: {user.email}")
 
-    # Ensure the user has a school
-    school = School.objects.first()
-    if school and not user.school:
-        user.school = school
-        user.save()
-        print(f"Assigned school {school.name} to user.")
+    # Ensure the user has a school in this region
+    school = School.objects.filter(region=region).first()
+    if not school:
+        print(f"No schools found for region {region.code}, please seed schools first.")
+        return
 
-    # Get a category
-    category = Category.objects.first()
+    # Ensure user is verified in this region
+    RegionVerification.objects.update_or_create(
+        user=user,
+        region=region,
+        defaults={
+            'school': school,
+            'edu_email': f'test@{school.email_domain}',
+            'verified_at': timezone.now(),
+            'is_active': True,
+        }
+    )
+    print(f"Verified test user in region {region.code} at school {school.name}.")
+
+    # Get a category for this region
+    category = Category.objects.filter(region=region).first()
 
     # Create unique books
     books = []
     print("Creating books...")
     for i in range(1, book_count + 1):
-        isbn = f"978{i:010d}"
+        if region.code == 'HK':
+            isbn = f"976{i:010d}"
+        else:
+            isbn = f"978{i:010d}"
+            
         book, created = Book.objects.get_or_create(
             isbn13=isbn,
+            region=region,
             defaults={
                 'title': f'Sample Book {i}',
                 'authors': f'Author {i}',
@@ -90,7 +123,9 @@ def seed_data():
                 Listing(
                     book=book,
                     seller=user,
-                    price=random.randint(100, 1000),
+                    region=region,
+                    currency=region.currency,
+                    price=seed_price(region),
                     condition=random.choice(conditions),
                     category=category,
                     status=random.choice(statuses),
@@ -118,13 +153,20 @@ def seed_data():
     print("Creating 100 dummy users for subscriptions...")
     for i in range(100):
         dummy_user, _ = User.objects.get_or_create(
-            email=f'dummy{i}@test.com',
+            email=f'dummy{region.code.lower()}{i}@test.com',
             defaults={
-                'first_name': f'Dummy{i}',
+                'first_name': f'Dummy{region.code}{i}',
                 'last_name': 'User',
-                'edu_email': f'dummy{i}@ntu.edu.tw',
+            }
+        )
+        RegionVerification.objects.update_or_create(
+            user=dummy_user,
+            region=region,
+            defaults={
+                'school': school,
+                'edu_email': f'dummy{region.code.lower()}{i}@{school.email_domain}',
                 'verified_at': timezone.now(),
-                'school': school
+                'is_active': True,
             }
         )
         dummy_users.append(dummy_user)
@@ -137,7 +179,7 @@ def seed_data():
         selected_users = random.sample(dummy_users, want_count)
         
         # Avoid existing subscriptions
-        existing_subs = set(Subscription.objects.filter(book=wb).values_list('user_id', flat=True))
+        existing_subs = set(Subscription.objects.filter(book=wb, region=region).values_list('user_id', flat=True))
         
         for u in selected_users:
             if u.id not in existing_subs:
@@ -146,6 +188,7 @@ def seed_data():
                         user=u,
                         book=wb,
                         school=school,
+                        region=region,
                         created_at=timezone.now()
                     )
                 )
@@ -155,4 +198,5 @@ def seed_data():
     print(f"Successfully seeded {len(subs_to_create)} subscriptions for {len(wanted_books)} books.")
 
 if __name__ == '__main__':
-    seed_data()
+    region_code = sys.argv[1] if len(sys.argv) > 1 else 'TW'
+    seed_data(region_code)

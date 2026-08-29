@@ -15,6 +15,7 @@ from catalog.models import Book
 from listings.models import Listing
 from subscriptions.models import Subscription
 from django.db.models import Count, Min, Q
+from core.region import get_region
 
 VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
 
@@ -30,8 +31,9 @@ class BookSearchView(views.APIView):
         category = request.GET.get('category', '')
         course = request.GET.get('course', '')
         school = request.GET.get('school', '')
+        region = get_region(request)
         engine = request.GET.get('engine', 'googlebooks')
-        if engine not in VALID_SEARCH_ENGINES:
+        if engine not in (region.search_engines or ['googlebooks']):
             engine = 'googlebooks'
 
         if not query and not category and not course:
@@ -50,8 +52,8 @@ class BookSearchView(views.APIView):
             if course:
                 base_filter &= Q(listings__course_name=course)
             if school:
-                base_filter &= Q(listings__seller__school__name=school)
-            books = Book.objects.filter(base_filter).distinct()
+                base_filter &= Q(listings__school__name=school)
+            books = Book.objects.filter(base_filter, region=region).distinct()
             results = []
             for book in books:
                 results.append({
@@ -145,18 +147,19 @@ class BookSearchView(views.APIView):
                     Q(listings__professor_name__icontains=query)
                 )
                 if school:
-                    listing_text_match &= Q(listings__seller__school__name=school)
+                    listing_text_match &= Q(listings__school__name=school)
 
                 local_books = Book.objects.filter(
                     Q(title__icontains=query) | 
                     Q(authors__icontains=query) | 
                     Q(isbn13__icontains=query) |
-                    listing_text_match
+                    listing_text_match,
+                    region=region
                 )
                 if course:
                     course_filter = Q(listings__course_name=course, listings__status='active')
                     if school:
-                        course_filter &= Q(listings__seller__school__name=school)
+                        course_filter &= Q(listings__school__name=school)
                     local_books = local_books.filter(course_filter)
                 
                 # Limit local books to 100 to prevent memory explosion when merging
@@ -202,9 +205,9 @@ class BookSearchView(views.APIView):
             global_active_filter = Q(listings__status='active')
             local_active_filter = Q(listings__status='active')
             if school:
-                local_active_filter &= Q(listings__seller__school__name=school)
+                local_active_filter &= Q(listings__school__name=school)
 
-            books = Book.objects.filter(Q(isbn13__in=isbns) | Q(id__in=ids)).annotate(
+            books = Book.objects.filter(Q(isbn13__in=isbns) | Q(id__in=ids), region=region).annotate(
                 global_active_listings_count=Count(
                     'listings', filter=global_active_filter, distinct=True
                 ),
@@ -224,14 +227,14 @@ class BookSearchView(views.APIView):
         if books_by_id:
             condition_filter = {'book_id__in': list(books_by_id.keys()), 'status': 'active'}
             if school:
-                condition_filter['seller__school__name'] = school
+                condition_filter['school__name'] = school
             condition_rows = Listing.objects.filter(**condition_filter).values_list('book_id', 'condition').distinct()
             for book_id, condition in condition_rows:
                 conditions_by_book_id.setdefault(book_id, []).append(condition)
 
         subscription_by_book_id = {}
         if request.user.is_authenticated and books_by_isbn:
-            subs = Subscription.objects.filter(
+            subs = Subscription.objects.filter(region=region, 
                 user=request.user,
                 book_id__in=[book.id for book in books_by_isbn.values()],
             )
@@ -283,9 +286,10 @@ class CourseListView(views.APIView):
         school = request.GET.get('school', '')
         category = request.GET.get('category', '')
         
-        courses = Listing.objects.filter(status='active').exclude(course_name__exact='')
+        region = get_region(request)
+        courses = Listing.objects.filter(region=region, status='active').exclude(course_name__exact='')
         if school:
-            courses = courses.filter(seller__school__name=school)
+            courses = courses.filter(school__name=school)
         if category:
             courses = courses.filter(category__slug=category)
         

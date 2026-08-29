@@ -3,6 +3,8 @@ from django.db import models
 from django.conf import settings
 
 class Order(models.Model):
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT)
+    currency = models.ForeignKey('core.Currency', on_delete=models.PROTECT)
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     STATUS_CHOICES = [
         ('pending', 'Pending (Requested)'),

@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from accounts.models import School
 from core.cache import HOME_STATIC_TTL, HOME_WAITLIST_TTL
 from core.i18n import resolve_language
+from core.region import get_region
 from core.models import Category
 from django.core.cache import cache
 from subscriptions.models import Subscription
@@ -25,8 +26,10 @@ def invalidate_home_static_cache():
     anywhere a School or Category row is created, updated, deleted, or
     bulk-imported (adminapi.views) — otherwise admin changes don't show up
     on the homepage for up to 24 hours."""
-    for lang in HOME_STATIC_CACHE_LANGUAGES:
-        cache.delete(f"home_static_{lang}")
+    from core.models import Region
+    for region in Region.objects.filter(is_active=True):
+        for lang in HOME_STATIC_CACHE_LANGUAGES:
+            cache.delete(f"home_static_{region.code}_{lang}")
 
 
 class HomeMetadataView(views.APIView):
@@ -41,9 +44,10 @@ class HomeMetadataView(views.APIView):
 
     def get(self, request):
         lang = resolve_language(request)
+        region = get_region(request)
 
         # 1. Static data (Schools & Categories) cached for 24 hours
-        static_cache_key = f"home_static_{lang}"
+        static_cache_key = f"home_static_{region.code}_{lang}"
         static_data = cache.get(static_cache_key)
 
         if not static_data:
@@ -54,12 +58,12 @@ class HomeMetadataView(views.APIView):
                     'display_name': school.localized_name(lang),
                     'email_domain': school.email_domain,
                 }
-                for school in School.objects.all()
+                for school in School.objects.filter(region=region)
             ]
 
             categories = [
                 category.localized(lang)
-                for category in Category.objects.filter(is_active=True)
+                for category in Category.objects.filter(region=region, is_active=True)
             ]
 
             static_data = {
@@ -87,16 +91,16 @@ class HomeMetadataView(views.APIView):
             waitlist = []
         else:
             if school_id is not None:
-                waitlist_cache_key = f"home_waitlist_{school_id}"
+                waitlist_cache_key = f"home_waitlist_{region.code}_{school_id}"
             else:
-                waitlist_cache_key = "home_waitlist_all"
+                waitlist_cache_key = f"home_waitlist_{region.code}_all"
             waitlist = cache.get(waitlist_cache_key)
 
             if waitlist is None:
                 if school_id is not None:
-                    top_books = Subscription.objects.filter(user__school_id=school_id).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
+                    top_books = Subscription.objects.filter(region=region, user__school_id=school_id).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
                 else:
-                    top_books = Subscription.objects.values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
+                    top_books = Subscription.objects.filter(region=region).values('book_id', 'book__title', 'book__cover_url').annotate(count=Count('user')).order_by('-count')[:7]
                 waitlist = [
                     {
                         "title": item['book__title'],
@@ -111,6 +115,7 @@ class HomeMetadataView(views.APIView):
         # 3. Combine and return
         response_data = {
             "lang": lang,
+            "region": {"code": region.code, "currency": region.currency_id},
             "schools": static_data["schools"],
             "categories": static_data["categories"],
             "waitlist": waitlist

@@ -15,14 +15,25 @@ if not settings.DEBUG:
     sys.exit(1)
 
 from accounts.models import School
+from core.models import Region
 
-# Canonical Chinese names with en translations
+# Get regions
+tw = Region.objects.get(code='TW')
+hk = Region.objects.get(code='HK')
+
 schools_data = [
-    {"name": "國立台灣大學", "email_domain": "ntu.edu.tw", "en_name": "National Taiwan University"},
-    {"name": "國立政治大學", "email_domain": "nccu.edu.tw", "en_name": "National Chengchi University"},
-    {"name": "國立台灣師範大學", "email_domain": "ntnu.edu.tw", "en_name": "National Taiwan Normal University"},
-    {"name": "國立成功大學", "email_domain": "ncku.edu.tw", "en_name": "National Cheng Kung University"},
-    {"name": "國立清華大學", "email_domain": "nthu.edu.tw", "en_name": "National Tsing Hua University"},
+    # Taiwan
+    {"email_domain": "ntu.edu.tw", "name": "National Taiwan University", "translations": {"zh-TW": {"name": "國立台灣大學"}}, "region": tw},
+    {"email_domain": "nccu.edu.tw", "name": "National Chengchi University", "translations": {"zh-TW": {"name": "國立政治大學"}}, "region": tw},
+    {"email_domain": "ntnu.edu.tw", "name": "National Taiwan Normal University", "translations": {"zh-TW": {"name": "國立台灣師範大學"}}, "region": tw},
+    {"email_domain": "ncku.edu.tw", "name": "National Cheng Kung University", "translations": {"zh-TW": {"name": "國立成功大學"}}, "region": tw},
+    {"email_domain": "nthu.edu.tw", "name": "National Tsing Hua University", "translations": {"zh-TW": {"name": "國立清華大學"}}, "region": tw},
+    # Hong Kong
+    {"email_domain": "hku.hk", "name": "The University of Hong Kong", "translations": {"zh-HK": {"name": "香港大學"}}, "region": hk},
+    {"email_domain": "cuhk.edu.hk", "name": "The Chinese University of Hong Kong", "translations": {"zh-HK": {"name": "香港中文大學"}}, "region": hk},
+    {"email_domain": "ust.hk", "name": "The Hong Kong University of Science and Technology", "translations": {"zh-HK": {"name": "香港科技大學"}}, "region": hk},
+    {"email_domain": "polyu.edu.hk", "name": "The Hong Kong Polytechnic University", "translations": {"zh-HK": {"name": "香港理工大學"}}, "region": hk},
+    {"email_domain": "cityu.edu.hk", "name": "City University of Hong Kong", "translations": {"zh-HK": {"name": "香港城市大學"}}, "region": hk},
 ]
 
 for sd in schools_data:
@@ -30,7 +41,8 @@ for sd in schools_data:
         email_domain=sd['email_domain'],
         defaults={
             "name": sd['name'],
-            "translations": {"en": {"name": sd['en_name']}},
+            "translations": sd['translations'],
+            "region": sd['region'],
         },
     )
 

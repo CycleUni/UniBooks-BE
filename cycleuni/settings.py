@@ -110,6 +110,10 @@ if DEBUG:
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "ngsw-bypass",
+    # Sent on every request by the frontend's ApiUrlInterceptor. Without it
+    # the browser's preflight rejects the whole call, so the app cannot load
+    # any data cross-origin — see core/region.py for how it is consumed.
+    "x-region",
 ]
 
 # Sender address for outbound transactional email.
@@ -278,8 +282,10 @@ AUTH_PASSWORD_VALIDATORS = [
 from django.utils.translation import gettext_lazy as _
 LANGUAGES = [
     ('zh-hant', _('Traditional Chinese')),
+    ('zh-hk', _('Traditional Chinese (Hong Kong)')),
     ('en', _('English')),
 ]
+DEFAULT_REGION = 'TW'
 LANGUAGE_CODE = 'en'
 TIME_ZONE = "Asia/Taipei"
 USE_I18N = True
@@ -303,6 +309,9 @@ AUTH_USER_MODEL = "accounts.User"
 
 # DRF & JWT
 REST_FRAMEWORK = {
+    # Normalizes DRF's own {"detail": ...} errors into this API's
+    # {"error": {"code": ...}} contract — see core/exception_handler.py.
+    'EXCEPTION_HANDLER': 'core.exception_handler.api_exception_handler',
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),

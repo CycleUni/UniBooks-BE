@@ -17,8 +17,10 @@ from core.uploads import (
 )
 from ads.utils import tmp_ad_key_prefix
 
+from ..permissions import IsRegionManager
+
 class AdminAdUploadURLView(views.APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
 
     def post(self, request):
         content_type = request.data.get('content_type')
@@ -54,7 +56,7 @@ class AdminAdUploadURLView(views.APIView):
         })
 
 class AdminAdUploadDirectView(views.APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
 
     def post(self, request):
         if 'file' not in request.FILES:

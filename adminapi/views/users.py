@@ -11,6 +11,7 @@ from accounts.models import School, User
 from core.i18n import resolve_language
 from core.models import AuditEvent
 
+from ..permissions import IsRegionManager
 from ..serializers import AdminUserSerializer
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ FORBIDDEN_USER_FIELDS = {'is_staff', 'is_superuser', 'password', 'groups', 'user
 
 class AdminUserListView(generics.ListAPIView):
     """GET /api/v1/admin/users/"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminUserSerializer
     pagination_class = PageNumberPagination
 
@@ -34,31 +35,59 @@ class AdminUserListView(generics.ListAPIView):
         return context
 
     def get_queryset(self):
-        qs = User.objects.select_related('school').order_by('-created_at')
+        qs = User.objects.prefetch_related('region_verifications__school').order_by('-created_at')
+        if not self.request.user.is_superuser:
+            qs = qs.filter(
+                Q(region_verifications__region__in=self.request.user.managed_regions.all()) |
+                Q(region_verifications__isnull=True)
+            ).distinct()
         q = self.request.query_params.get('q')
         if q:
             qs = qs.filter(
                 Q(email__icontains=q)
                 | Q(first_name__icontains=q)
                 | Q(last_name__icontains=q)
-                | Q(edu_email__icontains=q)
+                | Q(region_verifications__edu_email__icontains=q)
             )
         is_active = self.request.query_params.get('is_active')
         if is_active is not None:
             qs = qs.filter(is_active=is_active.lower() == 'true')
         school = self.request.query_params.get('school')
         if school:
-            qs = qs.filter(school_id=school)
+            qs = qs.filter(region_verifications__school_id=school)
+        # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
+        # region the way the URL does (lowercase) and ApiUrlInterceptor
+        # appends it to every request — so an unnormalized comparison made
+        # every admin list come back empty.
+        region = (self.request.query_params.get('region') or '').upper()
+        if region:
+            qs = qs.filter(
+                Q(region_verifications__region_id=region) |
+                Q(region_verifications__isnull=True)
+            ).distinct()
         return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['lang'] = resolve_language(self.request)
+        return context
 
 
 class AdminUserDetailView(generics.RetrieveUpdateAPIView):
     """GET / PATCH /api/v1/admin/users/<id>/"""
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminUserSerializer
-    queryset = User.objects.select_related('school').all()
     lookup_field = 'pk'
     http_method_names = ['get', 'patch']
+
+    def get_queryset(self):
+        qs = User.objects.prefetch_related('region_verifications__school').all()
+        if not self.request.user.is_superuser:
+            qs = qs.filter(
+                Q(region_verifications__region__in=self.request.user.managed_regions.all()) |
+                Q(region_verifications__isnull=True)
+            ).distinct()
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -112,8 +141,31 @@ class AdminUserDetailView(generics.RetrieveUpdateAPIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
             new_school_id = new_school.id if new_school else None
-            if instance.school_id != new_school_id:
-                instance.school = new_school
+            
+            region_code = request.data.get('region')
+            if not region_code:
+                return Response({"error": {"code": "admin.errMissingRegion"}}, status=status.HTTP_400_BAD_REQUEST)
+            if not request.user.is_superuser and not request.user.managed_regions.filter(code=region_code).exists():
+                return Response({"error": {"code": "admin.errRegionForbidden"}}, status=status.HTTP_403_FORBIDDEN)
+                
+            from accounts.models import RegionVerification
+            from django.db import IntegrityError
+            try:
+                verification, created = RegionVerification.objects.update_or_create(
+                    user=instance,
+                    region_id=region_code,
+                    defaults={'is_active': True}
+                )
+                if created:
+                    verification.edu_email = None
+                    verification.is_manual_verification = True
+                    verification.save(update_fields=['edu_email', 'is_manual_verification'])
+            except IntegrityError:
+                return Response({"error": {"code": "admin.errDatabaseIntegrity"}}, status=status.HTTP_400_BAD_REQUEST)
+
+            if verification.school_id != new_school_id:
+                verification.school = new_school
+                verification.save(update_fields=['school'])
                 changes['school'] = new_school_id
 
         if 'verified' in request.data:
@@ -123,12 +175,36 @@ class AdminUserDetailView(generics.RetrieveUpdateAPIView):
                     {"error": {"code": "admin.errInvalidField"}},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if value and not instance.verified_at:
-                instance.verified_at = timezone.now()
-                changes['verified_at'] = instance.verified_at.isoformat()
-            elif not value and instance.verified_at:
-                instance.verified_at = None
-                changes['verified_at'] = None
+            region_code = request.data.get('region')
+            if not region_code:
+                return Response({"error": {"code": "admin.errMissingRegion"}}, status=status.HTTP_400_BAD_REQUEST)
+            if not request.user.is_superuser and not request.user.managed_regions.filter(code=region_code).exists():
+                return Response({"error": {"code": "admin.errRegionForbidden"}}, status=status.HTTP_403_FORBIDDEN)
+                
+            from accounts.models import RegionVerification
+            from django.db import IntegrityError
+            try:
+                verification, created = RegionVerification.objects.update_or_create(
+                    user=instance,
+                    region_id=region_code,
+                    defaults={'is_active': True}
+                )
+                if created:
+                    verification.edu_email = None
+                    verification.is_manual_verification = True
+                    verification.save(update_fields=['edu_email', 'is_manual_verification'])
+            except IntegrityError:
+                return Response({"error": {"code": "admin.errDatabaseIntegrity"}}, status=status.HTTP_400_BAD_REQUEST)
+
+            if verification:
+                if value and not verification.verified_at:
+                    verification.verified_at = timezone.now()
+                    verification.save(update_fields=['verified_at'])
+                    changes['verified_at'] = verification.verified_at.isoformat()
+                elif not value and verification.verified_at:
+                    verification.verified_at = None
+                    verification.save(update_fields=['verified_at'])
+                    changes['verified_at'] = None
 
         instance.save()
 

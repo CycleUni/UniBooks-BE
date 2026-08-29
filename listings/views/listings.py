@@ -1,17 +1,25 @@
+from core.region import get_region
 from rest_framework import views, status
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from django.core.cache import cache
 from listings.models import Listing
 from listings.serializers import ListingSerializer
 
 from rest_framework.throttling import ScopedRateThrottle
 
-from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, versioned_key
+from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, versioned_key, region_versioned_key
+from core.region import get_region
+from core.permissions import IsVerifiedInRegion
 
 
 class ListingListCreateView(views.APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticatedOrReadOnly, IsVerifiedInRegion]
+
+    def get_target_region(self, request):
+        if request.method == 'POST':
+            return get_region(request)
+        return None
 
     def get_throttles(self):
         if self.request and self.request.method == 'POST':
@@ -28,16 +36,17 @@ class ListingListCreateView(views.APIView):
         seller_id = request.query_params.get('seller_id', '')
         page_param = request.query_params.get('page', '1')
 
-        cache_key = versioned_key('listing_list', lang, school, seller_id, page_param)
+        region = get_region(request)
+        cache_key = region_versioned_key(region, 'listing_list', lang, school, seller_id, page_param)
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)
         # select_related avoids per-row queries for the serializer's related fields
-        listings = Listing.objects.filter(status='active').select_related(
-                'book', 'seller', 'seller__school'
+        listings = Listing.objects.filter(region=region, status='active').select_related(
+                'book', 'seller', 'school'
         ).order_by('-created_at')
         if school:
-            listings = listings.filter(seller__school__name=school)
+            listings = listings.filter(school__name=school)
         if seller_id:
             listings = listings.filter(seller_id=seller_id)
 
@@ -58,14 +67,13 @@ class ListingListCreateView(views.APIView):
         return Response(response_data)
 
     def post(self, request):
-        if not request.user.is_authenticated:
-            return Response({"error": {"code": "auth.errNotLoggedIn"}}, status=status.HTTP_401_UNAUTHORIZED)
-        if not request.user.is_verified():
-            return Response({"error": {"code": "acct.errUnverified"}}, status=status.HTTP_403_FORBIDDEN)
+        region = get_region(request)
 
         serializer = ListingSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
-            serializer.save(seller=request.user)
+            verification = request.user.region_verifications.verified_in(region).first()
+            school = verification.school if verification else None
+            serializer.save(seller=request.user, region=region, currency=region.currency, school=school)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response({"error": {"code": "sell.errValidation", "fields": serializer.errors}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -83,7 +91,8 @@ class RecentBooksView(views.APIView):
         limit_param = request.query_params.get('limit', '200')
         import urllib.parse
         safe_school = urllib.parse.quote(school)
-        cache_key = f"recent_books_{lang}_{safe_school}_{page_param}_{limit_param}"
+        region = get_region(request)
+        cache_key = f"{region.code}_recent_books_{lang}_{safe_school}_{page_param}_{limit_param}"
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)
@@ -93,6 +102,8 @@ class RecentBooksView(views.APIView):
         from django.db.models import Max, Q
         from rest_framework.pagination import PageNumberPagination
 
+        # Filter by region
+        base_qs = Book.objects.filter(region=region)
         # Both conditions go into a single filter() call on purpose. Chaining a
         # second .filter() over the same multi-valued relation lets Django
         # satisfy each one from a *different* listing row, so a book qualified
@@ -103,8 +114,12 @@ class RecentBooksView(views.APIView):
         # filter this way.
         book_filter = Q(listings__status='active')
         if school:
-            book_filter &= Q(listings__seller__school__name=school)
-        books_qs = Book.objects.filter(book_filter)
+            book_filter &= Q(listings__school__name=school)
+        # Must build on `base_qs`, not a fresh Book.objects — starting over
+        # here silently dropped the region filter and served every region's
+        # books from this endpoint. The cache key is region-stamped, so the
+        # leak survived a cache-key audit: only the query was wrong.
+        books_qs = base_qs.filter(book_filter)
 
         books_qs = books_qs.annotate(
             latest_listing=Max('listings__created_at')
@@ -124,9 +139,12 @@ class RecentBooksView(views.APIView):
         if not book_ids:
             return paginator.get_paginated_response([]) if paginated_books is not None else Response([])
 
-        active_filter = {'book_id__in': book_ids, 'status': 'active'}
+        # `region` here too: book_ids are already region-scoped, but the price
+        # and condition stats aggregate listings, and a book carried by both
+        # regions would otherwise mix another region's prices into this one.
+        active_filter = {'book_id__in': book_ids, 'status': 'active', 'region': region}
         if school:
-            active_filter['seller__school__name'] = school
+            active_filter['school__name'] = school
 
         all_book_listings = Listing.objects.filter(**active_filter).values('book_id', 'price', 'condition')
 
@@ -168,7 +186,7 @@ class ListingDetailView(views.APIView):
     def get_object(self, request, pk, require_seller=True):
         try:
             listing = Listing.objects.select_related(
-            'book', 'seller', 'seller__school'
+            'book', 'seller', 'school'
             ).get(pk=pk)
             if require_seller and listing.seller != request.user:
                 return None
@@ -180,7 +198,8 @@ class ListingDetailView(views.APIView):
         from core.i18n import resolve_language
         lang = resolve_language(request)
 
-        cache_key = versioned_key(f'listing:{pk}', lang)
+        region = get_region(request)
+        cache_key = region_versioned_key(region, f'listing:{pk}', lang)
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)

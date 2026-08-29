@@ -28,6 +28,44 @@ from accounts.services import (
 from accounts.models import School
 from core.i18n import resolve_language
 
+
+def resolve_school_from_email(email):
+    if not email or '@' not in email:
+        return None, None
+    domain = email.split('@')[-1].lower()
+    parts = domain.split('.')
+    for i in range(len(parts) - 1):
+        sub_domain = '.'.join(parts[i:])
+        try:
+            school = School.objects.get(email_domain__iexact=sub_domain)
+            return school, school.region
+        except School.DoesNotExist:
+            continue
+    return None, None
+
+def _is_valid_edu_email(email):
+    """Whether `email` looks like a campus address for any active region.
+
+    A registered School is what actually counts, so that is checked first:
+    `Region.edu_email_suffix` is a display hint ("enter your .edu.hk address"),
+    not a rule real domains obey. Taiwan happens to be uniform — every campus
+    is under .edu.tw — and gating on the suffix alone quietly locked out five
+    of Hong Kong's thirteen universities, including HKU (hku.hk) and HKUST
+    (ust.hk), which carry no .edu at all, plus hkapa.edu, hksyu.edu and the
+    Education University's s.eduhk.hk.
+
+    The suffix check is kept as a fallback so an address at a not-yet-imported
+    campus still gets `acct.errSchoolNotSupported` from the caller rather than
+    the blunter "that is not a campus email".
+    """
+    school, _region = resolve_school_from_email(email)
+    if school:
+        return True
+
+    from core.region import _get_active_regions
+    active_regions = _get_active_regions()
+    return any(email.endswith(r.edu_email_suffix) for r in active_regions.values() if r.edu_email_suffix)
+
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
@@ -97,22 +135,15 @@ class RequestEduVerificationView(views.APIView):
 
     def post(self, request):
         edu_email = request.data.get('edu_email')
-        if not edu_email or not isinstance(edu_email, str) or not edu_email.endswith('.edu.tw'):
+        if not edu_email or not isinstance(edu_email, str):
+            return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
+            
+        edu_email = edu_email.strip().lower()
+        if not _is_valid_edu_email(edu_email):
             return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ensure the school is supported by checking if it exists in the database
-        edu_email = edu_email.strip().lower()
-        domain = edu_email.split('@')[-1]
-
-        parts = domain.split('.')
-        school_exists = False
-        for i in range(len(parts) - 1):
-            sub_domain = '.'.join(parts[i:])
-            if School.objects.filter(email_domain__iexact=sub_domain).exists():
-                school_exists = True
-                break
-
-        if not school_exists:
+        school, region = resolve_school_from_email(edu_email)
+        if not school:
             return Response({"error": {"code": "acct.errSchoolNotSupported"}}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if email is already in use by someone else as edu_email or email
@@ -147,35 +178,32 @@ class AutoVerifyEduEmailView(views.APIView):
 
     def post(self, request):
         user = request.user
-        if user.verified_at:
-            return Response({"code": "acct.verifySuccess"})
-
         email = user.email.strip().lower()
-        if not email.endswith('.edu.tw'):
+        if not _is_valid_edu_email(email):
             return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        domain = email.split('@')[-1]
-        parts = domain.split('.')
-        school = None
-        for i in range(len(parts) - 1):
-            sub_domain = '.'.join(parts[i:])
-            try:
-                school = School.objects.get(email_domain__iexact=sub_domain)
-                break
-            except School.DoesNotExist:
-                continue
-
+        school, region = resolve_school_from_email(email)
         if not school:
             return Response({"error": {"code": "acct.errSchoolNotSupported"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user.region_verifications.verified_in(region).exists():
+            return Response({"code": "acct.verifySuccess"})
 
         # Check if email is already in use by someone else as edu_email
         if email_already_used(email, user.id):
             return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        user.edu_email = email
-        user.verified_at = timezone.now()
-        user.school = school
-        user.save(update_fields=['edu_email', 'verified_at', 'school'])
+        from accounts.models import RegionVerification
+        RegionVerification.objects.update_or_create(
+            user=user,
+            region=region,
+            defaults={
+                'school': school,
+                'edu_email': email,
+                'verified_at': timezone.now(),
+                'is_active': True
+            }
+        )
 
         return Response({"code": "acct.verifySuccess"})
 
@@ -197,25 +225,19 @@ class VerifyEmailView(views.APIView):
 
         try:
             user = User.objects.get(id=user_id)
-            user.verified_at = timezone.now()
-            user.edu_email = edu_email
-
-            domain = edu_email.split('@')[-1].lower() if edu_email and '@' in edu_email else None
-            if domain:
-                from accounts.models import School
-                parts = domain.split('.')
-                school = None
-                for i in range(len(parts) - 1):
-                    sub_domain = '.'.join(parts[i:])
-                    try:
-                        school = School.objects.get(email_domain__iexact=sub_domain)
-                        break
-                    except School.DoesNotExist:
-                        continue
-                if school:
-                    user.school = school
-
-            user.save(update_fields=['verified_at', 'edu_email', 'school'])
+            school, region = resolve_school_from_email(edu_email)
+            if school and region:
+                from accounts.models import RegionVerification
+                RegionVerification.objects.update_or_create(
+                    user=user,
+                    region=region,
+                    defaults={
+                        'school': school,
+                        'edu_email': edu_email,
+                        'verified_at': timezone.now(),
+                        'is_active': True
+                    }
+                )
             cache.delete(f"verify:{token}")
             return Response({"code": "acct.verifySuccess"})
         except User.DoesNotExist:
@@ -403,22 +425,20 @@ class GoogleLoginView(views.APIView):
                 )
 
             # Automatically bind and verify edu email if the Google email is a supported .edu.tw address
-            if email.endswith('.edu.tw') and (not user.verified_at or user.edu_email != email):
-                domain = email.split('@')[-1].lower()
-                parts = domain.split('.')
-                school = None
-                for i in range(len(parts) - 1):
-                    sub_domain = '.'.join(parts[i:])
-                    try:
-                        school = School.objects.get(email_domain__iexact=sub_domain)
-                        break
-                    except School.DoesNotExist:
-                        continue
-                if school:
-                    user.edu_email = email
-                    user.verified_at = timezone.now()
-                    user.school = school
-                    user.save(update_fields=['edu_email', 'verified_at', 'school'])
+            if _is_valid_edu_email(email):
+                school, region = resolve_school_from_email(email)
+                if school and region:
+                    from accounts.models import RegionVerification
+                    RegionVerification.objects.update_or_create(
+                        user=user,
+                        region=region,
+                        defaults={
+                            'school': school,
+                            'edu_email': email,
+                            'verified_at': timezone.now(),
+                            'is_active': True
+                        }
+                    )
 
             # Link with SocialAccount
             SocialAccount.objects.get_or_create(
@@ -436,13 +456,16 @@ class GoogleLoginView(views.APIView):
             # be in that whitelist, making it both unrefreshable (rotation
             # checks the whitelist) and invisible to revoke_all_tokens_for_user.
             tokens = issue_tokens(user)
+            from core.region import get_region
+            region = get_region(request)
+            is_verified = user.region_verifications.verified_in(region).exists() if region else False
 
             return Response({
                 "access": tokens['access'],
                 "refresh": tokens['refresh'],
                 "user_id": user.id,
                 "user": {
-                    "is_verified": user.is_verified()
+                    "is_verified": is_verified
                 }
             }, status=status.HTTP_200_OK)
 
@@ -510,6 +533,43 @@ class ChangePasswordView(views.APIView):
         user.set_password(new_password)
         user.save()
         return Response({"code": "acct.passwordUpdated"})
+
+
+class RemovePasswordView(views.APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_change'
+
+    def post(self, request):
+        user = request.user
+        password = request.data.get("password")
+
+        if not password:
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        # (a) Account without Google link cannot remove password
+        if not user.socialaccount_set.filter(provider='google').exists():
+            return Response({"error": {"code": "auth.errNoGoogleLinked"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        # (b) Staff or superuser cannot remove password because they need it for Django admin
+        if user.is_staff or user.is_superuser:
+            return Response({"error": {"code": "auth.errStaffCannotRemovePassword"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.has_usable_password():
+            return Response({"error": {"code": "auth.errNoUsablePassword"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not user.check_password(password):
+            return Response({"error": {"code": "auth.errInvalidPassword"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_unusable_password()
+        user.save(update_fields=['password'])
+        
+        # We deliberately do not call revoke_all_tokens_for_user() here.
+        # Removing a password from a Google-linked account is a user-initiated
+        # cleanup, not a compromised account scenario. Forcing a logout across
+        # all devices would be disruptive and unnecessary.
+        
+        return Response({"code": "acct.passwordRemoved"})
 
 
 class RequestPasswordResetView(views.APIView):
@@ -616,9 +676,13 @@ class UnbindEduEmailView(views.APIView):
 
     def post(self, request):
         user = request.user
-        user.edu_email = ""
-        user.verified_at = None
-        user.last_reverified_at = None
-        user.school = None
-        user.save()
+        from core.region import get_region
+        region = get_region(request)
+        if not region:
+            return Response({"error": {"code": "sys.errUnknownRegion"}}, status=status.HTTP_400_BAD_REQUEST)
+        
+        updated = user.region_verifications.filter(region=region, is_active=True).update(is_active=False)
+        if updated == 0:
+            return Response({"error": {"code": "acct.errNotVerified"}}, status=status.HTTP_400_BAD_REQUEST)
+            
         return Response({"code": "acct.unbindSuccess"})

@@ -24,24 +24,24 @@ def api():
 @pytest.fixture
 def seller(db):
     u = User.objects.create_user(email="mod-seller@example.com", first_name="Se", last_name="Ller", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
 @pytest.fixture
 def reporter(db):
     u = User.objects.create_user(email="mod-reporter@example.com", first_name="Re", last_name="Porter", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
 @pytest.fixture
 def other_reporter(db):
     u = User.objects.create_user(email="mod-other@example.com", first_name="Ot", last_name="Her", password=PASSWORD)
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -50,8 +50,8 @@ def staff(db):
     u = User.objects.create_user(
         email="mod-staff@example.com", first_name="St", last_name="Aff", password=PASSWORD, is_staff=True
     )
-    u.verified_at = timezone.now()
-    u.save(update_fields=["verified_at"])
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u
 
 
@@ -81,8 +81,8 @@ def staff_header(staff):
 
 @pytest.fixture
 def listing(db, seller):
-    book = Book.objects.create(title="Moderation Test Book", source="manual")
-    return Listing.objects.create(book=book, seller=seller, price=100, condition="new")
+    book = Book.objects.create(region_id='TW', title="Moderation Test Book", source="manual")
+    return Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new")
 
 
 def _create_report(api, listing, header, reason="scam", detail=""):

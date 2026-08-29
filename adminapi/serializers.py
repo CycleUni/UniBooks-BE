@@ -70,36 +70,102 @@ class AdminAdSerializer(serializers.ModelSerializer):
 
 class AdminSchoolSerializer(serializers.ModelSerializer):
     user_count = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
 
     def get_user_count(self, obj):
         # Prefer the annotation from the list view; fall back to a query so the
         # detail view and bulk import keep working without it.
         annotated = getattr(obj, 'user_count_annotated', None)
-        return annotated if annotated is not None else obj.users.count()
+        return annotated if annotated is not None else obj.verifications.count()
+
+    def get_display_name(self, obj):
+        lang = self.context.get('lang')
+        return obj.localized_name(lang) if lang else obj.name
 
     class Meta:
         model = School
-        fields = ('id', 'name', 'email_domain', 'translations', 'user_count')
+        fields = ('id', 'name', 'display_name', 'email_domain', 'translations', 'region', 'user_count')
 
 
 class AdminCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ('id', 'slug', 'title', 'description', 'sort_order', 'is_active', 'translations')
+        fields = ('id', 'slug', 'title', 'description', 'sort_order', 'is_active', 'translations', 'region')
 
 
 class AdminUserSerializer(serializers.ModelSerializer):
+    """Admin view of a user.
+
+    Accounts are global while verification is per region, so a user can hold
+    a TW and an HK verification at once. `regions` and `verifications` are the
+    honest representation of that; the flat `school`/`edu_email`/`verified_at`
+    fields below are a single-region view kept for the existing admin screens.
+    """
+
     school_name = serializers.SerializerMethodField()
     is_verified = serializers.SerializerMethodField()
+    regions = serializers.SerializerMethodField()
+    verifications = serializers.SerializerMethodField()
+
+    def _verifications(self, obj):
+        """Active verifications, ordered by region code.
+
+        Ordering matters: the flat fields below pick the first row, and an
+        unordered .first() over a multi-row relation let the database decide
+        which one — so a dual-region user's admin row could show their Taiwan
+        school on one request and their Hong Kong school on the next.
+        """
+        return sorted(
+            obj.region_verifications.active(),
+            key=lambda v: v.region_id,
+        )
+
+    def _primary(self, obj):
+        rows = self._verifications(obj)
+        return rows[0] if rows else None
+
+    def get_regions(self, obj):
+        return [v.region_id for v in self._verifications(obj)]
+
+    def get_verifications(self, obj):
+        lang = self.context.get('lang')
+        return [
+            {
+                'region': v.region_id,
+                'school': v.school_id,
+                'school_name': (v.school.localized_name(lang) if lang else v.school.name) if v.school else '',
+                'edu_email': v.edu_email,
+                'verified_at': v.verified_at,
+            }
+            for v in self._verifications(obj)
+        ]
 
     def get_school_name(self, obj):
-        if not obj.school:
+        v = self._primary(obj)
+        if not v or not v.school:
             return ''
         lang = self.context.get('lang')
-        return obj.school.localized_name(lang) if lang else obj.school.name
+        return v.school.localized_name(lang) if lang else v.school.name
+
+    edu_email = serializers.SerializerMethodField()
+    school = serializers.SerializerMethodField()
+    verified_at = serializers.SerializerMethodField()
+
+    def get_edu_email(self, obj):
+        v = self._primary(obj)
+        return v.edu_email if v else None
+
+    def get_school(self, obj):
+        v = self._primary(obj)
+        return v.school_id if v else None
+
+    def get_verified_at(self, obj):
+        v = self._primary(obj)
+        return v.verified_at if v else None
 
     def get_is_verified(self, obj):
-        return obj.is_verified()
+        # Keep memory evaluation since _verifications uses prefetched related manager
+        return any(v.verified_at is not None for v in self._verifications(obj))
 
     class Meta:
         model = User
@@ -107,6 +173,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
             'id', 'email', 'first_name', 'last_name', 'display_name',
             'school', 'school_name', 'edu_email', 'is_active', 'is_verified',
             'verified_at', 'created_at', 'is_staff', 'is_superuser',
+            'regions', 'verifications',
         )
         read_only_fields = fields
 
@@ -129,7 +196,10 @@ class AdminListingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Listing
-        fields = ('id', 'book', 'seller', 'school', 'price', 'condition', 'status', 'created_at')
+        # `region` on the row itself: a superuser sees both regions merged in
+        # one list, and without it the only way to tell a TW listing from an HK
+        # one was to filter — the unfiltered view was ambiguous.
+        fields = ('id', 'book', 'seller', 'school', 'region', 'price', 'currency', 'condition', 'status', 'created_at')
         read_only_fields = fields
 
 
@@ -149,7 +219,7 @@ class AdminOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Order
-        fields = ('id', 'buyer', 'seller', 'listing', 'status', 'total_amount', 'created_at', 'updated_at')
+        fields = ('id', 'buyer', 'seller', 'listing', 'region', 'status', 'total_amount', 'currency', 'created_at', 'updated_at')
         read_only_fields = fields
 
 
@@ -171,10 +241,19 @@ class AdminChatReportSerializer(serializers.ModelSerializer):
     def get_reported_party_email(self, obj):
         return obj.reported_party.email
 
+    region = serializers.SerializerMethodField()
+
+    def get_region(self, obj):
+        # A chat report has no region of its own; it inherits the region of
+        # the listing the conversation is about — the same path adminapi
+        # filters on (conversation__listing__region). Derived here rather than
+        # in the frontend so the admin table cannot disagree with the filter.
+        return obj.conversation.listing.region_id
+
     class Meta:
         model = ChatReport
         fields = ('id', 'conversation_id', 'listing_title', 'reporter_email',
-                  'reported_party_email', 'reason', 'detail', 'status', 'created_at')
+                  'reported_party_email', 'reason', 'detail', 'status', 'created_at', 'region')
         read_only_fields = fields
 
 

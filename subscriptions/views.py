@@ -1,3 +1,4 @@
+from core.region import get_region
 from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -9,14 +10,16 @@ class SubscriptionListView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        region = get_region(request)
         subs = subscriptions_with_new_listings_count(
-            Subscription.objects.filter(user=request.user)
+            Subscription.objects.filter(user=request.user, region=region)
         )
         serializer = SubscriptionSerializer(subs, many=True)
         return Response(serializer.data)
 
     def delete(self, request):
-        Subscription.objects.filter(user=request.user).delete()
+        region = get_region(request)
+        Subscription.objects.filter(user=request.user, region=region).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def post(self, request):
@@ -28,7 +31,8 @@ class SubscriptionListView(views.APIView):
             from catalog.services import clean_and_validate_isbn
             valid_isbn = clean_and_validate_isbn(book_id)
             if valid_isbn:
-                book = Book.objects.filter(isbn13=valid_isbn).first()
+                region = get_region(request)
+                book = Book.objects.filter(region=region, isbn13=valid_isbn).first()
                 if not book:
                     # Create it dynamically from Google Books API
                     from catalog.services import get_google_books_by_isbn
@@ -43,15 +47,18 @@ class SubscriptionListView(views.APIView):
                         publisher=gb_data.get('publisher', ''),
                         published_date=gb_data.get('published_date', ''),
                         cover_url=gb_data.get('cover_url', ''),
-                        source='google_api'
+                        source='google_api',
+                        region=region
                     )
             else:
-                book = Book.objects.get(id=book_id)
+                region = get_region(request)
+                book = Book.objects.get(region=region, id=book_id)
 
+            region = get_region(request)
             sub, created = Subscription.objects.get_or_create(
                 user=request.user,
                 book=book,
-                defaults={'school': request.user.school}
+                region=region
             )
             serializer = SubscriptionSerializer(sub)
             return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -63,7 +70,8 @@ class SubscriptionDetailView(views.APIView):
 
     def delete(self, request, id):
         try:
-            sub = Subscription.objects.get(id=id, user=request.user)
+            region = get_region(request)
+            sub = Subscription.objects.get(id=id, user=request.user, region=region)
             sub.delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
         except Subscription.DoesNotExist:

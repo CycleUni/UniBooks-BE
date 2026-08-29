@@ -11,7 +11,8 @@ from catalog.services import (
 from listings.serializers import ListingSerializer
 from django.core.cache import cache
 
-from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key
+from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key, region_versioned_key
+from core.region import get_region
 from core.authentication import OptionalJWTAuthentication
 
 # Kept in sync with search.views.VALID_SEARCH_ENGINES by hand rather than
@@ -57,14 +58,15 @@ class BookDetailView(views.APIView):
         # and a sold or deleted listing stayed advertised until the TTL lapsed.
         from core.i18n import resolve_language
         lang = resolve_language(request)
-        cache_key = versioned_key("book_detail", lang, book_id or '', valid_isbn or '', page_param, engine)
+        region = get_region(request)
+        cache_key = region_versioned_key(region, "book_detail", lang, book_id or '', valid_isbn or '', page_param, engine)
         data = cache.get(cache_key)
 
         book = None
         if not data:
             try:
                 if valid_isbn:
-                    book = Book.objects.filter(isbn13=valid_isbn).first()
+                    book = Book.objects.filter(region=region, isbn13=valid_isbn).first()
                 if not book:
                     # Serve dynamically from the requested engine. Open
                     # Library / ISBNnet, when explicitly requested, is used as-is with
@@ -121,13 +123,13 @@ class BookDetailView(views.APIView):
                         return Response({"error": "Book not found"}, status=status.HTTP_404_NOT_FOUND)
             
                 if book_id:
-                    book = Book.objects.get(id=book_id)
+                    book = Book.objects.get(region=region, id=book_id)
                 elif not book:
                     return Response({"error": "Book not found"}, status=status.HTTP_404_NOT_FOUND)
 
                 serializer = BookSerializer(book)
                 data = serializer.data
-                active_listings = book.listings.filter(status='active').select_related(
+                active_listings = book.listings.filter(region=region, status='active').select_related(
                     'book', 'seller', 'school'
                 ).order_by('-created_at')
                 
@@ -161,7 +163,7 @@ class BookDetailView(views.APIView):
 
         if request.user.is_authenticated and response_data.get('id'):
             from subscriptions.models import Subscription
-            sub = Subscription.objects.filter(user=request.user, book_id=response_data['id']).first()
+            sub = Subscription.objects.filter(region=region, user=request.user, book_id=response_data['id']).first()
             if sub:
                 response_data['is_subscribed'] = True
                 response_data['subscription_id'] = sub.id
@@ -170,9 +172,10 @@ class BookDetailView(views.APIView):
         if school_param and response_data.get('id'):
             from listings.models import Listing
             response_data['local_listings_count'] = Listing.objects.filter(
+                region=region,
                 book_id=response_data['id'],
                 status='active',
-                seller__school__name=school_param
+                school__name=school_param
             ).count()
         else:
             response_data['local_listings_count'] = None
@@ -213,6 +216,8 @@ class ManualBookCreateView(views.APIView):
             valid_sources = dict(Book.SOURCE_CHOICES).keys()
             if source not in valid_sources:
                 source = 'manual'
-            serializer.save(source=source)
+            from core.region import get_region
+            region = get_region(request)
+            serializer.save(source=source, region=region)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

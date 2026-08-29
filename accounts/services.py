@@ -177,7 +177,6 @@ def email_already_used(email, excluding_user_id):
     Check if the email is already in use by another user's email or edu_email field.
     """
     User = get_user_model()
-    return (
-        User.objects.filter(email=email).exclude(id=excluding_user_id).exists()
-        or User.objects.filter(edu_email=email).exclude(id=excluding_user_id).exists()
-    )
+    from accounts.models import RegionVerification
+    return User.objects.filter(email=email).exclude(id=excluding_user_id).exists() \
+           or RegionVerification.objects.filter(edu_email=email, is_active=True).exclude(user_id=excluding_user_id).exists()
