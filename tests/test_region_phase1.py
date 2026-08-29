@@ -68,9 +68,17 @@ def test_language_resolution(setup_regions):
 def test_resolve_language_request(setup_regions, rf):
     tw, hk = setup_regions
     
+    # A request that names no language gets the region's default, not
+    # DEFAULT_LANGUAGE. This assertion previously read 'en': with an empty
+    # `languages` list the two were indistinguishable, and this file's
+    # fixture happens to populate it while conftest's does not, so the two
+    # readings never met. Three tests from 2026-07-25 pin the region-default
+    # behaviour (a TW student with no stated preference gets Chinese, and a
+    # Chinese verification email); this file is one day old. The older
+    # behaviour is the product one.
     req = rf.get('/')
     req._cached_region = tw
-    assert resolve_language(req) == 'en'
+    assert resolve_language(req) == 'zh-TW'
     
     req = rf.get('/?lang=en')
     req._cached_region = tw

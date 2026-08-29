@@ -115,3 +115,67 @@ def test_backfill_listing_school_fills_pre_multiregion_listings():
     orphan.refresh_from_db()
     assert legacy.school_id == sch.id, "已驗證賣家的舊商品應補上學校"
     assert orphan.school_id is None, "沒有有效驗證的賣家不該被憑空安上學校"
+
+
+@pytest.mark.django_db
+def test_complete_tw_region_config_fills_what_the_backfill_left_blank():
+    """0006_backfill_regions created TW with only the four fields it needed to
+    attach existing rows. On a real deployment the rest stayed at field
+    defaults, and the UI showed it: an empty language picker, the region named
+    'Taiwan' in every locale, and a blank campus-email suffix."""
+    import importlib
+    from core.models import Region, Language, Currency
+    from django.apps import apps as global_apps
+
+    twd, _ = Currency.objects.get_or_create(
+        code='TWD', defaults={'symbol': 'NT$', 'decimal_places': 0})
+    zh_tw, _ = Language.objects.get_or_create(
+        code='zh-TW', defaults={'name': 'Traditional Chinese (Taiwan)'})
+
+    # Exactly what 0006 leaves behind.
+    Region.objects.filter(code='TW').delete()
+    tw = Region.objects.create(
+        code='TW', name='Taiwan', currency=twd, default_language=zh_tw, is_active=True)
+    assert tw.languages.count() == 0
+    assert tw.localized_name('zh-TW') == 'Taiwan'
+
+    mod = importlib.import_module('core.migrations.0009_complete_tw_region_config')
+    mod.forward_func(global_apps, None)
+
+    tw.refresh_from_db()
+    assert tw.localized_name('zh-TW') == '台灣'
+    assert sorted(l.code for l in tw.languages.all()) == ['en', 'zh-TW']
+    assert tw.edu_email_suffix == '.edu.tw'
+    assert 'openlibrary' in tw.search_engines
+
+
+@pytest.mark.django_db
+def test_complete_tw_region_config_does_not_clobber_operator_values():
+    """Only blanks are filled. Anything already configured through the admin
+    survives, so re-running the migration cannot undo an operator's changes."""
+    import importlib
+    from core.models import Region, Language, Currency
+    from django.apps import apps as global_apps
+
+    twd, _ = Currency.objects.get_or_create(
+        code='TWD', defaults={'symbol': 'NT$', 'decimal_places': 0})
+    zh_tw, _ = Language.objects.get_or_create(
+        code='zh-TW', defaults={'name': 'Traditional Chinese (Taiwan)'})
+
+    Region.objects.filter(code='TW').delete()
+    tw = Region.objects.create(
+        code='TW', name='Taiwan', currency=twd, default_language=zh_tw, is_active=True,
+        translations={'zh-TW': {'name': '台灣地區'}},
+        edu_email_suffix='.ac.tw',
+        search_engines=['isbnnet'],
+    )
+    tw.languages.set([zh_tw])
+
+    mod = importlib.import_module('core.migrations.0009_complete_tw_region_config')
+    mod.forward_func(global_apps, None)
+
+    tw.refresh_from_db()
+    assert tw.localized_name('zh-TW') == '台灣地區'
+    assert tw.edu_email_suffix == '.ac.tw'
+    assert tw.search_engines == ['isbnnet']
+    assert [l.code for l in tw.languages.all()] == ['zh-TW']

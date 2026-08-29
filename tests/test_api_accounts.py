@@ -535,7 +535,11 @@ def test_request_verification_rejects_email_taken_by_other_account(api, user, au
     assert resp.json()["error"]["code"] == "acct.errEmailTaken"
 
 
-def test_request_verification_email_english_by_default(api, user, auth_header, mailoutbox, ntu_school):
+# Named "english_by_default" until 2026-08-29, while asserting the Chinese
+# subject on the line below — the name described behaviour the test had
+# never checked, and would have led anyone reconciling the two to change
+# the code rather than the name.
+def test_request_verification_email_uses_region_default_language(api, user, auth_header, mailoutbox, ntu_school):
     resp = api.post(
         "/api/v1/auth/verify/request/",
         {"edu_email": "student@ntu.edu.tw"},

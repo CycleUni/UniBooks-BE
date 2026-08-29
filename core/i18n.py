@@ -43,7 +43,8 @@ def normalize_language(lang, region=None):
 
 
 def resolve_language(request):
-    """Language for this request: ?lang= wins, then Accept-Language, then English."""
+    """Language for this request: ?lang= wins, then Accept-Language, then the
+    region's default_language (English only when there is no region)."""
     lang = request.GET.get('lang', '').strip()
     if not lang:
         accept = request.headers.get('Accept-Language', '')
@@ -51,13 +52,28 @@ def resolve_language(request):
         
     from core.region import get_region
     region = get_region(request)
+
+    if not lang:
+        # Nothing was asked for, so answer with the region's own default
+        # rather than routing an empty string through normalize_language(),
+        # which turns it into DEFAULT_LANGUAGE ('en') — indistinguishable
+        # from an explicit request for English.
+        #
+        # This used to be masked: regions created by 0006_backfill_regions had
+        # an empty `languages` list, so the `not in supported_langs` check
+        # below fired for every value and sent everything to the region
+        # default anyway. Filling that list in (0009_complete_tw_region_config)
+        # made 'en' genuinely supported, and unspecified requests started
+        # coming back in English.
+        return region.default_language_id if region else DEFAULT_LANGUAGE
+
     normalized = normalize_language(lang, region)
-    
+
     if region:
         supported_langs = [l.code for l in region.languages.all()]
         if normalized not in supported_langs:
             return region.default_language_id
-            
+
     return normalized
 
 
