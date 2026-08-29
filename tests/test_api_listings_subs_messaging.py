@@ -117,10 +117,12 @@ def test_listing_create_success_sets_seller_and_school(api, seller, book, school
     assert resp.status_code == 201
     created = Listing.objects.get(id=resp.json()["id"])
     assert created.seller == seller
-    # `Listing.school` is no longer populated on create — the seller's
-    # school (`seller.school`) is the single source of truth used for
-    # school-scoped filtering (see ListingListCreateView.get), so the
-    # listing's own `school` FK is intentionally left unset here.
+    # This comment used to say the opposite of the assertion below it: that
+    # `Listing.school` is left unset because `seller.school` is the source of
+    # truth for school-scoped filtering. That was true before multi-region,
+    # which moved school onto RegionVerification and switched the filter to
+    # the listing's own FK. The stamp is now load-bearing — an unstamped
+    # listing is invisible to every school-filtered query.
     assert created.school == school
     
 

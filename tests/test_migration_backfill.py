@@ -63,3 +63,55 @@ def test_backfill_regions_migration():
     assert verifications[0].region.code == 'TW'
     assert verifications[0].edu_email == "testmig@test.edu.tw"
 
+
+
+@pytest.mark.django_db
+def test_backfill_listing_school_fills_pre_multiregion_listings():
+    """Listings created before multi-region have school=NULL, because the old
+    create view never stamped it and the old list view filtered through
+    seller.school instead. Nothing backfilled them, so they rendered as
+    "school not set" and dropped out of every school-filtered query."""
+    from accounts.models import School, RegionVerification
+    from catalog.models import Book
+    from listings.models import Listing
+    from core.models import Region
+    from django.contrib.auth import get_user_model
+    from django.utils import timezone
+    import importlib
+
+    User = get_user_model()
+    tw = Region.objects.get(code='TW')
+    sch = School.objects.create(name='Backfill U', email_domain='backfill.edu.tw', region=tw)
+
+    def seller(email, verified):
+        u = User.objects.create_user(email=email, password='x', first_name='B', last_name='F')
+        if verified:
+            RegionVerification.objects.create(
+                user=u, region=tw, school=sch, edu_email=email,
+                verified_at=timezone.now(), is_active=True,
+            )
+        return u
+
+    verified_seller = seller('has@backfill.edu.tw', True)
+    bare_seller = seller('none@backfill.edu.tw', False)
+    book = Book.objects.create(isbn13='9780000000777', title='Legacy', region=tw)
+
+    legacy = Listing.objects.create(
+        book=book, seller=verified_seller, region=tw, currency=tw.currency,
+        price=100, condition='new', school=None,
+    )
+    orphan = Listing.objects.create(
+        book=book, seller=bare_seller, region=tw, currency=tw.currency,
+        price=100, condition='new', school=None,
+    )
+
+    # The module name starts with a digit, so it cannot be imported with a
+    # normal `from ... import` statement.
+    mod = importlib.import_module('listings.migrations.0010_backfill_listing_school')
+    from django.apps import apps as global_apps
+    mod.forward_func(global_apps, None)
+
+    legacy.refresh_from_db()
+    orphan.refresh_from_db()
+    assert legacy.school_id == sch.id, "已驗證賣家的舊商品應補上學校"
+    assert orphan.school_id is None, "沒有有效驗證的賣家不該被憑空安上學校"
