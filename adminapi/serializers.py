@@ -8,7 +8,7 @@ letting is_staff/is_superuser/password through) precisely per-endpoint.
 from rest_framework import serializers
 
 from accounts.models import User, School
-from core.models import Category
+from core.models import Category, Region, Currency, Language
 from listings.models import Listing
 from moderation.models import ChatReport
 from orders.models import Order
@@ -258,3 +258,75 @@ class AdminChatReportSerializer(serializers.ModelSerializer):
 
 
 
+
+
+class AdminCurrencySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Currency
+        fields = ['code', 'symbol', 'decimal_places', 'symbol_position', 'is_active']
+        
+    def update(self, instance, validated_data):
+        # Reject rather than drop. Both fields were silently popped here, so a
+        # PATCH changing decimal_places came back 200 with the old value still
+        # in place — the caller had every reason to believe it had worked.
+        # That is the wrong failure mode for this field in particular: amounts
+        # are stored in minor units, so changing it reinterprets every existing
+        # price and order total at once. Say no out loud.
+        #
+        # Sending the current value is still fine, so a client that PATCHes the
+        # whole object back unchanged does not trip over this.
+        new_dp = validated_data.pop('decimal_places', None)
+        if new_dp is not None and new_dp != instance.decimal_places:
+            raise ValidationError({
+                "decimal_places": "admin.errCurrencyDecimalPlacesLocked",
+            })
+        new_code = validated_data.pop('code', None)
+        if new_code is not None and new_code != instance.code:
+            raise ValidationError({"code": "admin.errCurrencyCodeLocked"})
+        return super().update(instance, validated_data)
+
+class AdminRegionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Region
+        fields = [
+            'code', 'name', 'translations', 'currency', 'default_language', 
+            'languages', 'timezone', 'search_engines', 'edu_email_suffix', 
+            'is_active', 'sort_order'
+        ]
+        
+    def validate(self, attrs):
+        default_lang = attrs.get('default_language')
+        languages = attrs.get('languages')
+        
+        if self.instance:
+            default_lang = default_lang or self.instance.default_language
+            if 'languages' in attrs:
+                languages = attrs['languages']
+            else:
+                languages = self.instance.languages.all()
+                
+        if languages is not None and default_lang is not None:
+            if default_lang not in languages:
+                raise ValidationError({"default_language": "default_language must be one of the selected languages."})
+                
+        translations = attrs.get('translations')
+        if self.instance:
+            if 'translations' in attrs and not translations:
+                raise ValidationError({"translations": "translations cannot be empty."})
+        else:
+            if not translations:
+                raise ValidationError({"translations": "translations cannot be empty."})
+            if not languages:
+                raise ValidationError({"languages": "languages cannot be empty."})
+                
+        return attrs
+        
+    def update(self, instance, validated_data):
+        validated_data.pop('code', None)
+        
+        is_active = validated_data.get('is_active')
+        if is_active is False and instance.is_active is True:
+            if Region.objects.filter(is_active=True).exclude(code=instance.code).count() == 0:
+                raise ValidationError({"is_active": "Cannot disable the last active region."})
+                
+        return super().update(instance, validated_data)

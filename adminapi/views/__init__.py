@@ -29,3 +29,4 @@ __all__ = [
     "AdminChatReportDetailView",
     "AdminChatReportTokenView",
 ]
+from .regions import AdminRegionListView, AdminRegionDetailView, AdminCurrencyListView, AdminCurrencyDetailView

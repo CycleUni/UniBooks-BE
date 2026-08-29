@@ -1,6 +1,7 @@
 from django.urls import path
 
 from .views import (
+    AdminRegionListView, AdminRegionDetailView, AdminCurrencyListView, AdminCurrencyDetailView,
     AdminListingDetailView,
     AdminListingListView,
     AdminOrderDetailView,
@@ -31,6 +32,10 @@ from .views.uploads import (
 )
 
 urlpatterns = [
+    path('regions/', AdminRegionListView.as_view(), name='admin-region-list'),
+    path('regions/<str:pk>/', AdminRegionDetailView.as_view(), name='admin-region-detail'),
+    path('currencies/', AdminCurrencyListView.as_view(), name='admin-currency-list'),
+    path('currencies/<str:pk>/', AdminCurrencyDetailView.as_view(), name='admin-currency-detail'),
     path('users/', AdminUserListView.as_view(), name='admin-user-list'),
     path('users/<int:pk>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('managers/<int:pk>/toggle/', AdminManagerToggleView.as_view(), name='admin-manager-toggle'),
