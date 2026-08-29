@@ -307,17 +307,17 @@ class AdminRegionSerializer(serializers.ModelSerializer):
                 
         if languages is not None and default_lang is not None:
             if default_lang not in languages:
-                raise ValidationError({"default_language": "default_language must be one of the selected languages."})
+                raise ValidationError({"default_language": "admin.errDefaultLanguageNotSupported"})
                 
         translations = attrs.get('translations')
         if self.instance:
             if 'translations' in attrs and not translations:
-                raise ValidationError({"translations": "translations cannot be empty."})
+                raise ValidationError({"translations": "admin.errTranslationsRequired"})
         else:
             if not translations:
-                raise ValidationError({"translations": "translations cannot be empty."})
+                raise ValidationError({"translations": "admin.errTranslationsRequired"})
             if not languages:
-                raise ValidationError({"languages": "languages cannot be empty."})
+                raise ValidationError({"languages": "admin.errLanguagesRequired"})
                 
         return attrs
         
@@ -327,6 +327,6 @@ class AdminRegionSerializer(serializers.ModelSerializer):
         is_active = validated_data.get('is_active')
         if is_active is False and instance.is_active is True:
             if Region.objects.filter(is_active=True).exclude(code=instance.code).count() == 0:
-                raise ValidationError({"is_active": "Cannot disable the last active region."})
+                raise ValidationError({"is_active": "admin.errCannotDisableLastRegion"})
                 
         return super().update(instance, validated_data)
