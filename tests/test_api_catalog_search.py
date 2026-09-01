@@ -519,6 +519,8 @@ def test_search_endpoint_isbn_falls_back_to_keyword_search_when_isbn_lookup_empt
     # keyword search using the same digits finds it. The ISBN branch should
     # not give up just because the dedicated lookup came up empty.
     with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn", return_value=None), \
+            mock.patch("search.views.get_open_library_book_by_isbn", return_value=None), \
             mock.patch("search.views.search_google_books", return_value=[
                 {"title": "Found via keyword", "authors": "A", "publisher": "", "published_date": "", "cover_url": "", "isbn": "9786264140720"},
                 {"title": "Unrelated match", "authors": "B", "publisher": "", "published_date": "", "cover_url": "", "isbn": "9780000000000"},
