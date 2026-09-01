@@ -32,17 +32,38 @@ class BookSearchView(views.APIView):
         course = request.GET.get('course', '')
         school = request.GET.get('school', '')
         region = get_region(request)
-        engine = request.GET.get('engine', 'googlebooks')
-        if engine not in (region.search_engines or ['googlebooks']):
-            engine = 'googlebooks'
+        
+        condition_param = request.GET.get('condition')
+        if condition_param == 'none':
+            allowed_conditions = set()
+        elif condition_param:
+            allowed_conditions = set(condition_param.split(','))
+        else:
+            allowed_conditions = None
+
+        try:
+            p_min_val = request.GET.get('price_min')
+            p_min = int(p_min_val) if p_min_val and p_min_val.isdigit() else None
+        except Exception:
+            p_min = None
+            
+        try:
+            p_max_val = request.GET.get('price_max')
+            p_max = int(p_max_val) if p_max_val and p_max_val.isdigit() else None
+        except Exception:
+            p_max = None
+            
+        filter_price = (p_min is not None or p_max is not None)
+        in_stock_required = (request.GET.get('in_stock') == '1')
+
+        explicit_engine = request.GET.get('engine')
+        engine = explicit_engine if explicit_engine in VALID_SEARCH_ENGINES else None
+        if engine and engine not in (region.search_engines or ['googlebooks']):
+            engine = None
 
         if not query and not category and not course:
             return Response([])
 
-        # True only when a Google attempt was actually made and rate-limited
-        # (429), forcing the automatic Open Library fallback. Surfaced to the
-        # frontend so it can annotate the engine selector (e.g. "Google
-        # temporarily unavailable") without guessing from per-item `source`.
         google_unavailable = False
 
         if category or (course and not query):
@@ -71,21 +92,43 @@ class BookSearchView(views.APIView):
             is_isbn = query_stripped.isdigit() and len(query_stripped) in (10, 13)
             
             if is_isbn:
-                engine_used = engine
                 meta = {}
-                if engine == 'openlibrary':
-                    gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
-                elif engine == 'isbnnet':
-                    gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
+                gb_book = None
+                
+                if engine:
+                    engine_used = engine
+                    if engine == 'openlibrary':
+                        gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
+                    elif engine == 'isbnnet':
+                        gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
+                    else:
+                        try:
+                            gb_book = get_google_books_by_isbn(query_stripped, _meta=meta)
+                        except GoogleBooksRateLimited:
+                            engine_used = 'openlibrary'
+                            google_unavailable = True
+                            meta = {}
+                            gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
                 else:
                     try:
                         gb_book = get_google_books_by_isbn(query_stripped, _meta=meta)
+                        engine_used = 'googlebooks'
                     except GoogleBooksRateLimited:
-                        engine_used = 'openlibrary'
                         google_unavailable = True
+                    
+                    if not gb_book:
+                        meta = {}
+                        gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
+                        engine_used = 'isbnnet'
+                        
+                    if not gb_book:
                         meta = {}
                         gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
+                        engine_used = 'openlibrary'
+
                 if gb_book:
+                    if not gb_book.get('cover_url') and gb_book.get('isbn'):
+                        gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
                     if engine_used == 'isbnnet':
                         gb_book['source'] = 'isbnnet_api'
                     elif engine_used == 'openlibrary':
@@ -105,41 +148,65 @@ class BookSearchView(views.APIView):
                 # this stays a precise ISBN lookup rather than a fuzzy one.
                 if not gb_book and not local_books.exists():
                     try:
-                        if engine_used == 'openlibrary':
+                        if engine == 'openlibrary':
                             fallback_results = search_open_library_books(query_stripped, _meta={})
+                            fallback_engine = 'openlibrary'
                         else:
                             fallback_results = search_google_books(query_stripped, _meta={})
+                            fallback_engine = 'googlebooks'
                     except GoogleBooksRateLimited:
                         fallback_results = []
+                        fallback_engine = None
+                    
+                    if not fallback_results and not engine:
+                        fallback_results = search_open_library_books(query_stripped, _meta={})
+                        fallback_engine = 'openlibrary'
+                        
                     fallback_results = [item for item in fallback_results if item.get('isbn') == query_stripped]
                     for item in fallback_results:
-                        if engine_used == 'isbnnet':
+                        if not item.get('cover_url') and item.get('isbn'):
+                            item['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{item['isbn']}-L.jpg"
+                        if fallback_engine == 'isbnnet':
                             item['source'] = 'isbnnet_api'
-                        elif engine_used == 'openlibrary':
+                        elif fallback_engine == 'openlibrary':
                             item['source'] = 'openlibrary_api'
                         else:
                             item['source'] = 'google_api'
                     gb_results = fallback_results
             else:
-                engine_used = engine
-                if engine_used == 'isbnnet':
-                    # ISBNnet has no keyword/free-text search endpoint; fall back
-                    # to the default Google Books engine for keyword queries.
-                    engine_used = 'googlebooks'
-
                 meta = {}
-                if engine_used == 'openlibrary':
-                    gb_results = search_open_library_books(query, _meta=meta)
+                gb_results = []
+                if engine:
+                    engine_used = engine
+                    if engine_used == 'isbnnet':
+                        engine_used = 'googlebooks'
+
+                    if engine_used == 'openlibrary':
+                        gb_results = search_open_library_books(query, _meta=meta)
+                    else:
+                        try:
+                            gb_results = search_google_books(query, _meta=meta)
+                        except GoogleBooksRateLimited:
+                            engine_used = 'openlibrary'
+                            google_unavailable = True
+                            meta = {}
+                            gb_results = search_open_library_books(query, _meta=meta)
                 else:
                     try:
                         gb_results = search_google_books(query, _meta=meta)
+                        engine_used = 'googlebooks'
                     except GoogleBooksRateLimited:
-                        engine_used = 'openlibrary'
                         google_unavailable = True
+                        
+                    if not gb_results:
                         meta = {}
                         gb_results = search_open_library_books(query, _meta=meta)
+                        engine_used = 'openlibrary'
+
                 debug_source = describe_source(engine_used, meta.get('cache_hit', False))
                 for gb_book in gb_results:
+                    if not gb_book.get('cover_url') and gb_book.get('isbn'):
+                        gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
                     gb_book['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
                     gb_book['debug_source'] = debug_source
                 listing_text_match = Q(listings__status='active') & (
@@ -190,15 +257,8 @@ class BookSearchView(views.APIView):
                 elif not isbn and local_id:
                     results.append(item)
 
-        from rest_framework.pagination import PageNumberPagination
-        paginator = PageNumberPagination()
-        paginated_results = paginator.paginate_queryset(results, request)
-        results_to_process = paginated_results if paginated_results is not None else results
-
-        # Enrich Google Books results with local data (activeListings, minPrice,
-        # waitlistCount, id) in a fixed number of queries instead of per-item lookups.
-        isbns = [item['isbn'] for item in results_to_process if item.get('isbn')]
-        ids = [item['id'] for item in results_to_process if item.get('id')]
+        isbns = [item['isbn'] for item in results if item.get('isbn')]
+        ids = [item['id'] for item in results if item.get('id')]
         books_by_isbn = {}
         books_by_id = {}
         if isbns or ids:
@@ -222,7 +282,6 @@ class BookSearchView(views.APIView):
             books_by_isbn = {book.isbn13: book for book in books if book.isbn13}
             books_by_id = {str(book.id): book for book in books}
 
-        # Distinct active-listing conditions per book, for the frontend condition filter
         conditions_by_book_id = {}
         if books_by_id:
             condition_filter = {'book_id__in': list(books_by_id.keys()), 'status': 'active'}
@@ -241,25 +300,21 @@ class BookSearchView(views.APIView):
             subscription_by_book_id = {sub.book_id: sub.id for sub in subs}
 
         enhanced_results = []
-        for item in results_to_process:
+        for item in results:
             isbn = item.get('isbn')
             local_id = item.get('id')
             book = books_by_id.get(local_id) or (books_by_isbn.get(isbn) if isbn else None)
             subscription_id = subscription_by_book_id.get(book.id) if book else None
 
             enhanced_results.append({
-                # Empty when the book does not exist locally yet; frontend must handle it
                 'id': str(book.id) if book else '',
                 'title': item.get('title', ''),
-                'author': item.get('authors', ''),  # frontend expects `author`, not `authors`
+                'author': item.get('authors', ''),
                 'isbn': isbn or '',
                 'coverUrl': item.get('cover_url', ''),
                 'publisher': item.get('publisher', ''),
                 'published_date': item.get('published_date', ''),
                 'source': item.get('source', 'manual'),
-                # Dev-only monitoring field (not shown in the UI): which
-                # engine actually served this item, and whether it was a
-                # cache hit. Absent for locally-stored books.
                 'debug_source': item.get('debug_source'),
                 'activeListings': book.global_active_listings_count if book else 0,
                 'localActiveListings': book.local_active_listings_count if book else 0,
@@ -270,11 +325,133 @@ class BookSearchView(views.APIView):
                 'subscription_id': subscription_id,
             })
 
+        filtered_results = []
+        for item in enhanced_results:
+            item_in_stock = item['activeListings'] > 0
+            if in_stock_required and not item_in_stock:
+                continue
+            if filter_price:
+                if not item_in_stock:
+                    continue
+                min_price = item['minPrice']
+                if min_price is None:
+                    continue
+                if p_min is not None and min_price < p_min:
+                    continue
+                if p_max is not None and min_price > p_max:
+                    continue
+            if allowed_conditions is not None:
+                conds = item.get('conditions', [])
+                if not set(conds).intersection(allowed_conditions):
+                    continue
+            filtered_results.append(item)
+
+        facet_base_q = Q(status='active', book__region=region)
+        if school:
+            facet_base_q &= Q(school__name=school)
+            
+        if category or (course and not query):
+            if category:
+                facet_base_q &= Q(category__slug=category)
+            if course:
+                facet_base_q &= Q(course_name=course)
+        else:
+            query_stripped = query.strip() if query else ''
+            is_isbn = query_stripped.isdigit() and len(query_stripped) in (10, 13) if query_stripped else False
+            if is_isbn:
+                facet_base_q &= Q(book__isbn13=query_stripped)
+            elif query_stripped:
+                facet_base_q &= (
+                    Q(book__title__icontains=query_stripped) |
+                    Q(book__authors__icontains=query_stripped) |
+                    Q(book__isbn13__icontains=query_stripped) |
+                    Q(course_name__icontains=query_stripped) |
+                    Q(professor_name__icontains=query_stripped)
+                )
+
+        from core.models import Category
+        # IMPORTANT: When calculating facets, we DO NOT apply the facet's own condition!
+        # Re-build query base without category/course for facet computation.
+        
+        # Base query that DOES NOT have category or course applied (we will apply them selectively)
+        base_facet_no_cat_no_course = Q(status='active', book__region=region)
+        if school:
+            base_facet_no_cat_no_course &= Q(school__name=school)
+            
+        if category or (course and not query):
+            # In this branch, query is ignored by the main search.
+            pass
+        else:
+            query_stripped = query.strip() if query else ''
+            is_isbn = query_stripped.isdigit() and len(query_stripped) in (10, 13) if query_stripped else False
+            if is_isbn:
+                base_facet_no_cat_no_course &= Q(book__isbn13=query_stripped)
+            elif query_stripped:
+                base_facet_no_cat_no_course &= (
+                    Q(book__title__icontains=query_stripped) |
+                    Q(book__authors__icontains=query_stripped) |
+                    Q(book__isbn13__icontains=query_stripped) |
+                    Q(course_name__icontains=query_stripped) |
+                    Q(professor_name__icontains=query_stripped)
+                )
+                
+        # 1. Category Facets (apply course, but not category)
+        cat_q = base_facet_no_cat_no_course
+        if course:
+            cat_q &= Q(course_name=course)
+        cat_rows = Listing.objects.filter(cat_q).exclude(category__isnull=True).values('category__slug').annotate(c=Count('book_id', distinct=True))
+        category_counts = {row['category__slug']: row['c'] for row in cat_rows}
+        all_categories = Category.objects.filter(region=region)
+        category_facets = [{'value': c.slug, 'count': category_counts.get(c.slug, 0)} for c in all_categories]
+        
+        # 2. Course Facets (apply category, but not course)
+        course_q = base_facet_no_cat_no_course
+        if category:
+            course_q &= Q(category__slug=category)
+        course_rows = Listing.objects.filter(course_q).exclude(course_name='').values('course_name').annotate(c=Count('book_id', distinct=True))
+        course_counts_dict = {row['course_name']: row['c'] for row in course_rows}
+        
+        courses_q = Q(status='active', book__region=region)
+        if school:
+            courses_q &= Q(school__name=school)
+        if category:
+            courses_q &= Q(category__slug=category)
+        top_courses = Listing.objects.filter(courses_q).exclude(course_name='').values('course_name').annotate(c=Count('id')).order_by('-c', 'course_name')[:20]
+        frontend_course_names = [row['course_name'] for row in top_courses]
+        course_facets = [{'value': c, 'count': course_counts_dict.get(c, 0)} for c in frontend_course_names]
+        
+        # 3. Condition Facets (apply category AND course, but not condition)
+        cond_q = base_facet_no_cat_no_course
+        if category:
+            cond_q &= Q(category__slug=category)
+        if course:
+            cond_q &= Q(course_name=course)
+        cond_rows = Listing.objects.filter(cond_q).values('condition').annotate(c=Count('book_id', distinct=True))
+        condition_counts = {row['condition']: row['c'] for row in cond_rows}
+        condition_keys = ['new', 'like_new', 'noted', 'damaged']
+        condition_facets = [{'value': c, 'count': condition_counts.get(c, 0)} for c in condition_keys]
+        
+        facets = {
+            'condition': condition_facets,
+            'category': category_facets,
+            'course': course_facets,
+        }
+
+        from rest_framework.pagination import PageNumberPagination
+        paginator = PageNumberPagination()
+        paginated_results = paginator.paginate_queryset(filtered_results, request)
+
         if paginated_results is not None:
-            response = paginator.get_paginated_response(enhanced_results)
+            response = paginator.get_paginated_response(paginated_results)
             response.data['google_unavailable'] = google_unavailable
+            response.data['facets'] = facets
             return response
-        return Response(enhanced_results)
+            
+        return Response({
+            'google_unavailable': google_unavailable,
+            'facets': facets,
+            'results': filtered_results
+        })
 
 class CourseListView(views.APIView):
     permission_classes = [AllowAny]
@@ -297,5 +474,5 @@ class CourseListView(views.APIView):
             count=Count('id')
         ).order_by('-count', 'course_name')[:20]
         
-        results = [item['course_name'] for item in course_counts]
+        results = [{'value': item['course_name'], 'count': item['count']} for item in course_counts]
         return Response(results)
