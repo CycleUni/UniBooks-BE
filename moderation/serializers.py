@@ -94,15 +94,25 @@ class ChatReportCreateSerializer(serializers.ModelSerializer):
 
     def validate_conversation(self, value):
         reporter = self.context['request'].user
-        if not Conversation.objects.filter(
-            id=value.id,
-            listing__seller_id=reporter.id
-        ).exists() and not Conversation.objects.filter(
-            id=value.id,
-            buyer_id=reporter.id
-        ).exists():
+        # `value` is already the Conversation row; no need to re-query it twice.
+        if reporter.id not in (value.buyer_id, value.listing.seller_id):
             raise serializers.ValidationError("You are not a participant in this conversation.")
         return value
+
+    def validate(self, attrs):
+        # The reported party is whoever the reporter is talking to, full stop.
+        # Taking it from the client unvalidated let a report be filed against
+        # any user id at all, attached to a conversation they were never in.
+        conversation = attrs.get('conversation')
+        reported_party = attrs.get('reported_party')
+        if conversation is not None and reported_party is not None:
+            reporter = self.context['request'].user
+            other_party_id = (
+                conversation.listing.seller_id if reporter.id == conversation.buyer_id else conversation.buyer_id
+            )
+            if reported_party.id != other_party_id:
+                raise serializers.ValidationError({"reported_party": "moderation.errInvalidReportedParty"})
+        return attrs
 
     def validate_reason(self, value):
         valid_reasons = dict(ChatReport.REASON_CHOICES)

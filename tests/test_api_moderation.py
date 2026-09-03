@@ -50,6 +50,9 @@ def staff(db):
     u = User.objects.create_user(
         email="mod-staff@example.com", first_name="St", last_name="Aff", password=PASSWORD, is_staff=True
     )
+    # Staff moderation views are scoped to the regions a manager holds, the
+    # same way adminapi already is — a bare is_staff account sees nothing.
+    u.managed_regions.add('TW')
     from accounts.models import RegionVerification
     RegionVerification.objects.update_or_create(user=u, region_id='TW', defaults={'school': getattr(u, 'school', None), 'edu_email': u.email, 'verified_at': timezone.now()})
     return u

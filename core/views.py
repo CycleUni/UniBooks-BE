@@ -55,14 +55,23 @@ class HealthCheckView(APIView):
             logger.exception("Health check cache failure")
             cache_ok = False
 
-        # 3. Unapplied migrations check
+        # 3. Unapplied migrations check. Loading the full migration graph is
+        # the expensive part of this endpoint (it imports every migration
+        # module and queries django_migrations), and the answer only changes
+        # on deploy — so the count is remembered for a minute. The probe is
+        # unauthenticated and unthrottled; without this each hit cost a full
+        # graph build.
         migrations_ok = False
         unapplied_count = None
         try:
-            executor = MigrationExecutor(connections["default"])
-            targets = executor.loader.graph.leaf_nodes()
-            plan = executor.migration_plan(targets)
-            unapplied_count = len(plan)
+            unapplied_count = cache.get("healthz_unapplied_migrations") if cache_ok else None
+            if unapplied_count is None:
+                executor = MigrationExecutor(connections["default"])
+                targets = executor.loader.graph.leaf_nodes()
+                plan = executor.migration_plan(targets)
+                unapplied_count = len(plan)
+                if cache_ok:
+                    cache.set("healthz_unapplied_migrations", unapplied_count, timeout=60)
             migrations_ok = (unapplied_count == 0)
         except Exception:
             logger.exception("Health check migrations failure")

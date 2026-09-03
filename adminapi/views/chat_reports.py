@@ -1,10 +1,8 @@
 import logging
-import os
 import time
 
-import jwt
-
 from django.conf import settings
+from rest_framework_simplejwt.backends import TokenBackend
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status, views
 from rest_framework.pagination import PageNumberPagination
@@ -112,7 +110,10 @@ class AdminChatReportTokenView(views.APIView):
         chat_report = get_object_or_404(qs, pk=pk)
         conv = chat_report.conversation
 
-        edge_jwt_secret = os.getenv('EDGE_CHAT_JWT_SECRET', '')
+        # Read through settings like every other view (settings.py is the
+        # single audited place env vars are declared); os.getenv bypassed
+        # that and the test-time override_settings that comes with it.
+        edge_jwt_secret = settings.EDGE_CHAT_JWT_SECRET
         if not edge_jwt_secret:
             return Response(
                 {"error": {"code": "admin.chatNotConfigured"}},
@@ -126,9 +127,9 @@ class AdminChatReportTokenView(views.APIView):
             'app_id': app_id,
             'exp': int(time.time()) + 300,
         }
-        token = jwt.encode(payload, edge_jwt_secret, algorithm='HS256')
+        token = TokenBackend(algorithm="HS256", signing_key=edge_jwt_secret).encode(payload)
 
-        edge_chat_url = os.getenv('EDGE_CHAT_URL', '').strip('/')
+        edge_chat_url = settings.EDGE_CHAT_URL.rstrip('/')
         return Response({
             'token': token,
             'edge_chat_url': edge_chat_url,

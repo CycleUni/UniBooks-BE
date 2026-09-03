@@ -119,11 +119,11 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     @property
     def average_rating(self):
-        reviews = self.reviews_received.filter(is_no_show=False, rating__isnull=False)
-        if not reviews.exists():
-            return 0.0
         from django.db.models import Avg
-        return round(reviews.aggregate(Avg('rating'))['rating__avg'], 1)
+        # One aggregate; the previous exists()+aggregate pair cost two queries
+        # per serialized user for the same answer.
+        avg = self.reviews_received.filter(is_no_show=False, rating__isnull=False).aggregate(avg=Avg('rating'))['avg']
+        return round(avg, 1) if avg is not None else 0.0
 
     @property
     def review_count(self):

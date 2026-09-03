@@ -15,20 +15,33 @@ from core.permissions import IsVerifiedInRegion
 class ReviewViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsVerifiedInRegion]
     serializer_class = ReviewSerializer
+    # Reviews are write-once. The queryset below deliberately includes reviews
+    # *about* the caller (so they can read them), and ModelViewSet's default
+    # update/destroy on that same queryset let the person being reviewed
+    # rewrite the rating or delete the review outright.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_target_region(self, request):
         if request.method == 'POST':
             order_id = request.data.get('order')
             if order_id:
+                from django.core.exceptions import ValidationError as DjangoValidationError
                 from orders.models import Order
-                order = Order.objects.filter(id=order_id).first()
+                try:
+                    order = Order.objects.filter(id=order_id).first()
+                except (DjangoValidationError, ValueError):
+                    return None
                 if order:
                     return order.region
         return None
 
     def get_queryset(self):
         user = self.request.user
-        return Review.objects.filter(Q(reviewer=user) | Q(reviewee=user)).order_by('-created_at')
+        return (
+            Review.objects.filter(Q(reviewer=user) | Q(reviewee=user))
+            .select_related('reviewer', 'reviewee')
+            .order_by('-created_at')
+        )
 
     def perform_create(self, serializer):
         order = serializer.validated_data['order']

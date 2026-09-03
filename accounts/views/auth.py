@@ -1,4 +1,5 @@
 import logging
+import threading
 import uuid
 
 from django.utils.translation import gettext_lazy as _
@@ -72,6 +73,14 @@ def _is_valid_edu_email(email):
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+# GoogleLoginView briefly swaps `jwt.decode` for a leeway-adding wrapper.
+# That is process-global state, so two Google logins on different threads
+# could interleave: one restores the original while the other is still
+# inside the call, or the second wraps the first's wrapper and the last
+# `finally` reinstalls a wrapper for good. Serialising the swap keeps the
+# patch/restore pair atomic; the critical section is a few milliseconds.
+_JWT_DECODE_PATCH_LOCK = threading.Lock()
 
 
 def _send_verification_email(subject, message, recipient_email, log_context):
@@ -380,22 +389,37 @@ class GoogleLoginView(views.APIView):
             # allauth will securely verify the ID token signature, issuer, and audience (client_id)
             # We monkey-patch PyJWT momentarily to add 5 seconds of leeway for clock skew (iat)
             import jwt
-            _original_jwt_decode = jwt.decode
+            with _JWT_DECODE_PATCH_LOCK:
+                _original_jwt_decode = jwt.decode
 
-            def _jwt_decode_with_leeway(*args, **kwargs):
-                kwargs.setdefault('leeway', 5)
-                return _original_jwt_decode(*args, **kwargs)
+                def _jwt_decode_with_leeway(*args, **kwargs):
+                    kwargs.setdefault('leeway', 5)
+                    return _original_jwt_decode(*args, **kwargs)
 
-            jwt.decode = _jwt_decode_with_leeway
-            try:
-                idinfo = _verify_and_decode(app, credential, verify_signature=True)
-            finally:
-                jwt.decode = _original_jwt_decode
+                jwt.decode = _jwt_decode_with_leeway
+                try:
+                    idinfo = _verify_and_decode(app, credential, verify_signature=True)
+                finally:
+                    jwt.decode = _original_jwt_decode
 
             email = idinfo.get('email')
             if not email:
                 return Response({"error": {"code": "auth.errNoEmail"}}, status=status.HTTP_400_BAD_REQUEST)
 
+            # A Google account can carry an unverified address (Google-managed
+            # accounts created on a third-party email, or a changed recovery
+            # address). The ID token says so via `email_verified`; without this
+            # check anyone able to register such an account on someone else's
+            # address could sign straight into that person's UniBooks account,
+            # since the lookup below is by email alone.
+            email_verified = idinfo.get('email_verified')
+            if email_verified is not True and str(email_verified).lower() != 'true':
+                return Response({"error": {"code": "auth.errEmailNotVerified"}}, status=status.HTTP_403_FORBIDDEN)
+
+            # Stored lowercased and looked up case-insensitively, matching the
+            # password flows (RegisterSerializer / LoginView) so a Google
+            # sign-in can never mint a second account differing only by case.
+            email = email.strip().lower()
             uid = idinfo.get('sub')
             first_name = idinfo.get('given_name', '')
             last_name = idinfo.get('family_name', '')
@@ -403,20 +427,19 @@ class GoogleLoginView(views.APIView):
             avatar_url = idinfo.get('picture', '')
 
             # Find or create user
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    'first_name': first_name,
-                    'last_name': last_name,
-                    'avatar_url': avatar_url,
-                }
-            )
-            if not created and avatar_url and user.avatar_url != avatar_url:
+            user = User.objects.filter(email__iexact=email).first()
+            created = user is None
+            if created:
+                # No password: create_user(password=None) stores an unusable one.
+                user = User.objects.create_user(
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    avatar_url=avatar_url,
+                )
+            elif avatar_url and user.avatar_url != avatar_url:
                 user.avatar_url = avatar_url
                 user.save(update_fields=['avatar_url'])
-            if created:
-                user.set_unusable_password()
-                user.save()
 
             # Block login for disabled accounts (except superusers).
             # No auto-reactivation: once an admin disables an account,
@@ -533,8 +556,15 @@ class ChangePasswordView(views.APIView):
             if not user.check_password(old_password):
                 return Response({"old_password": [_("Incorrect password.")]}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Same AUTH_PASSWORD_VALIDATORS registration and the reset flow run;
+        # this was the one path that accepted a one-character password.
+        try:
+            validate_password(new_password, user=user)
+        except DjangoValidationError as e:
+            return Response({"error": {"code": "auth.errValidation", "fields": e.messages}}, status=status.HTTP_400_BAD_REQUEST)
+
         user.set_password(new_password)
-        user.save()
+        user.save(update_fields=['password'])
         return Response({"code": "acct.passwordUpdated"})
 
 

@@ -41,16 +41,21 @@ class ListingSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
+        # `private_note` is seller-only. It is dropped for anyone but the
+        # seller, and unconditionally when the caller marks the payload as
+        # bound for a shared cache (`strip_private_note`): the public listing
+        # and book endpoints cache the serialized body under a key that
+        # carries no user identity, so the seller's own first view would
+        # otherwise seed the cache with the note and serve it to everyone
+        # who loads the page after them.
         request = self.context.get('request')
-        if not request or not request.user.is_authenticated or request.user.id != instance.seller_id:
+        is_seller = bool(
+            request is not None
+            and request.user.is_authenticated
+            and request.user.id == instance.seller_id
+        )
+        if self.context.get('strip_private_note') or not is_seller:
             rep.pop('private_note', None)
-        
-        # Ensure we always return lists even if database had null
-        if not rep.get('delivery_methods'):
-            rep['delivery_methods'] = ['meetup']
-        if not rep.get('payment_methods'):
-            rep['payment_methods'] = ['cash']
-            
         return rep
 
     def get_seller_name(self, obj):

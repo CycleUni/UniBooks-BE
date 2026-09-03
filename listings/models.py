@@ -65,6 +65,15 @@ class Listing(models.Model):
 
     class Meta:
         indexes = [
+            # Every public feed (listing list, recent books, search facets,
+            # book page) filters on region + status='active' and sorts by
+            # recency; the FK indexes alone still meant a sort over every
+            # listing in the region.
+            models.Index(fields=['region', 'status', '-created_at'], name='listing_region_status_idx'),
+            # Search facets group active listings by category and by course
+            # (search.views.BookSearchView / CourseListView).
+            models.Index(fields=['region', 'status', 'category'], name='listing_region_status_cat_idx'),
+            models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_course_idx'),
             GinIndex(
                 name='listing_course_trgm_idx',
                 fields=['course_name'],
@@ -98,6 +107,12 @@ class Listing(models.Model):
                     # The R2 key is: listings/<uuid>.<ext>
                     parsed = urlparse(photo_url)
                     key = parsed.path.lstrip('/')
+                    # Local dev serves uploads under MEDIA_URL; that prefix is
+                    # part of the URL, not of the storage key, and leaving it
+                    # on made every dev-mode delete a silent miss.
+                    media_url = (settings.MEDIA_URL or '/').strip('/')
+                    if media_url and key.startswith(media_url + '/'):
+                        key = key[len(media_url) + 1:]
                     default_storage.delete(key)
                     logger.info("Deleted photo %s for listing %s", key, self.id)
                 except Exception:

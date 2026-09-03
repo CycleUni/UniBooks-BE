@@ -2,9 +2,9 @@ from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.throttling import ScopedRateThrottle
-from django.utils.decorators import method_decorator
-from django.views.decorators.cache import cache_page
+from django.core.cache import cache
 from core.authentication import OptionalJWTAuthentication
+from core.cache import LISTING_CACHE_TTL, region_versioned_key
 from catalog.services import (
     search_google_books, get_google_books_by_isbn,
     search_open_library_books, get_open_library_book_by_isbn,
@@ -74,7 +74,10 @@ class BookSearchView(views.APIView):
                 base_filter &= Q(listings__course_name=course)
             if school:
                 base_filter &= Q(listings__school__name=school)
-            books = Book.objects.filter(base_filter, region=region).distinct()
+            # Bounded and ordered: this used to pull every matching Book into
+            # Python before paginating, in whatever order the database felt
+            # like, so page 2 could repeat page 1.
+            books = Book.objects.filter(base_filter, region=region).distinct().order_by('-created_at')[:200]
             results = []
             for book in books:
                 results.append({
@@ -231,7 +234,7 @@ class BookSearchView(views.APIView):
                 
                 # Limit local books to 100 to prevent memory explosion when merging
                 # with Google Books API results in Python.
-                local_books = local_books.distinct()[:100]
+                local_books = local_books.distinct().order_by('-created_at')[:100]
             
             local_results = []
             for book in local_books:
@@ -458,12 +461,21 @@ class CourseListView(views.APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'search'
 
-    @method_decorator(cache_page(60 * 60))
     def get(self, request):
         school = request.GET.get('school', '')
         category = request.GET.get('category', '')
-        
+
         region = get_region(request)
+        # Hand-rolled cache rather than cache_page: that keyed on the URL
+        # alone, while the region comes from the X-Region header or cookie as
+        # well, so Hong Kong could be served Taiwan's course list for an
+        # hour. Stamped with the listing_list generation, it is also
+        # invalidated the moment a listing changes instead of going stale.
+        cache_key = region_versioned_key(region, 'listing_list', 'courses', school, category)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         courses = Listing.objects.filter(region=region, status='active').exclude(course_name__exact='')
         if school:
             courses = courses.filter(school__name=school)
@@ -475,4 +487,5 @@ class CourseListView(views.APIView):
         ).order_by('-count', 'course_name')[:20]
         
         results = [{'value': item['course_name'], 'count': item['count']} for item in course_counts]
+        cache.set(cache_key, results, timeout=LISTING_CACHE_TTL)
         return Response(results)

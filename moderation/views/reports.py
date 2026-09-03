@@ -10,9 +10,16 @@ from core.region import get_region
 from ..serializers import (
     ReportCreateSerializer, ReportSerializer, ReportStatusUpdateSerializer,
 )
-
-
 from core.permissions import IsVerifiedInRegion
+
+
+def scope_reports_to_manager(qs, user):
+    """Staff see the regions they manage; superusers see everything (same
+    rule adminapi applies to every other staff-facing list)."""
+    if user.is_superuser:
+        return qs
+    return qs.filter(listing__region__in=user.managed_regions.all())
+
 
 class ReportCreateView(generics.CreateAPIView):
     """POST /api/v1/moderation/ submits a report."""
@@ -62,7 +69,11 @@ class MyReportsView(generics.ListAPIView):
 
     def get_queryset(self):
         region = get_region(self.request)
-        return Report.objects.filter(reporter=self.request.user, listing__region=region).order_by('-created_at')
+        return (
+            Report.objects.filter(reporter=self.request.user, listing__region=region)
+            .select_related('listing__book', 'reporter')
+            .order_by('-created_at')
+        )
 
 
 class ReportListView(generics.ListAPIView):
@@ -77,7 +88,8 @@ class ReportListView(generics.ListAPIView):
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
-        qs = Report.objects.all().order_by('-created_at')
+        qs = Report.objects.select_related('listing__book', 'reporter').order_by('-created_at')
+        qs = scope_reports_to_manager(qs, self.request.user)
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -93,9 +105,11 @@ class ReportActionView(generics.UpdateAPIView):
     """
     permission_classes = [IsAdminUser]
     serializer_class = ReportStatusUpdateSerializer
-    queryset = Report.objects.all()
     lookup_field = 'id'
     http_method_names = ['patch']
+
+    def get_queryset(self):
+        return scope_reports_to_manager(Report.objects.select_related('listing'), self.request.user)
 
     def perform_update(self, serializer):
         report = serializer.save()

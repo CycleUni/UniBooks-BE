@@ -1,15 +1,19 @@
 from core.region import get_region
+import datetime
 import logging
 
 from django.conf import settings
-from django.db.models import Q
-from rest_framework import viewsets, status
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Exists, OuterRef, Q
+from rest_framework import serializers, viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from listings.models import Listing
 from messaging.models import Conversation
 
-from ..models import Order
+from ..models import Order, Review
 from ..serializers import OrderSerializer, OrderStatusUpdateSerializer
 
 logger = logging.getLogger(__name__)
@@ -40,6 +44,10 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
             "app_id": app_id,
             "participant_ids": [str(conv.buyer_id), str(conv.listing.seller_id)],
             "role": "system",
+            # Used once, right now, by this server. Without an exp a leaked
+            # copy (a proxy log, a crash dump) would post system-role
+            # messages into this room forever.
+            "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
         })
         url = f"{edge_chat_url}/api/{app_id}/{conv.id}/messages"
         req = urllib.request.Request(
@@ -105,13 +113,22 @@ from core.permissions import IsVerifiedInRegion
 
 class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsVerifiedInRegion]
+    # Orders are a shared record between buyer and seller: neither party may
+    # delete one (ModelViewSet's default `destroy` let either side erase a
+    # completed order, and the reviews cascading with it), and full-object PUT
+    # has no use case — status changes go through PATCH.
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_target_region(self, request):
         if request.method == 'POST':
             listing_id = request.data.get('listing')
             if listing_id:
-                from listings.models import Listing
-                listing = Listing.objects.filter(id=listing_id).first()
+                try:
+                    listing = Listing.objects.filter(id=listing_id).first()
+                except (DjangoValidationError, ValueError):
+                    # Not a UUID: let the serializer report it as a 400
+                    # instead of a 500 from the filter.
+                    return None
                 if listing:
                     return listing.region
         return None
@@ -136,7 +153,16 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         region = get_region(self.request)
-        qs = Order.objects.filter(Q(buyer=user) | Q(seller=user), region=region).order_by('-created_at')
+        qs = (
+            Order.objects.filter(Q(buyer=user) | Q(seller=user), region=region)
+            .select_related('listing__book', 'buyer', 'seller')
+            # OrderSerializer.has_reviewed reads this instead of issuing one
+            # EXISTS query per row of the list.
+            .annotate(has_reviewed_annotated=Exists(
+                Review.objects.filter(order=OuterRef('pk'), reviewer=user)
+            ))
+            .order_by('-created_at')
+        )
         
         q = self.request.query_params.get('q')
         if q:
@@ -203,23 +229,35 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         old_status = serializer.instance.status if serializer.instance else None
-        order = serializer.save()
-        new_status = order.status
+        new_status = serializer.validated_data.get('status', old_status)
 
-        # Handle listing status changes
-        listing_status_changed = False
-        if new_status == 'cancelled':
-            order.listing.status = 'active'
-            order.listing.save(update_fields=['status'])
-            listing_status_changed = True
-        elif new_status == 'accepted':
-            order.listing.status = 'reserved'
-            order.listing.save(update_fields=['status'])
-            listing_status_changed = True
-        elif new_status == 'completed':
-            order.listing.status = 'sold'
-            order.listing.save(update_fields=['status'])
-            listing_status_changed = True
+        with transaction.atomic():
+            if new_status == 'accepted' and old_status != 'accepted':
+                # Several buyers can hold pending orders on one listing. Lock
+                # the listing row for the check-then-reserve so two accepts
+                # racing each other cannot both reserve it — the second one
+                # must see 'reserved' and be refused.
+                listing = Listing.objects.select_for_update().get(pk=serializer.instance.listing_id)
+                if listing.status != 'active':
+                    raise serializers.ValidationError({"status": "checkout.errListingUnavailable"})
+
+            order = serializer.save()
+
+            # Handle listing status changes
+            if new_status == 'cancelled':
+                # Only undo a reservation this order actually holds. A pending
+                # order never reserved anything, and a seller who has since
+                # marked the listing sold or removed must not have it flipped
+                # back to active by a buyer withdrawing a stale request.
+                if old_status in ('accepted', 'handed_over') and order.listing.status == 'reserved':
+                    order.listing.status = 'active'
+                    order.listing.save(update_fields=['status'])
+            elif new_status == 'accepted':
+                order.listing.status = 'reserved'
+                order.listing.save(update_fields=['status'])
+            elif new_status == 'completed':
+                order.listing.status = 'sold'
+                order.listing.save(update_fields=['status'])
 
         # No cache bookkeeping needed here: the listing.save() calls above fire
         # post_save, and listings.models.invalidate_listing_caches bumps every

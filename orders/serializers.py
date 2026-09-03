@@ -10,6 +10,11 @@ class OrderSerializer(serializers.ModelSerializer):
     has_reviewed = serializers.SerializerMethodField()
     
     def get_has_reviewed(self, obj):
+        # OrderViewSet.get_queryset annotates this; the query below is only
+        # the fallback for a serializer built on an un-annotated instance.
+        annotated = getattr(obj, 'has_reviewed_annotated', None)
+        if annotated is not None:
+            return bool(annotated)
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return False
@@ -71,3 +76,15 @@ class ReviewSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('reviewer', 'reviewee', 'created_at')
         validators = []  # Bypass auto-generated UniqueTogetherValidator since fields are read-only
+
+    def validate(self, attrs):
+        # The model column is a bare PositiveSmallIntegerField, so anything
+        # from 0 to 32767 used to be accepted and fed straight into
+        # User.average_rating. A no-show report carries no rating at all.
+        is_no_show = attrs.get('is_no_show', False)
+        rating = attrs.get('rating')
+        if is_no_show:
+            attrs['rating'] = None
+        elif rating is None or not (1 <= rating <= 5):
+            raise serializers.ValidationError({"rating": "order.errRatingRange"})
+        return attrs

@@ -1,6 +1,6 @@
 import logging
 
-from django.db.models import Q
+from django.db.models import Q, prefetch_related_objects
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import status, views
@@ -26,6 +26,10 @@ class MyProfileView(views.APIView):
 
     def get(self, request):
         user = request.user
+        # UserSerializer walks region_verifications (and each one's school)
+        # from half a dozen method fields; without this every one of them
+        # re-queries the relation.
+        prefetch_related_objects([user], 'region_verifications__school')
         serializer = UserSerializer(user, context={'request': request})
         data = serializer.data
 
@@ -98,8 +102,14 @@ class MyProfileView(views.APIView):
                 # ownership of. Legitimate school-email logins are still
                 # possible (set at registration, proven via the activation
                 # link), just not by editing it in afterward.
-                new_domain = email.split('@')[-1] if '@' in email else ''
-                if School.objects.filter(email_domain__iexact=new_domain).exists():
+                #
+                # Uses the same suffix-aware matcher the auto-verify view
+                # trusts. An exact-domain check here was bypassable: School
+                # rows match any subdomain (`mail.ntu.edu.tw` resolves to
+                # `ntu.edu.tw`), so `me@mail.ntu.edu.tw` sailed through this
+                # check and was then accepted as a campus address.
+                from accounts.views.auth import _is_valid_edu_email
+                if _is_valid_edu_email(email):
                     return Response({"error": {"code": "acct.errEduEmailChangeNotAllowed"}}, status=status.HTTP_400_BAD_REQUEST)
                 user.email = email
                 updated_fields.append('email')

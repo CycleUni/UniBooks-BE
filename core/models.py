@@ -22,9 +22,6 @@ class Category(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['slug', 'region'], name='category_slug_region_uniq')
         ]
-        constraints = [
-            models.UniqueConstraint(fields=['slug', 'region'], name='category_slug_region_uniq')
-        ]
         verbose_name_plural = 'categories'
 
     def localized(self, lang):

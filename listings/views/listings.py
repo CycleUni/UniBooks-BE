@@ -8,8 +8,7 @@ from listings.serializers import ListingSerializer
 
 from rest_framework.throttling import ScopedRateThrottle
 
-from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, versioned_key, region_versioned_key
-from core.region import get_region
+from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, region_versioned_key
 from core.permissions import IsVerifiedInRegion
 
 
@@ -55,13 +54,15 @@ class ListingListCreateView(views.APIView):
         from rest_framework.pagination import PageNumberPagination
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(listings, request)
+        # Cached and served to every visitor: seller-only fields stay out.
+        public_context = {'request': request, 'strip_private_note': True}
         if page is not None:
-            serializer = ListingSerializer(page, many=True, context={'request': request})
+            serializer = ListingSerializer(page, many=True, context=public_context)
             response_data = paginator.get_paginated_response(serializer.data).data
             cache.set(cache_key, response_data, timeout=LISTING_CACHE_TTL)
             return Response(response_data)
 
-        serializer = ListingSerializer(listings, many=True, context={'request': request})
+        serializer = ListingSerializer(listings, many=True, context=public_context)
         response_data = serializer.data
         cache.set(cache_key, response_data, timeout=LISTING_CACHE_TTL)
         return Response(response_data)
@@ -89,10 +90,16 @@ class RecentBooksView(views.APIView):
         page_param = request.query_params.get('page', '1')
 
         limit_param = request.query_params.get('limit', '200')
+        # Normalise both before they reach the cache key: the raw strings are
+        # attacker-chosen, so every distinct value would otherwise mint a new
+        # cache entry (`?limit=201`, `?limit=202`, ...) — unbounded key growth
+        # with zero hit rate. A page size is also a real cap, not a suggestion.
+        limit = min(max(int(limit_param), 1), 200) if limit_param.isdigit() else 200
+        page_param = page_param if page_param.isdigit() else '1'
         import urllib.parse
         safe_school = urllib.parse.quote(school)
         region = get_region(request)
-        cache_key = f"{region.code}_recent_books_{lang}_{safe_school}_{page_param}_{limit_param}"
+        cache_key = f"{region.code}_recent_books_{lang}_{safe_school}_{page_param}_{limit}"
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)
@@ -129,10 +136,9 @@ class RecentBooksView(views.APIView):
         paginated_books = paginator.paginate_queryset(books_qs, request)
         if paginated_books is not None:
             # Slice only after pagination to maintain queryset integrity
-            limit = int(limit_param) if limit_param.isdigit() else 200
             books_to_process = paginated_books[:limit]
         else:
-            books_to_process = books_qs[:int(limit_param) if limit_param.isdigit() else 200]
+            books_to_process = books_qs[:limit]
 
         book_ids = [b.id for b in books_to_process]
 
@@ -200,16 +206,22 @@ class ListingDetailView(views.APIView):
 
         region = get_region(request)
         cache_key = region_versioned_key(region, f'listing:{pk}', lang)
-        cached_data = cache.get(cache_key)
-        if cached_data is not None:
-            return Response(cached_data)
+        response_data = cache.get(cache_key)
+        if response_data is None:
+            listing = self.get_object(request, pk, require_seller=False)
+            if not listing:
+                return Response(status=status.HTTP_404_NOT_FOUND)
+            # The cached body is shared by every viewer, so it is serialized
+            # without the seller-only note regardless of who triggered the
+            # rebuild — see ListingSerializer.to_representation.
+            serializer = ListingSerializer(listing, context={'request': request, 'strip_private_note': True})
+            response_data = serializer.data
+            cache.set(cache_key, response_data, timeout=LISTING_CACHE_TTL)
 
-        listing = self.get_object(request, pk, require_seller=False)
-        if not listing:
-             return Response(status=status.HTTP_404_NOT_FOUND)
-        serializer = ListingSerializer(listing, context={'request': request})
-        response_data = serializer.data
-        cache.set(cache_key, response_data, timeout=LISTING_CACHE_TTL)
+        # The seller gets their note back, read fresh and never cached.
+        if request.user.is_authenticated and response_data.get('seller') == request.user.id:
+            note = Listing.objects.filter(pk=pk).values_list('private_note', flat=True).first()
+            response_data = {**response_data, 'private_note': note or ''}
         return Response(response_data)
 
     def patch(self, request, pk):
@@ -218,22 +230,47 @@ class ListingDetailView(views.APIView):
              return Response(status=status.HTTP_404_NOT_FOUND)
 
         # Handle manual book updates
-        if listing.book.source == 'manual':
+        book_fields_sent = any(k in request.data for k in ('book_title', 'book_authors', 'isbn'))
+        if listing.book.source == 'manual' and book_fields_sent:
+            book = listing.book
+            # A Book row is shared by every listing of that title. Letting one
+            # seller rewrite it would silently retitle other sellers' listings
+            # (and their buyers' orders), so edits are only allowed while this
+            # seller is the book's sole lister.
+            if book.listings.exclude(seller=request.user).exists():
+                return Response({"error": {"code": "listing.errBookShared"}}, status=status.HTTP_403_FORBIDDEN)
+
+            update_fields = []
             book_title = request.data.get('book_title')
-            book_authors = request.data.get('book_authors')
-            isbn = request.data.get('isbn')
-            updated_book = False
             if book_title is not None:
-                listing.book.title = book_title
-                updated_book = True
+                if not isinstance(book_title, str) or not book_title.strip():
+                    return Response({"error": {"code": "sell.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+                book.title = book_title.strip()[:255]
+                update_fields.append('title')
+            book_authors = request.data.get('book_authors')
             if book_authors is not None:
-                listing.book.authors = book_authors
-                updated_book = True
+                if not isinstance(book_authors, str):
+                    return Response({"error": {"code": "sell.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+                book.authors = book_authors.strip()[:512]
+                update_fields.append('authors')
+            isbn = request.data.get('isbn')
             if isbn is not None:
-                listing.book.isbn13 = isbn
-                updated_book = True
-            if updated_book:
-                listing.book.save()
+                if isbn == '':
+                    book.isbn13 = None
+                else:
+                    from catalog.models import Book
+                    from catalog.services import clean_and_validate_isbn
+                    valid_isbn = clean_and_validate_isbn(isbn)
+                    if not valid_isbn:
+                        return Response({"error": {"code": "listing.errInvalidIsbn"}}, status=status.HTTP_400_BAD_REQUEST)
+                    # isbn13 is unique: answer 400 instead of letting the
+                    # IntegrityError surface as a 500.
+                    if Book.objects.filter(isbn13=valid_isbn).exclude(pk=book.pk).exists():
+                        return Response({"error": {"code": "listing.errIsbnTaken"}}, status=status.HTTP_400_BAD_REQUEST)
+                    book.isbn13 = valid_isbn
+                update_fields.append('isbn13')
+            if update_fields:
+                book.save(update_fields=update_fields)
 
         serializer = ListingSerializer(listing, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():

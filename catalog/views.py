@@ -129,6 +129,9 @@ class BookDetailView(views.APIView):
 
                 serializer = BookSerializer(book)
                 data = serializer.data
+                # This body is cached and shared by every viewer of the book
+                # page — seller-only fields must not be serialized into it.
+                public_context = {'request': request, 'strip_private_note': True}
                 active_listings = book.listings.filter(region=region, status='active').select_related(
                     'book', 'seller', 'school'
                 ).order_by('-created_at')
@@ -141,14 +144,14 @@ class BookDetailView(views.APIView):
                         'count': paginator.page.paginator.count,
                         'next': paginator.get_next_link(),
                         'previous': paginator.get_previous_link(),
-                        'results': ListingSerializer(page, many=True, context={'request': request}).data
+                        'results': ListingSerializer(page, many=True, context=public_context).data
                     }
                 else:
                     data['listings'] = {
                         'count': active_listings.count(),
                         'next': None,
                         'previous': None,
-                        'results': ListingSerializer(active_listings, many=True, context={'request': request}).data
+                        'results': ListingSerializer(active_listings, many=True, context=public_context).data
                     }
                 data['waiting_count'] = book.subscriptions.count()
                 cache.set(cache_key, data, timeout=BOOK_DETAIL_CACHE_TTL)

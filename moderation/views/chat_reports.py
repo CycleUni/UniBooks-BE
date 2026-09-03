@@ -10,6 +10,18 @@ from ..serializers import (
 )
 
 
+def scope_chat_reports_to_manager(qs, user):
+    """Staff see the regions they manage; superusers see everything.
+
+    Mirrors adminapi (AdminChatReportListView): a region manager for Taiwan
+    must not be able to read or action Hong Kong's chat reports through this
+    older moderation route when the admin route already refuses them.
+    """
+    if user.is_superuser:
+        return qs
+    return qs.filter(conversation__listing__region__in=user.managed_regions.all())
+
+
 class ChatReportCreateView(generics.CreateAPIView):
     """POST /api/v1/moderation/chat-reports/ submits a chat report."""
     permission_classes = [IsAuthenticated]
@@ -23,12 +35,20 @@ class ChatReportCreateView(generics.CreateAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        already_pending = ChatReport.objects.filter(
-            reporter=request.user,
-            conversation_id=conversation_id,
-            conversation__listing__region=get_region(request),
-            status='open'
-        ).exists()
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        try:
+            already_pending = ChatReport.objects.filter(
+                reporter=request.user,
+                conversation_id=conversation_id,
+                conversation__listing__region=get_region(request),
+                status='open'
+            ).exists()
+        except (DjangoValidationError, ValueError):
+            # Not a UUID: a 400 from the serializer, not a 500 from the filter.
+            return Response(
+                {"error": {"code": "invalid.conversationRequired"}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if already_pending:
             return Response(
                 {"error": {"code": "moderation.errAlreadyReported"}},
@@ -49,7 +69,11 @@ class MyChatReportsView(generics.ListAPIView):
 
     def get_queryset(self):
         region = get_region(self.request)
-        return ChatReport.objects.filter(reporter=self.request.user, conversation__listing__region=region).order_by('-created_at')
+        return (
+            ChatReport.objects.filter(reporter=self.request.user, conversation__listing__region=region)
+            .select_related('conversation__listing__book', 'reporter', 'reported_party')
+            .order_by('-created_at')
+        )
 
 
 class ChatReportListView(generics.ListAPIView):
@@ -63,6 +87,7 @@ class ChatReportListView(generics.ListAPIView):
             'conversation', 'conversation__listing', 'conversation__listing__book',
             'reporter', 'reported_party'
         ).order_by('-created_at')
+        qs = scope_chat_reports_to_manager(qs, self.request.user)
         status_filter = self.request.query_params.get('status')
         if status_filter:
             qs = qs.filter(status=status_filter)
@@ -73,9 +98,11 @@ class ChatReportActionView(generics.UpdateAPIView):
     """PATCH /api/v1/moderation/chat-reports/<id>/ staff only, reviews a chat report."""
     permission_classes = [IsAdminUser]
     serializer_class = ChatReportStatusUpdateSerializer
-    queryset = ChatReport.objects.all()
     lookup_field = 'id'
     http_method_names = ['patch']
+
+    def get_queryset(self):
+        return scope_chat_reports_to_manager(ChatReport.objects.all(), self.request.user)
 
     def perform_update(self, serializer):
         report = serializer.save()
@@ -105,8 +132,11 @@ class ChatReportDetailView(generics.RetrieveAPIView):
     """GET /api/v1/moderation/chat-reports/<id>/ staff only, returns full detail."""
     permission_classes = [IsAdminUser]
     serializer_class = ChatReportSerializer
-    queryset = ChatReport.objects.select_related(
-        'conversation', 'conversation__listing', 'conversation__listing__book',
-        'reporter', 'reported_party',
-    ).all()
     lookup_field = 'id'
+
+    def get_queryset(self):
+        qs = ChatReport.objects.select_related(
+            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'reporter', 'reported_party',
+        ).all()
+        return scope_chat_reports_to_manager(qs, self.request.user)

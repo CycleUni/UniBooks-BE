@@ -28,9 +28,20 @@ class ConversationSerializer(serializers.ModelSerializer):
     # guaranteed to be chronological and can surface a stale, already
     # completed/handed-over order instead of the current pending one.
     def _latest_order(self, obj):
-        order = obj.listing.orders.filter(buyer=obj.buyer).exclude(status='cancelled').order_by('-created_at').first()
-        if not order:
-            order = obj.listing.orders.filter(buyer=obj.buyer).order_by('-created_at').first()
+        # Memoised per instance: order_id and order_status both need it.
+        if hasattr(obj, '_latest_order_cache'):
+            return obj._latest_order_cache
+        prefetched = getattr(obj.listing, 'prefetched_orders', None)
+        if prefetched is not None:
+            # ConversationListView prefetches the listing's orders newest
+            # first, so this is a pure in-memory pick.
+            mine = [o for o in prefetched if o.buyer_id == obj.buyer_id]
+            order = next((o for o in mine if o.status != 'cancelled'), None) or (mine[0] if mine else None)
+        else:
+            order = obj.listing.orders.filter(buyer=obj.buyer).exclude(status='cancelled').order_by('-created_at').first()
+            if not order:
+                order = obj.listing.orders.filter(buyer=obj.buyer).order_by('-created_at').first()
+        obj._latest_order_cache = order
         return order
 
     def get_order_id(self, obj):
@@ -45,7 +56,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return ""
-        if obj.buyer == request.user:
+        if obj.buyer_id == request.user.id:
             user = obj.listing.seller
         else:
             user = obj.buyer
@@ -55,7 +66,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return ""
-        return "seller" if obj.buyer == request.user else "buyer"
+        return "seller" if obj.buyer_id == request.user.id else "buyer"
 
     def get_latest_message(self, obj):
         return obj.latest_message_body if obj.latest_message_body else ""
