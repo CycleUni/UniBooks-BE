@@ -19,6 +19,13 @@ from core.region import get_region
 
 VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
 
+# Browsing by category or course reads Book rows straight out of the local
+# catalogue, and the whole matching set used to be pulled into Python before
+# paginating. The cap keeps that bounded; the response says when it bit
+# (results_truncated) so the client can tell the user to narrow the filters
+# rather than just running out of pages.
+LOCAL_BROWSE_LIMIT = 200
+
 
 class BookSearchView(views.APIView):
     authentication_classes = [OptionalJWTAuthentication]
@@ -65,6 +72,11 @@ class BookSearchView(views.APIView):
             return Response([])
 
         google_unavailable = False
+        # True when the browse branch stopped at LOCAL_BROWSE_LIMIT and there
+        # are matches the caller can never page to. Saying so lets the client
+        # tell the user to narrow the filters instead of just ending the list
+        # a page early with no explanation.
+        results_truncated = False
 
         if category or (course and not query):
             base_filter = Q(listings__status='active')
@@ -77,7 +89,12 @@ class BookSearchView(views.APIView):
             # Bounded and ordered: this used to pull every matching Book into
             # Python before paginating, in whatever order the database felt
             # like, so page 2 could repeat page 1.
-            books = Book.objects.filter(base_filter, region=region).distinct().order_by('-created_at')[:200]
+            books = list(
+                Book.objects.filter(base_filter, region=region)
+                .distinct()
+                .order_by('-created_at')[:LOCAL_BROWSE_LIMIT]
+            )
+            results_truncated = len(books) == LOCAL_BROWSE_LIMIT
             results = []
             for book in books:
                 results.append({
@@ -447,11 +464,13 @@ class BookSearchView(views.APIView):
         if paginated_results is not None:
             response = paginator.get_paginated_response(paginated_results)
             response.data['google_unavailable'] = google_unavailable
+            response.data['results_truncated'] = results_truncated
             response.data['facets'] = facets
             return response
             
         return Response({
             'google_unavailable': google_unavailable,
+            'results_truncated': results_truncated,
             'facets': facets,
             'results': filtered_results
         })

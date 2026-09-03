@@ -71,3 +71,42 @@ def test_search_price_and_stock_filter(api, region, test_user):
         resp2 = api.get("/api/v1/search/books/?q=Book&in_stock=1")
     data2 = resp2.json()
     assert len(data2["results"]) == 2
+
+
+@pytest.mark.django_db
+def test_category_browse_reports_when_it_stopped_at_the_cap(api, region, test_user, monkeypatch):
+    """Browsing a category reads the local catalogue and stops at a cap, so
+    beyond it there are matches no page can reach. The response has to say so
+    — otherwise the list just ends early and the user is told nothing."""
+    from search import views
+
+    monkeypatch.setattr(views, 'LOCAL_BROWSE_LIMIT', 2)
+    cat, _ = Category.objects.get_or_create(
+        slug="capped", defaults={"title": "Capped", "region": region}
+    )
+    for i in range(3):
+        book = Book.objects.create(title=f"Capped {i}", isbn13=f"978100{i}", region=region)
+        Listing.objects.create(
+            seller=test_user, book=book, condition="new", price=100, status="active",
+            category=cat, region=region, currency=region.currency,
+        )
+
+    resp = api.get(f"/api/v1/search/books/?category={cat.slug}")
+    assert resp.status_code == 200
+    assert resp.json()["results_truncated"] is True
+
+
+@pytest.mark.django_db
+def test_category_browse_is_not_flagged_when_everything_fits(api, region, test_user):
+    cat, _ = Category.objects.get_or_create(
+        slug="uncapped", defaults={"title": "Uncapped", "region": region}
+    )
+    book = Book.objects.create(title="Only One", isbn13="9781100", region=region)
+    Listing.objects.create(
+        seller=test_user, book=book, condition="new", price=100, status="active",
+        category=cat, region=region, currency=region.currency,
+    )
+
+    resp = api.get(f"/api/v1/search/books/?category={cat.slug}")
+    assert resp.status_code == 200
+    assert resp.json()["results_truncated"] is False
