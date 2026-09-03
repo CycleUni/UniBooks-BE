@@ -305,3 +305,51 @@ def test_full_env_uses_postgres_and_redis_without_warnings():
         == "django.core.cache.backends.redis.RedisCache"
     )
     assert settings.CACHES["default"]["LOCATION"] == FULL_ENV["REDIS_URL"]
+
+
+# ---------------------------------------------------------------------
+# .env.template is documentation the deploy depends on — keep it honest
+# ---------------------------------------------------------------------
+
+ENV_TEMPLATE_PATH = BASE_DIR / ".env.template"
+
+
+def _template_declarations():
+    """(key, value) for every KEY=... line in .env.template, comments aside."""
+    pairs = []
+    for line in ENV_TEMPLATE_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        pairs.append((key.strip(), value.strip()))
+    return pairs
+
+
+def test_env_template_declares_each_key_once():
+    """A repeated key silently takes its *last* value when the file is copied
+    to .env, so a duplicate is not a tidiness issue — it decides configuration
+    by line order. DEFAULT_FROM_EMAIL and FRONTEND_URL were each declared
+    twice, in different sections, with different values.
+    """
+    keys = [key for key, _ in _template_declarations()]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert duplicates == []
+
+
+def test_env_template_lists_key_names_without_values():
+    """The file's own header says so ("本檔僅列鍵名，不得含任何實際值"), and it
+    matters: a value here is one a deployment inherits by copying the file
+    without noticing, which is how DEFAULT_FROM_EMAIL kept pointing at a
+    domain the project had been renamed away from.
+    """
+    with_values = sorted(key for key, value in _template_declarations() if value)
+    assert with_values == []
+
+
+def test_env_template_covers_every_key_settings_requires():
+    """Anything settings.py refuses to start without has to be discoverable
+    here, or the first sign of a missing variable is a failed deploy."""
+    declared = {key for key, _ in _template_declarations()}
+    for key in REQUIRED_KEYS + ["DEFAULT_FROM_EMAIL"]:
+        assert key in declared, f"{key} is required by settings.py but absent from .env.template"
