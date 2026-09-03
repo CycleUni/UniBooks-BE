@@ -6,6 +6,7 @@ import requests
 from django.conf import settings
 
 from ._common import (
+    EXTERNAL_API_TIMEOUT,
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
@@ -71,7 +72,7 @@ def get_google_books_by_isbn(isbn, _meta=None):
             GOOGLE_BOOKS_API_URL,
             params=params,
             headers={'User-Agent': 'UniBooks Backend Service'},
-            timeout=5,
+            timeout=EXTERNAL_API_TIMEOUT,
         )
         logger.debug("Google Books ISBN lookup response status=%s", response.status_code)
         if response.status_code == 429:
@@ -132,7 +133,7 @@ def search_google_books(query, _meta=None):
             GOOGLE_BOOKS_API_URL,
             params=params,
             headers={'User-Agent': 'UniBooks Backend Service'},
-            timeout=5,
+            timeout=EXTERNAL_API_TIMEOUT,
         )
         logger.debug("Google Books search response status=%s", response.status_code)
         if response.status_code == 429:

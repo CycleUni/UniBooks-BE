@@ -15,6 +15,7 @@ from core.uploads import (
     MAX_UPLOAD_SIZE_BYTES,
     detect_image_extension,
     r2_client_and_options,
+    validated_content_length,
 )
 
 
@@ -45,6 +46,13 @@ class ChatUploadURLView(views.APIView):
         if client is None:
             return Response({"mode": "direct"})
 
+        # Only the signed path needs this: the declared size is what gets
+        # signed into the URL, so R2 itself refuses a body of any other
+        # length. The direct fallback below weighs the real bytes instead.
+        content_length = validated_content_length(request.data)
+        if content_length is None:
+            return Response({"error": {"code": "msg.errFileTooLarge"}}, status=status.HTTP_400_BAD_REQUEST)
+
         key = f"chat/{conversation_id}/{uuid.uuid4().hex}.{ext}"
 
         upload_url = client.generate_presigned_url(
@@ -53,6 +61,7 @@ class ChatUploadURLView(views.APIView):
                 'Bucket': options["bucket_name"],
                 'Key': key,
                 'ContentType': content_type,
+                'ContentLength': content_length,
             },
             ExpiresIn=300,
         )

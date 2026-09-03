@@ -15,6 +15,8 @@ from .auth import (
     RemovePasswordView,
     RequestPasswordResetView,
     ConfirmPasswordResetView,
+    ConfirmEmailChangeView,
+    CancelEmailChangeView,
     UnbindEduEmailView,
     _send_verification_email,
 )
@@ -40,6 +42,8 @@ __all__ = [
     "RemovePasswordView",
     "RequestPasswordResetView",
     "ConfirmPasswordResetView",
+    "ConfirmEmailChangeView",
+    "CancelEmailChangeView",
     "UnbindEduEmailView",
     "MyProfileView",
     "PublicUserProfileView",

@@ -5,6 +5,7 @@ import logging
 import requests
 
 from ._common import (
+    EXTERNAL_API_TIMEOUT,
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
@@ -41,7 +42,7 @@ def get_open_library_book_by_isbn(isbn, _meta=None):
         response = requests.get(
             OPEN_LIBRARY_ISBN_URL,
             params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"},
-            timeout=5,
+            timeout=EXTERNAL_API_TIMEOUT,
         )
         logger.debug("Open Library ISBN lookup response status=%s", response.status_code)
         if response.status_code == 200:
@@ -91,7 +92,7 @@ def search_open_library_books(query, _meta=None):
             # by the dedup step in search/views.py (it only keeps items with
             # a truthy isbn), so search results would never actually appear.
             params={"q": query, "limit": 10, "fields": "title,author_name,publisher,first_publish_year,cover_i,isbn"},
-            timeout=5,
+            timeout=EXTERNAL_API_TIMEOUT,
         )
         logger.debug("Open Library search response status=%s", response.status_code)
         if response.status_code == 200:

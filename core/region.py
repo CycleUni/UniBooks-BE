@@ -4,6 +4,22 @@ from django.utils.functional import SimpleLazyObject
 
 DEFAULT_REGION_CODE = getattr(settings, 'DEFAULT_REGION', 'TW')
 
+def edu_suffixes(region):
+    """`Region.edu_email_suffix` as a list of suffixes.
+
+    The field is a JSONField holding a list, but nothing stops a single
+    suffix being saved as a bare string — the admin serializer takes it, and
+    the test fixtures did exactly that. Iterating that string yields one
+    *character* per step, and `email.endswith('e')` matches most of the
+    internet, so every address ending in one of ".edu.tw"'s letters was read
+    as a campus address.
+    """
+    raw = getattr(region, 'edu_email_suffix', None) or []
+    if isinstance(raw, str):
+        return [raw]
+    return [s for s in raw if isinstance(s, str) and s]
+
+
 def _get_active_regions():
     """
     Get active regions from cache, falling back to DB.

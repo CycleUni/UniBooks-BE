@@ -78,6 +78,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the owner deletes their account. The row stays, stripped of
+    # everything personal, because Order and Review point at it from both
+    # sides: a real delete cascaded through them and took the *other* party's
+    # purchase history and the ratings they had earned with it. See
+    # MyProfileView.delete.
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     objects = UserManager()
 

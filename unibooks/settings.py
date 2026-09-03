@@ -116,12 +116,12 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-region",
 ]
 
-# Sender address for outbound transactional email.
-_raw_from_email = env.str("DEFAULT_FROM_EMAIL", default="noreply@cycleuni.com")
-if "<" not in _raw_from_email:
-    DEFAULT_FROM_EMAIL = f'"UniBooks" <{_raw_from_email}>'
-else:
-    DEFAULT_FROM_EMAIL = _raw_from_email
+# Sender address for outbound transactional email. Resolved in core/conf.py
+# with the same dev-fallback guard as the database and storage: it used to
+# default to a domain this project has been renamed away from, so an unset
+# variable sent every verification and password-reset mail from an address
+# nobody owns, and nothing said so.
+DEFAULT_FROM_EMAIL = conf.resolve_from_email(env, debug=DEBUG)
 
 # One-time initial-superuser bootstrap for a fresh production deployment with
 # no admin account yet (see accounts.apps.AccountsConfig._create_default_superuser,
@@ -163,7 +163,6 @@ INSTALLED_APPS = [
     "django.contrib.postgres",
     # Third-party
     "rest_framework",
-    "rest_framework.authtoken",
     "corsheaders",
     "storages",
     "anymail",
@@ -245,8 +244,10 @@ WSGI_APPLICATION = "unibooks.wsgi.application"
 # For a busy production deployment, also consider CONN_MAX_AGE = 30 (seconds)
 # — but only if the Lambda execution container visibly outlives a single
 # request (e.g. when running under an always-warm provisioned instance).
-# For standard Vercel Pro, keep 0.
-CONN_MAX_AGE = 0
+# For standard Vercel Pro, keep 0. Configurable so that call can be made from
+# the environment, on the deployment where it can actually be observed,
+# rather than needing a code change and a redeploy to try.
+CONN_MAX_AGE = env.int("CONN_MAX_AGE", default=0)
 
 # Neon pooler rejects statement_timeout as a startup parameter and requires
 # SSL. Set sslmode=require by default (overridable via POSTGRES_SSLMODE for
@@ -338,6 +339,10 @@ REST_FRAMEWORK = {
         # logged-in account can't run up storage costs by looping uploads.
         'upload': '100/hour',
         'ad_stats': '60/min',
+        # /auth/users/<int>/ answers with a name and a join date for any id,
+        # and the ids are sequential — unthrottled that is a directory of
+        # every account, walkable in one pass.
+        'public_profile': '30/min',
     },
 }
 

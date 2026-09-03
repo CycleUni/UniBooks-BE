@@ -44,6 +44,7 @@ FULL_ENV = {
     "R2_PUBLIC_URL": "https://media.example.invalid",
     "MAILJET_API_KEY": "test-only-mailjet-api-key",
     "MAILJET_SECRET_KEY": "test-only-mailjet-secret-key",
+    "DEFAULT_FROM_EMAIL": "noreply@example.invalid",
     "DEBUG": "False",
 }
 
@@ -186,6 +187,23 @@ def test_prod_missing_mailjet_credentials_refuses_to_start():
     env_vars["DEBUG"] = "False"
     with pytest.raises(ImproperlyConfigured, match="Mailjet"):
         load_settings(env_vars)
+
+
+def test_prod_missing_from_email_refuses_to_start():
+    """Unset, this used to fall back to a domain the project no longer owns,
+    and every verification and reset mail went out from it."""
+    env_vars = env_without("DEFAULT_FROM_EMAIL")
+    env_vars["DEBUG"] = "False"
+    with pytest.raises(ImproperlyConfigured, match="DEFAULT_FROM_EMAIL"):
+        load_settings(env_vars)
+
+
+def test_from_email_gets_a_display_name():
+    settings = load_settings(FULL_ENV)
+    assert settings.DEFAULT_FROM_EMAIL == '"UniBooks" <noreply@example.invalid>'
+
+    already_named = dict(FULL_ENV, DEFAULT_FROM_EMAIL='"Books" <hi@example.invalid>')
+    assert load_settings(already_named).DEFAULT_FROM_EMAIL == '"Books" <hi@example.invalid>'
 
 
 def test_debug_defaults_to_false_so_bare_env_refuses_fallback():

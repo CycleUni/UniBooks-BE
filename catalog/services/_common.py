@@ -18,6 +18,13 @@ _NOT_FOUND_SENTINEL = "__gb_not_found__"
 # different facts with very different appropriate lifetimes.
 _NOT_FOUND_CACHE_TTL = 3600  # 1 hour
 
+# Per-call timeout for the external catalogue APIs. An ISBN lookup tries them
+# one after another (Google → ISBNnet → Open Library), and at the old 5s each
+# a run where all three hang took 15s against a Vercel maxDuration of 10 — the
+# function is killed and the caller gets a 504 having waited the full budget.
+# At 3s the whole chain fits inside it with room to spare.
+EXTERNAL_API_TIMEOUT = 3
+
 
 def _safe_cache_get(key):
     """cache.get() that degrades to a plain cache miss on a Redis hiccup

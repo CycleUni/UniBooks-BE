@@ -13,6 +13,7 @@ from core.uploads import (
     MAX_UPLOAD_SIZE_BYTES,
     detect_image_extension,
     r2_client_and_options,
+    validated_content_length,
     storage_key_from_url,
 )
 from ads.utils import tmp_ad_key_prefix
@@ -32,6 +33,13 @@ class AdminAdUploadURLView(views.APIView):
         if client is None:
             return Response({"mode": "direct"})
 
+        # Only the signed path needs this: the declared size is what gets
+        # signed into the URL, so R2 itself refuses a body of any other
+        # length. The direct fallback below weighs the real bytes instead.
+        content_length = validated_content_length(request.data)
+        if content_length is None:
+            return Response({"error": {"code": "admin.errFileTooLarge"}}, status=status.HTTP_400_BAD_REQUEST)
+
         key = f"{tmp_ad_key_prefix(request.user.id)}{uuid.uuid4().hex}.{ext}"
 
         try:
@@ -41,6 +49,7 @@ class AdminAdUploadURLView(views.APIView):
                     'Bucket': options["bucket_name"],
                     'Key': key,
                     'ContentType': content_type,
+                    'ContentLength': content_length,
                 },
                 ExpiresIn=300
             )

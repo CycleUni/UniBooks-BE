@@ -275,7 +275,7 @@ def test_listing_upload_presign_returns_r2_put_url_when_configured(api, seller, 
         },
     }
     resp = api.post(
-        "/api/v1/listings/uploads/", {"content_type": "image/jpeg"},
+        "/api/v1/listings/uploads/", {"content_type": "image/jpeg", "content_length": 1024},
         content_type="application/json", **bearer(seller),
     )
     assert resp.status_code == 200

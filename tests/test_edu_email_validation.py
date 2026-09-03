@@ -79,7 +79,6 @@ def test_is_valid_edu_email_multiple_suffixes(client):
     
     # Test API endpoint
     from django.contrib.auth import get_user_model
-    from rest_framework.authtoken.models import Token
     from rest_framework.test import APIClient
     User = get_user_model()
     user = User.objects.create_user(email='testuser@gmail.com', password='pw', first_name='Test', last_name='User')

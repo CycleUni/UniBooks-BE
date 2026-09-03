@@ -11,15 +11,17 @@ from rest_framework.throttling import ScopedRateThrottle
 # Extension is derived from this allowlist, never from the client-supplied
 # filename or Content-Type header alone (both are trivially spoofable). The
 # presigned-upload path (ListingUploadURLView) can only check the declared
-# Content-Type up front — the file never touches this server — so R2's own
-# `Content-Type` condition is what actually enforces it at upload time. The
-# direct-proxy fallback (ListingUploadDirectView, dev-only) additionally
-# decodes the bytes with Pillow since it does receive them.
+# Content-Type and size up front — the file never touches this server — so
+# R2's own signed `Content-Type` and `Content-Length` conditions are what
+# enforce them at upload time. The direct-proxy fallback
+# (ListingUploadDirectView, dev-only) additionally decodes the bytes with
+# Pillow since it does receive them.
 from core.uploads import (
     ALLOWED_CONTENT_TYPES,
     MAX_UPLOAD_SIZE_BYTES,
     detect_image_extension,
     r2_client_and_options,
+    validated_content_length,
     storage_key_from_url,
 )
 from listings.utils import PERMANENT_LISTING_PREFIX, tmp_key_prefix
@@ -28,13 +30,13 @@ from listings.utils import PERMANENT_LISTING_PREFIX, tmp_key_prefix
 class ListingUploadURLView(views.APIView):
     """Issues a presigned R2 PUT URL so the browser uploads the file
     directly to object storage — it never passes through this server.
-    (R2 doesn't support S3 POST policies, which is what would otherwise let
-    a presigned upload enforce a server-side size limit via a
-    `content-length-range` condition — a plain presigned PUT can't do that,
-    so `MAX_UPLOAD_SIZE_BYTES` is enforced only on the ListingUploadDirectView
-    fallback below, not on real R2 uploads. Closing that gap needs either an
-    R2 event notification that deletes oversized objects after the fact, or
-    routing uploads through a Worker that can inspect Content-Length.)
+
+    R2 doesn't support S3 POST policies, which is what would normally carry
+    a `content-length-range` condition, so `MAX_UPLOAD_SIZE_BYTES` used to
+    hold on the dev-only direct path and nowhere else. The size is instead
+    signed into the URL as `ContentLength`: the client declares it, this view
+    checks it against the limit, and R2 refuses any body whose actual length
+    differs from the signed one.
 
     Falls back to `mode: "direct"` (see ListingUploadDirectView) when R2
     isn't configured (local dev without real credentials — see
@@ -55,6 +57,13 @@ class ListingUploadURLView(views.APIView):
         if client is None:
             return Response({"mode": "direct"})
 
+        # Only the signed path needs this: the declared size is what gets
+        # signed into the URL, so R2 itself refuses a body of any other
+        # length. The direct fallback below weighs the real bytes instead.
+        content_length = validated_content_length(request.data)
+        if content_length is None:
+            return Response({"error": {"code": "listing.errFileTooLarge"}}, status=status.HTTP_400_BAD_REQUEST)
+
         key = f"{tmp_key_prefix(request.user.id)}{uuid.uuid4().hex}.{ext}"
 
         # Cloudflare R2 does not support S3 POST policies (returns 501).
@@ -65,6 +74,7 @@ class ListingUploadURLView(views.APIView):
                 'Bucket': options["bucket_name"],
                 'Key': key,
                 'ContentType': content_type,
+                'ContentLength': content_length,
             },
             ExpiresIn=300,
         )

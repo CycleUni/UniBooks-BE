@@ -5,6 +5,7 @@ import requests
 from django.conf import settings
 
 from ._common import (
+    EXTERNAL_API_TIMEOUT,
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
@@ -37,7 +38,7 @@ def get_isbnnet_book_by_isbn(isbn, _meta=None):
         response = requests.get(
             url,
             headers={'User-Agent': 'UniBooks Backend Service'},
-            timeout=5,
+            timeout=EXTERNAL_API_TIMEOUT,
         )
         logger.debug("ISBNnet ISBN lookup response status=%s", response.status_code)
         if response.status_code == 200:

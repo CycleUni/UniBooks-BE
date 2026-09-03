@@ -27,6 +27,30 @@ ALLOWED_IMAGE_FORMATS = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp', 'GIF': 'gi
 MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
 
 
+def validated_content_length(data, max_bytes=MAX_UPLOAD_SIZE_BYTES):
+    """The client's declared upload size, or None if it isn't usable.
+
+    R2 rejects S3 POST policies, which is what would normally carry a
+    `content-length-range` condition, so the size limit used to hold on the
+    dev-only proxy path and nowhere else: a presigned PUT accepted a file of
+    any size, and an authenticated account could run up storage costs a
+    hundred times an hour. Signing `ContentLength` closes it — the signature
+    covers the header, so R2 refuses anything whose actual length differs
+    from the one declared here, and this is where the declared value is
+    checked against the limit.
+    """
+    raw = data.get('content_length')
+    if isinstance(raw, bool):
+        return None
+    try:
+        size = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if size <= 0 or size > max_bytes:
+        return None
+    return size
+
+
 def r2_client_and_options():
     """Returns (boto3 S3 client, OPTIONS dict) if STORAGES["default"] is the
     R2/S3 backend, else (None, None) — the local FileSystemStorage dev

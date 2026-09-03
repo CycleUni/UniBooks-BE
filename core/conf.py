@@ -190,6 +190,24 @@ def resolve_storage_config(env, *, debug):
     return {"BACKEND": "django.core.files.storage.FileSystemStorage"}
 
 
+def resolve_from_email(env, *, debug):
+    """DEFAULT_FROM_EMAIL unset → noreply@localhost (DEBUG=True only).
+
+    Wrapped in the display-name form unless the value already carries one, so
+    the address renders as `"UniBooks" <...>` in a mail client.
+    """
+    raw = env.str("DEFAULT_FROM_EMAIL", default="").strip()
+    if not raw:
+        _guard_dev_fallback(
+            "DEFAULT_FROM_EMAIL",
+            "noreply@localhost",
+            "Outbound mail would name an address nobody owns.",
+            debug=debug,
+        )
+        raw = "noreply@localhost"
+    return raw if "<" in raw else f'"UniBooks" <{raw}>'
+
+
 def resolve_email_backend_config(env, *, debug):
     """MAILJET_API_KEY/MAILJET_SECRET_KEY unset → fall back to the console
     backend (DEBUG=True only, with a warning) — no email is actually sent,

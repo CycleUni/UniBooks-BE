@@ -71,7 +71,7 @@ def test_rejects_when_cron_secret_unset(api, db, settings):
 def test_noop_when_nothing_due(api, db):
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
     assert resp.status_code == 200
-    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0}
+    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0, "remaining_users": 0}
 
 
 def test_notifies_user_with_new_listing_and_updates_notified_at(api, waitlister, seller, book, mailoutbox):
@@ -80,7 +80,7 @@ def test_notifies_user_with_new_listing_and_updates_notified_at(api, waitlister,
 
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
     assert resp.status_code == 200
-    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 1}
+    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 1, "remaining_users": 0}
     assert len(mailoutbox) == 1
     assert waitlister.email in mailoutbox[0].to[0]
     assert "Waitlisted Book" in mailoutbox[0].body
@@ -98,7 +98,7 @@ def test_does_not_renotify_already_notified_subscription(api, waitlister, seller
 
     # Running again with no new listing since must not re-send
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
-    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0}
+    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0, "remaining_users": 0}
     assert len(mailoutbox) == 1
 
 
@@ -110,7 +110,7 @@ def test_renotifies_when_another_new_listing_appears_after_last_notification(api
 
     Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=150, condition='like_new', status='active')
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
-    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 1}
+    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 1, "remaining_users": 0}
     assert len(mailoutbox) == 2
 
 
@@ -123,7 +123,7 @@ def test_batches_multiple_due_subscriptions_for_same_user_into_one_email(api, wa
     Listing.objects.create(region_id='TW', currency_id='TWD', book=book2, seller=seller, price=200, condition='new', status='active')
 
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
-    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 2}
+    assert resp.json() == {"notified_users": 1, "notified_subscriptions": 2, "remaining_users": 0}
     assert len(mailoutbox) == 1
     assert "Waitlisted Book" in mailoutbox[0].body
     assert "Second Waitlisted Book" in mailoutbox[0].body
@@ -134,7 +134,7 @@ def test_ignores_non_active_listings(api, waitlister, seller, book, mailoutbox):
     Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition='new', status='sold')
 
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
-    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0}
+    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0, "remaining_users": 0}
     assert len(mailoutbox) == 0
 
 
@@ -144,7 +144,7 @@ def test_ignores_listings_created_before_subscription(api, waitlister, seller, b
     Subscription.objects.create(region_id='TW', user=waitlister, book=book)
 
     resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
-    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0}
+    assert resp.json() == {"notified_users": 0, "notified_subscriptions": 0, "remaining_users": 0}
     assert len(mailoutbox) == 0
 
 
@@ -276,3 +276,38 @@ def test_cleanup_deletes_preseed_book_when_orphan(api, db):
     assert resp.status_code == 200
     assert resp.json()["orphan_books_deleted"] == 1
     assert not Book.objects.filter(id=book.id).exists()
+
+
+@pytest.mark.django_db
+def test_notify_stops_at_the_per_run_cap_and_says_how_many_are_left(
+    api, seller, book, settings, monkeypatch, mailoutbox
+):
+    """Sending is sequential inside a function Vercel kills at maxDuration, so
+    a large waitlist used to be cut off mid-run. The cap makes the remainder
+    the next run's work instead of a truncated one."""
+    from cron import views as cron_views
+
+    monkeypatch.setattr(cron_views, 'MAX_NOTIFY_USERS_PER_RUN', 1)
+    Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller,
+        price=100, condition='new', status='active',
+    )
+    for i in range(2):
+        user = User.objects.create_user(
+            email=f"waiting-{i}@example.com", first_name="W", last_name="L",
+            password="test-only-password-123",
+        )
+        _subscribe_before_now(user, book)
+
+    resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["notified_users"] == 1
+    assert body["remaining_users"] == 1
+    assert len(mailoutbox) == 1
+
+    # The next run picks up whoever is still due, with nothing lost.
+    resp = api.get("/api/cron/waitlist-notify/", **cron_auth())
+    assert resp.json()["notified_users"] == 1
+    assert resp.json()["remaining_users"] == 0
+    assert len(mailoutbox) == 2

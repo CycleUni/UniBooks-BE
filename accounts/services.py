@@ -1,4 +1,5 @@
 import logging
+import time
 import uuid
 from datetime import timedelta
 from django.core.cache import cache
@@ -11,13 +12,20 @@ logger = logging.getLogger(__name__)
 # Refresh token TTL defaults to 14 days
 REFRESH_TOKEN_LIFETIME = timedelta(days=14)
 
-# Rotation grace period: describes the near-term scenario this mechanism was
-# built for (two tabs/devices refreshing with the same still-valid access
-# token within moments of each other) — the actual cache TTL used when
-# storing it is REFRESH_TOKEN_LIFETIME, not this, so that a *much later*
-# replay of an already-rotated token is still recognizable as "already
-# handled, here's what it became" instead of looking identical to "this jti
-# was never issued at all" (see verify_and_revoke_refresh_token).
+# Rotation grace period: the near-term scenario this mechanism was built for
+# is two tabs refreshing with the same still-valid token within moments of
+# each other, and this is how long the rotated-into pair is handed back.
+#
+# The cache entry itself is kept for REFRESH_TOKEN_LIFETIME, not for this
+# window, so a *much later* replay is still recognizable as "already handled"
+# instead of looking identical to "this jti was never issued at all" (which is
+# what a cache eviction looks like, and treating that as theft was the bug
+# behind users being logged out everywhere). But recognizing it and honouring
+# it are different things: past the window the reply is a 401, because handing
+# the current pair to anyone holding a 13-day-old rotated token is exactly the
+# replay this rotation is supposed to defeat. The frontend's interceptor
+# already covers the case this leaves behind — a tab that wakes with a stale
+# token adopts whatever the tab that rotated it wrote to localStorage.
 REFRESH_ROTATION_GRACE = timedelta(seconds=60)
 
 
@@ -82,19 +90,47 @@ def issue_tokens(user):
         'refresh': str(refresh),
     }
 
-def get_grace_tokens(jti, user_id):
-    """
-    If the old JTI has already been rotated (value is a dict — see
-    store_grace_tokens), return the token pair it was rotated into; otherwise
-    return None. Despite the name, this isn't just a short-lived race guard:
-    the entry is kept for the token's full remaining lifetime, so a *much
-    later* replay of an old jti still resolves here instead of falling
-    through to "unknown token" in verify_and_revoke_refresh_token.
-    """
+def _rotation_record(jti, user_id):
+    """The rotation record for this jti, or None if there isn't one for this
+    user. A dict value means "already rotated"; a plain string is a live,
+    un-rotated whitelist entry."""
     stored = _safe_cache_get(f"jwt:rt:{jti}")
     if isinstance(stored, dict) and stored.get('user_id') == user_id:
-        return stored.get('tokens')
+        return stored
     return None
+
+
+def get_grace_tokens(jti, user_id):
+    """
+    If the old JTI was rotated within REFRESH_ROTATION_GRACE, return the token
+    pair it was rotated into — the concurrent-tab case this exists for.
+
+    Returns None once the window has passed, even though the record is still
+    there: see was_rotated, which the caller uses to answer 401 rather than
+    letting a stale replay fall through to verify_and_revoke_refresh_token.
+    """
+    record = _rotation_record(jti, user_id)
+    if record is None:
+        return None
+    rotated_at = record.get('rotated_at')
+    if not isinstance(rotated_at, (int, float)):
+        # Written before rotated_at was recorded. Honour it once, as the old
+        # code did, rather than logging out every session mid-deploy.
+        return record.get('tokens')
+    if time.time() - rotated_at > REFRESH_ROTATION_GRACE.total_seconds():
+        return None
+    return record.get('tokens')
+
+
+def was_rotated(jti, user_id):
+    """True when this jti has been rotated at all, whenever that was.
+
+    Lets the caller tell a stale replay ("rotated, but too long ago to hand
+    the pair back") from an unknown jti, which matters because
+    verify_and_revoke_refresh_token would read the rotation record's dict as a
+    user_id mismatch and revoke every session the user has.
+    """
+    return _rotation_record(jti, user_id) is not None
 
 
 def store_grace_tokens(jti, user_id, tokens):
@@ -109,10 +145,16 @@ def store_grace_tokens(jti, user_id, tokens):
     verify_and_revoke_refresh_token treat routine cache hiccups as proof of
     theft, revoking every session for the user. Kept for the token's full
     natural lifetime, not just a short race window, so that ambiguity never
-    comes back once a token has been legitimately rotated at least once.
+    comes back once a token has been legitimately rotated at least once —
+    but only handed back within REFRESH_ROTATION_GRACE (see
+    get_grace_tokens); a later replay is recognized here and refused.
     """
     timeout = int(REFRESH_TOKEN_LIFETIME.total_seconds())
-    _safe_cache_set(f"jwt:rt:{jti}", {'user_id': user_id, 'tokens': tokens}, timeout)
+    _safe_cache_set(
+        f"jwt:rt:{jti}",
+        {'user_id': user_id, 'tokens': tokens, 'rotated_at': time.time()},
+        timeout,
+    )
 
 
 def verify_and_revoke_refresh_token(jti, user_id):

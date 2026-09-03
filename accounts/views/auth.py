@@ -24,6 +24,7 @@ from accounts.services import (
     revoke_all_tokens_for_user,
     get_grace_tokens,
     store_grace_tokens,
+    was_rotated,
     email_already_used,
 )
 from accounts.models import School
@@ -63,11 +64,11 @@ def _is_valid_edu_email(email):
     if school:
         return True
 
-    from core.region import _get_active_regions
+    from core.region import _get_active_regions, edu_suffixes
     active_regions = _get_active_regions()
     return any(
-        any(email.endswith(suffix) for suffix in r.edu_email_suffix)
-        for r in active_regions.values() if r.edu_email_suffix
+        any(email.endswith(suffix) for suffix in edu_suffixes(r))
+        for r in active_regions.values()
     )
 
 logger = logging.getLogger(__name__)
@@ -316,7 +317,7 @@ class LoginView(views.APIView):
 
         if not user.check_password(password):
             return invalid_credentials
-        if not user.is_active and not user.is_superuser:
+        if not user.is_active:
             return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 
         tokens = issue_tokens(user)
@@ -338,12 +339,21 @@ class RefreshTokenView(views.APIView):
             jti = token['jti']
             user_id = token['user_id']
 
-            # Already rotated (concurrent refresh from multiple tabs, or a
-            # delayed replay of an old-but-still-within-lifetime token):
-            # return the same pair it was rotated into rather than erroring.
+            # Already rotated moments ago (concurrent refresh from multiple
+            # tabs): return the same pair it was rotated into rather than
+            # erroring.
             grace_tokens = get_grace_tokens(jti, user_id)
             if grace_tokens:
                 return Response(grace_tokens)
+
+            # Rotated, but longer ago than the grace window — a replay, not a
+            # race. Refuse it here rather than falling through: the rotation
+            # record is a dict, which verify_and_revoke_refresh_token would
+            # read as a user_id mismatch and answer by revoking every session
+            # the user has.
+            if was_rotated(jti, user_id):
+                logger.warning("Refresh token jti=%s replayed after the rotation grace window", jti)
+                return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
 
             # Whitelist check; revokes the old jti on success. A bare "not
             # found" (cache miss, eviction, dev-server restart) fails just
@@ -354,7 +364,7 @@ class RefreshTokenView(views.APIView):
                 return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
 
             user = User.objects.get(id=user_id)
-            if not user.is_active and not user.is_superuser:
+            if not user.is_active:
                 return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 
             tokens = issue_tokens(user)
@@ -441,10 +451,10 @@ class GoogleLoginView(views.APIView):
                 user.avatar_url = avatar_url
                 user.save(update_fields=['avatar_url'])
 
-            # Block login for disabled accounts (except superusers).
-            # No auto-reactivation: once an admin disables an account,
-            # Google login alone does not bypass the block.
-            if not user.is_active and not user.is_superuser:
+            # Block login for disabled accounts. No auto-reactivation: once
+            # an admin disables an account, Google login alone does not
+            # bypass the block.
+            if not user.is_active:
                 return Response(
                     {"error": {"code": "auth.errAccountDisabled"}},
                     status=status.HTTP_403_FORBIDDEN,
@@ -637,10 +647,9 @@ class RequestPasswordResetView(views.APIView):
         if user.socialaccount_set.filter(provider='google').exists():
             return Response({"code": "acct.passwordResetSent"})
 
-        # Disabled users (is_active=False) should not be able to reset
-        # their password, except superusers. Generic response to avoid
-        # leaking account status.
-        if not user.is_active and not user.is_superuser:
+        # Disabled users (is_active=False) should not be able to reset their
+        # password. Generic response to avoid leaking account status.
+        if not user.is_active:
             return Response({"code": "acct.passwordResetSent"})
 
         reset_token = str(uuid.uuid4())
@@ -658,6 +667,128 @@ class RequestPasswordResetView(views.APIView):
         _send_verification_email(subject, message, user.email, f"password reset for user {user.id}")
 
         return Response({"code": "acct.passwordResetSent"})
+
+
+EMAIL_CHANGE_TTL = 3600
+
+
+def email_change_token_key(token):
+    return f"email-change:{token}"
+
+
+def email_change_pending_key(user_id):
+    return f"email-change-pending:{user_id}"
+
+
+def pending_email_change(user):
+    """The address this user has asked to move to but not yet confirmed."""
+    record = cache.get(email_change_pending_key(user.id))
+    if isinstance(record, dict):
+        return record.get('email')
+    return None
+
+
+def send_email_change_verification(request, user, new_email):
+    """Mail a confirmation link to the *new* address and remember the request.
+
+    The address is not written to the user until that link is followed. It
+    used to be applied on the spot, which let anyone with a session point the
+    account at a mailbox they did not own — and password-reset mail after
+    that went to the new address.
+    """
+    token = str(uuid.uuid4())
+    cache.set(
+        email_change_token_key(token),
+        {'user_id': user.id, 'email': new_email},
+        timeout=EMAIL_CHANGE_TTL,
+    )
+    # One outstanding request per user: re-requesting supersedes the previous
+    # link rather than leaving several live at once.
+    previous = cache.get(email_change_pending_key(user.id))
+    if isinstance(previous, dict) and previous.get('token'):
+        cache.delete(email_change_token_key(previous['token']))
+    cache.set(
+        email_change_pending_key(user.id),
+        {'email': new_email, 'token': token},
+        timeout=EMAIL_CHANGE_TTL,
+    )
+
+    link = f"{settings.FRONTEND_URL}/account/settings?email_change_token={token}"
+    lang = resolve_language(request)
+    if lang == 'zh-TW':
+        subject = 'UniBooks 確認新的登入信箱'
+        message = f'請點擊以下連結，確認將 UniBooks 帳號的登入信箱改為這個地址（1 小時內有效）：\n\n{link}\n\n如果您沒有提出這項變更，請忽略這封信件，您的帳號不會有任何更動。'
+    elif lang == 'zh-HK':
+        subject = 'UniBooks 確認新的登入電郵'
+        message = f'請㩒以下連結，確認將 UniBooks 帳戶嘅登入電郵改成呢個地址（1 小時內有效）：\n\n{link}\n\n如果唔係你提出呢項更改，請唔好理呢封信，你個帳戶唔會有任何改動。'
+    else:
+        subject = 'UniBooks — confirm your new sign-in email'
+        message = f'Follow the link below to move your UniBooks sign-in email to this address (valid for 1 hour):\n\n{link}\n\nIf you did not ask for this, ignore this email — nothing about your account will change.'
+
+    _send_verification_email(subject, message, new_email, f"email change for user {user.id}")
+
+
+class ConfirmEmailChangeView(views.APIView):
+    """POST /api/v1/auth/email/change/confirm/ — apply a pending email change.
+
+    Deliberately AllowAny: the link is followed from the new mailbox, which
+    may well be open in a browser that is not signed in. The token is the
+    proof, and it is single-use.
+    """
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_change'
+
+    def post(self, request):
+        token = request.data.get('token')
+        if not token:
+            return Response({"error": {"code": "auth.errMissingToken"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        record = cache.get(email_change_token_key(token))
+        if not isinstance(record, dict):
+            return Response({"error": {"code": "acct.errEmailChangeTokenInvalid"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(id=record.get('user_id'))
+        except User.DoesNotExist:
+            return Response({"error": {"code": "auth.errUserNotFound"}}, status=status.HTTP_404_NOT_FOUND)
+
+        if not user.is_active:
+            cache.delete(email_change_token_key(token))
+            return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
+
+        new_email = (record.get('email') or '').strip().lower()
+        # Re-checked at confirm time, not just at request time: an hour is
+        # long enough for someone else to take the address, or for the school
+        # that owns the domain to be added.
+        if not new_email:
+            return Response({"error": {"code": "acct.errEmailChangeTokenInvalid"}}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+            cache.delete(email_change_token_key(token))
+            cache.delete(email_change_pending_key(user.id))
+            return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
+        if _is_valid_edu_email(new_email):
+            cache.delete(email_change_token_key(token))
+            cache.delete(email_change_pending_key(user.id))
+            return Response({"error": {"code": "acct.errEduEmailChangeNotAllowed"}}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.email = new_email
+        user.save(update_fields=['email'])
+        cache.delete(email_change_token_key(token))
+        cache.delete(email_change_pending_key(user.id))
+        return Response({"code": "acct.emailChanged"})
+
+
+class CancelEmailChangeView(views.APIView):
+    """POST /api/v1/auth/email/change/cancel/ — drop a pending email change."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        record = cache.get(email_change_pending_key(request.user.id))
+        if isinstance(record, dict) and record.get('token'):
+            cache.delete(email_change_token_key(record['token']))
+        cache.delete(email_change_pending_key(request.user.id))
+        return Response({"code": "acct.emailChangeCancelled"})
 
 
 class ConfirmPasswordResetView(views.APIView):
@@ -681,9 +812,11 @@ class ConfirmPasswordResetView(views.APIView):
             return Response({"error": {"code": "auth.errUserNotFound"}}, status=status.HTTP_404_NOT_FOUND)
 
         # Guard against disabled accounts that may still hold a valid token
-        # (e.g., issued before the account was disabled).
-        # Superusers always retain the ability to reset.
-        if not user.is_active and not user.is_superuser:
+        # (e.g., issued before the account was disabled). Superusers are not
+        # exempt: django.contrib.admin already refuses an inactive superuser,
+        # so exempting them here only let a locked-out account keep the API.
+        # Recovery is `manage.py` on the server, as it is for the admin site.
+        if not user.is_active:
             cache.delete(f"password-reset:{token}")
             return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 

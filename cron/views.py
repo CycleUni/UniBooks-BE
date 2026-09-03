@@ -15,6 +15,9 @@ from subscriptions.models import Subscription
 
 logger = logging.getLogger(__name__)
 
+# Recipients per run; see WaitlistNotifyView for why there is a cap at all.
+MAX_NOTIFY_USERS_PER_RUN = 50
+
 
 class HasCronSecret(BasePermission):
     """Authenticates cron-triggered requests via `Authorization: Bearer <CRON_SECRET>`
@@ -77,13 +80,23 @@ class WaitlistNotifyView(views.APIView):
         # One email per user, even if several of their subscriptions are due —
         # nobody wants a separate email per book.
         by_user = defaultdict(list)
-        for sub in due:
+        for sub in due.order_by('created_at'):
             by_user[sub.user].append(sub)
 
         notified_users = 0
         notified_subscriptions = 0
 
-        for user, subs in by_user.items():
+        # Sending is sequential and synchronous, and this runs inside a Vercel
+        # function capped at maxDuration seconds: past a few dozen recipients
+        # the run is killed part-way through, and because notified_at is only
+        # written after a successful send, the next run simply resumes with
+        # whoever is still due. Capping it makes that the normal path instead
+        # of the failure path. `remaining_users` says whether the scheduler
+        # has more to collect.
+        batch = list(by_user.items())[:MAX_NOTIFY_USERS_PER_RUN]
+        remaining_users = len(by_user) - len(batch)
+
+        for user, subs in batch:
             book_lines = []
             for sub in subs:
                 book_url = f"{settings.FRONTEND_URL}/book?isbn={sub.book.isbn13}" if sub.book.isbn13 else settings.FRONTEND_URL
@@ -117,6 +130,7 @@ class WaitlistNotifyView(views.APIView):
         return Response({
             "notified_users": notified_users,
             "notified_subscriptions": notified_subscriptions,
+            "remaining_users": remaining_users,
         }, status=status.HTTP_200_OK)
 
 
