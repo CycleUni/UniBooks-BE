@@ -13,6 +13,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.conf import settings
 from django.utils import timezone
@@ -26,6 +27,9 @@ from accounts.services import (
     store_grace_tokens,
     was_rotated,
     email_already_used,
+    email_change_token_key,
+    email_change_pending_key,
+    EMAIL_CHANGE_TTL,
 )
 from accounts.models import School
 from core.i18n import resolve_language
@@ -669,17 +673,6 @@ class RequestPasswordResetView(views.APIView):
         return Response({"code": "acct.passwordResetSent"})
 
 
-EMAIL_CHANGE_TTL = 3600
-
-
-def email_change_token_key(token):
-    return f"email-change:{token}"
-
-
-def email_change_pending_key(user_id):
-    return f"email-change-pending:{user_id}"
-
-
 def pending_email_change(user):
     """The address this user has asked to move to but not yet confirmed."""
     record = cache.get(email_change_pending_key(user.id))
@@ -773,7 +766,18 @@ class ConfirmEmailChangeView(views.APIView):
             return Response({"error": {"code": "acct.errEduEmailChangeNotAllowed"}}, status=status.HTTP_400_BAD_REQUEST)
 
         user.email = new_email
-        user.save(update_fields=['email'])
+        try:
+            # The exists() check above is not atomic with this save: two
+            # confirms for the same address, racing past it together, would
+            # otherwise surface as an uncaught IntegrityError — email is a
+            # real unique constraint (accounts/models.py), not just an
+            # application-level check — and 500 instead of the same
+            # acct.errEmailTaken the non-racing caller gets.
+            user.save(update_fields=['email'])
+        except IntegrityError:
+            cache.delete(email_change_token_key(token))
+            cache.delete(email_change_pending_key(user.id))
+            return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
         cache.delete(email_change_token_key(token))
         cache.delete(email_change_pending_key(user.id))
         return Response({"code": "acct.emailChanged"})

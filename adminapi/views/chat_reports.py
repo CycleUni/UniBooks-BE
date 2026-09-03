@@ -125,6 +125,12 @@ class AdminChatReportTokenView(views.APIView):
             'user_id': str(request.user.id),
             'room_id': str(conv.id),
             'app_id': app_id,
+            # Read-only: this token proves a moderator is reviewing a report,
+            # not that they are in the conversation. Without the role the
+            # worker defaulted it to "user", so opening a report handed the
+            # moderator a live seat in someone else's chat, under their own
+            # name. CFEdgeChat refuses sends and deletes from this role.
+            'role': 'observer',
             'exp': int(time.time()) + 300,
         }
         token = TokenBackend(algorithm="HS256", signing_key=edge_jwt_secret).encode(payload)

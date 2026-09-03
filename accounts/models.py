@@ -1,4 +1,7 @@
+import uuid
+
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.core.cache import cache
 from django.db import models
 from django.contrib.postgres.indexes import GinIndex
 from django.utils import timezone
@@ -106,6 +109,61 @@ class User(AbstractBaseUser, PermissionsMixin):
     def is_verified_in(self, region):
         """Check if user is verified in the specified region (by Region instance or string code)."""
         return self.region_verifications.verified_in(region).exists()
+
+    def delete(self, using=None, keep_parents=False):
+        """"Deleting" an account empties it rather than removing the row.
+
+        Order.buyer/seller and Review.reviewer/reviewee are CASCADE from both
+        sides, so a real row delete took the *counterparty's* purchase
+        history and the ratings they had earned down with it — one person
+        leaving erased another person's record. Everything personal goes;
+        what is left is an anonymous row the surviving orders and reviews can
+        still point at.
+
+        Overridden here rather than left to the view that first needed it
+        (MyProfileView.delete) so every path that deletes a User —that view,
+        `manage.py shell`, a single object deleted from Django admin— goes
+        through the same anonymization instead of only the one call site
+        that happened to remember it.
+
+        `using` and `keep_parents` are accepted, not honoured: this never
+        performs a real delete, on any database alias, so there is nothing
+        for either to apply to. Django's bulk `QuerySet.delete()` does not
+        call this method at all (it deletes with raw SQL) — see
+        UserAdmin.delete_queryset, which forces the admin's "Delete selected"
+        action through instances one at a time so it does not bypass this.
+        """
+        from django.db import transaction
+        from accounts.services import revoke_all_tokens_for_user, email_change_pending_key
+
+        with transaction.atomic(using=using):
+            # One save each rather than a bulk update: post_save is what
+            # bumps the listing cache generation, and a queryset update never
+            # fires it, so the listings would stay in every cached feed.
+            for listing in self.listings.exclude(status='removed'):
+                listing.status = 'removed'
+                listing.save(update_fields=['status'])
+
+            # Campus addresses and waitlist rows are personal data with
+            # nothing pointing at them; they go for real.
+            self.region_verifications.all().delete()
+            self.subscriptions.all().delete()
+            self.socialaccount_set.all().delete()
+
+            self.email = f"deleted-{uuid.uuid4().hex}@deleted.invalid"
+            self.first_name = "Deleted account"
+            self.last_name = ""
+            self.avatar_url = ""
+            self.is_active = False
+            self.deleted_at = timezone.now()
+            self.set_unusable_password()
+            self.save(using=using, update_fields=[
+                "email", "first_name", "last_name", "avatar_url",
+                "is_active", "deleted_at", "password",
+            ])
+
+        cache.delete(email_change_pending_key(self.id))
+        revoke_all_tokens_for_user(str(self.id))
 
     @property
     def verified_regions(self):

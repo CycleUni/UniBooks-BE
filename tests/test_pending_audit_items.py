@@ -438,3 +438,138 @@ def test_region_manager_permission_lets_a_superuser_through(api):
 
     request = type('R', (), {'user': root})()
     assert IsRegionManager().has_object_permission(request, None, listing) is True
+
+
+# ---------------------------------------------------------------------
+# A moderator reading a reported conversation gets a read-only token
+# ---------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_admin_chat_token_is_read_only(api, settings):
+    """The token proves a moderator is reviewing a report, not that they are
+    in the conversation. Without a role the worker defaulted it to "user" and
+    opening a report handed them a live seat in someone else's chat."""
+    from rest_framework_simplejwt.backends import TokenBackend
+    from messaging.models import Conversation
+    from moderation.models import ChatReport
+    from core.models import Region
+
+    settings.EDGE_CHAT_JWT_SECRET = "test-only-edge-chat-secret"
+
+    admin = _user("moderator@example.com", is_staff=True)
+    admin.managed_regions.add(Region.objects.get(code='TW'))
+    seller = _verified("mod-seller@example.com")
+    buyer = _verified("mod-buyer@example.com")
+    book = Book.objects.create(region_id='TW', isbn13="9789999999905", title="M", source="manual")
+    listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new",
+    )
+    conversation = Conversation.objects.create(listing=listing, buyer=buyer)
+    report = ChatReport.objects.create(
+        conversation=conversation, reporter=buyer, reported_party=seller, reason='spam',
+    )
+
+    resp = api.get(f"/api/v1/admin/chat-reports/{report.id}/chat-token/", **bearer(admin))
+    assert resp.status_code == 200
+
+    claims = TokenBackend(
+        algorithm="HS256", signing_key=settings.EDGE_CHAT_JWT_SECRET
+    ).decode(resp.json()['token'], verify=True)
+    assert claims['role'] == 'observer'
+
+
+# ---------------------------------------------------------------------
+# A race on the new email address is refused cleanly, not with a 500
+# ---------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_confirming_into_an_address_taken_in_the_same_instant_is_refused(api):
+    """The exists() check in ConfirmEmailChangeView is not atomic with the
+    save() that follows it — email is a real unique constraint
+    (accounts/models.py), not just an application-level check — so two
+    confirms racing past that check together must not surface as a 500.
+
+    Reproduced without threads: get a second pending change to genuinely
+    exist (so its uniqueness check has already legitimately passed once),
+    then repoint its cached token at an address someone else took a moment
+    later — the same "valid when checked, gone by the time we write" gap a
+    real race would hit, forcing the save() to be what catches it.
+    """
+    winner = _user("racer-a@example.com")
+    loser = _user("racer-b@example.com")
+
+    api.patch("/api/v1/auth/me/", {"email": "prize@example.com"},
+             content_type="application/json", **bearer(winner))
+    api.patch("/api/v1/auth/me/", {"email": "prize2@example.com"},
+             content_type="application/json", **bearer(loser))
+    winner_token = _token_from_pending(winner)
+    loser_token = _token_from_pending(loser)
+
+    assert api.post("/api/v1/auth/email/change/confirm/", {"token": winner_token},
+                    content_type="application/json").status_code == 200
+
+    record = cache.get(f"email-change:{loser_token}")
+    record['email'] = "prize@example.com"
+    cache.set(f"email-change:{loser_token}", record, timeout=3600)
+
+    resp = api.post("/api/v1/auth/email/change/confirm/", {"token": loser_token},
+                    content_type="application/json")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "acct.errEmailTaken"
+    loser.refresh_from_db()
+    assert loser.email == "racer-b@example.com"
+
+
+# ---------------------------------------------------------------------
+# Django admin's bulk "Delete selected" also anonymizes, not hard-deletes
+# ---------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_admin_bulk_delete_still_anonymizes():
+    """ModelAdmin's default delete_queryset is queryset.delete() — a bulk SQL
+    delete that never calls an instance's overridden delete(). Without
+    UserAdmin.delete_queryset, selecting a user in /admin/ and choosing
+    "Delete selected" would do the real CASCADE delete the model override
+    exists to prevent."""
+    from accounts.admin import UserAdmin
+    from django.contrib.admin.sites import AdminSite
+
+    seller = _verified("bulk-seller@example.com")
+    buyer = _verified("bulk-buyer@example.com")
+    book = Book.objects.create(region_id='TW', isbn13="9789999999906", title="B", source="manual")
+    listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="new",
+    )
+    order = Order.objects.create(
+        region_id='TW', currency_id='TWD', listing=listing, buyer=buyer, seller=seller,
+        status='completed', total_amount=100,
+    )
+    review = Review.objects.create(order=order, reviewer=buyer, reviewee=seller, rating=5)
+
+    admin = UserAdmin(User, AdminSite())
+    admin.delete_queryset(None, User.objects.filter(pk=seller.pk))
+
+    assert Order.objects.filter(pk=order.pk).exists()
+    assert Review.objects.filter(pk=review.pk).exists()
+    seller.refresh_from_db()
+    assert seller.is_active is False
+    assert seller.deleted_at is not None
+
+
+# ---------------------------------------------------------------------
+# Other fields save even when the request also carries a pending email
+# change, and save first so a failure there never sends mail for nothing
+# ---------------------------------------------------------------------
+
+@pytest.mark.django_db
+def test_other_profile_fields_still_save_alongside_a_pending_email_change(api):
+    user = _user("both-fields@example.com")
+    resp = api.patch(
+        "/api/v1/auth/me/",
+        {"first_name": "Changed", "email": "both-fields-new@example.com"},
+        content_type="application/json", **bearer(user),
+    )
+    assert resp.status_code == 200
+    user.refresh_from_db()
+    assert user.first_name == "Changed"
+    assert user.email == "both-fields@example.com"  # unchanged until confirmed

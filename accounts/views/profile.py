@@ -1,10 +1,6 @@
 import logging
-import uuid
 
-from django.core.cache import cache
-from django.db import transaction
 from django.db.models import Q, prefetch_related_objects
-from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import status, views
@@ -13,7 +9,6 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from core.region import get_region
-from core.i18n import resolve_language
 from django.contrib.auth import get_user_model
 
 from accounts.models import School
@@ -124,10 +119,15 @@ class MyProfileView(views.APIView):
                 # sent to it, and until this went through a confirmation link
                 # anyone with a session could point the account at a mailbox
                 # they did not own — after which password-reset mail went
-                # there too. Any other fields in this request still save.
-                send_email_change_verification(request, user, email)
+                # there too. Any other fields in this request still save —
+                # but save them *first*: send_email_change_verification writes
+                # a cache record and sends mail with no rollback of its own,
+                # so if the other fields failed to save that would leave a
+                # working confirmation link for a request that otherwise
+                # errored.
                 if updated_fields:
                     user.save(update_fields=updated_fields)
+                send_email_change_verification(request, user, email)
                 return Response({"code": "acct.emailChangePending", "pending_email": email})
 
         if last_seen_bought_orders_at is not None:
@@ -147,52 +147,12 @@ class MyProfileView(views.APIView):
         return Response(serializer.data)
 
     def delete(self, request):
-        """Delete the account by emptying it, not by removing the row.
-
-        Order.buyer/seller and Review.reviewer/reviewee are CASCADE from both
-        sides, so `user.delete()` took the counterparty's purchase history and
-        the ratings they had earned down with it — one person leaving erased
-        another person's record. Everything personal goes; what is left is an
-        anonymous row the surviving orders and reviews can still point at.
-        """
-        from accounts.services import revoke_all_tokens_for_user
-        from accounts.views.auth import email_change_pending_key
-
-        user = request.user
-        lang = resolve_language(request)
-        marker = {
-            'zh-TW': '已刪除的帳號',
-            'zh-HK': '已刪除的帳戶',
-        }.get(lang, 'Deleted account')
-
-        with transaction.atomic():
-            # One save each rather than a bulk update: post_save is what bumps
-            # the listing cache generation, and a queryset update never fires
-            # it, so the listings would stay in every cached feed.
-            for listing in user.listings.exclude(status='removed'):
-                listing.status = 'removed'
-                listing.save(update_fields=['status'])
-
-            # Campus addresses and waitlist rows are personal data with
-            # nothing pointing at them; they go for real.
-            user.region_verifications.all().delete()
-            user.subscriptions.all().delete()
-            user.socialaccount_set.all().delete()
-
-            user.email = f"deleted-{uuid.uuid4().hex}@deleted.invalid"
-            user.first_name = marker
-            user.last_name = ''
-            user.avatar_url = ''
-            user.is_active = False
-            user.deleted_at = timezone.now()
-            user.set_unusable_password()
-            user.save(update_fields=[
-                'email', 'first_name', 'last_name', 'avatar_url',
-                'is_active', 'deleted_at', 'password',
-            ])
-
-        cache.delete(email_change_pending_key(user.id))
-        revoke_all_tokens_for_user(str(user.id))
+        # The anonymize-rather-than-remove logic lives on User.delete()
+        # (accounts/models.py) so every path that deletes a User — this view,
+        # `manage.py shell`, a single object deleted from Django admin — goes
+        # through it, not just whichever call site happened to remember to
+        # ask for it.
+        request.user.delete()
         return Response({"code": "acct.deleted"}, status=status.HTTP_204_NO_CONTENT)
 
 

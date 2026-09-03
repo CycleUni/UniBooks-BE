@@ -48,6 +48,18 @@ class UserAdmin(BaseUserAdmin):
                 return ['is_active']
         return super().get_readonly_fields(request, obj)
 
+    def delete_queryset(self, request, queryset):
+        # ModelAdmin's default here is queryset.delete() — Django's bulk
+        # delete, which issues raw SQL and never calls an instance's
+        # overridden delete(). User.delete() anonymizes instead of removing
+        # the row precisely because Order/Review CASCADE from both buyer and
+        # seller; the bulk path would silently go around that and do the
+        # real CASCADE delete the override exists to prevent. The admin's
+        # single-object "Delete" button already calls obj.delete() and does
+        # not need this — only "Delete selected" does.
+        for obj in queryset:
+            obj.delete()
+
 @admin.register(School)
 class SchoolAdmin(admin.ModelAdmin):
     list_display = ('name', 'email_domain', 'region')

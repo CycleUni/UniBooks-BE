@@ -214,6 +214,17 @@ def revoke_all_tokens_for_user(user_id):
         _safe_cache_delete(f"jwt:rt:{jti}")
     _safe_cache_delete(user_set_key)
 
+EMAIL_CHANGE_TTL = 3600
+
+
+def email_change_token_key(token):
+    return f"email-change:{token}"
+
+
+def email_change_pending_key(user_id):
+    return f"email-change-pending:{user_id}"
+
+
 def email_already_used(email, excluding_user_id):
     """
     Check if the email is already in use by another user's email or edu_email field.
