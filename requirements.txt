@@ -5,6 +5,8 @@ djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
 django-cors-headers==4.6.0
 requests==2.34.2
+# CA bundle for the outbound call to CFEdgeChat; see orders/views/orders.py
+certifi==2026.7.22
 django-environ==0.14.0
 redis==8.0.1
 # Cloudflare R2（S3 相容 API）物件儲存後端，見 core/conf.py resolve_storage_config

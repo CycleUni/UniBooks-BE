@@ -1,6 +1,10 @@
 from core.region import get_region
 import datetime
+import functools
 import logging
+import ssl
+
+import certifi
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -17,6 +21,27 @@ from ..models import Order, Review
 from ..serializers import OrderSerializer, OrderStatusUpdateSerializer
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _edge_chat_ssl_context():
+    """TLS context for the call below, verifying against certifi's CA bundle.
+
+    The bundle is pinned rather than left to the platform because the system
+    trust store is what tends to be missing — a Python on macOS that has never
+    run Install Certificates.command cannot verify anything, and the tempting
+    fix is to turn verification off for local development. That is not
+    available here: this request carries a `role: "system"` JWT for a specific
+    chat room, and EDGE_CHAT_URL points at a real https host in development
+    too, so an unverified context would hand that token to anyone able to sit
+    between this process and the worker. Verification is therefore
+    unconditional, and certifi is a declared dependency so the bundle is
+    always present.
+
+    Cached: building a context parses the whole bundle, and this runs on every
+    order notification.
+    """
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
@@ -62,7 +87,7 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
             },
             method="POST",
         )
-        resp = urllib.request.urlopen(req, timeout=5)
+        resp = urllib.request.urlopen(req, timeout=5, context=_edge_chat_ssl_context())
         if resp.status >= 400:
             body = resp.read().decode('utf-8', errors='replace')[:500]
             logger.error("[%s] POST %s -> HTTP %s body: %s", log_prefix, url, resp.status, body)
