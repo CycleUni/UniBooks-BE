@@ -309,6 +309,21 @@ EMAIL_BACKEND, ANYMAIL = conf.resolve_email_backend_config(env, debug=DEBUG)
 AUTH_USER_MODEL = "accounts.User"
 
 # DRF & JWT
+# Throttle rates are relaxed only when RELAX_THROTTLES is set, never by DEBUG
+# alone. The two are not the same question: the test suite runs with
+# DEBUG=True so the database and cache take their dev fallbacks (see
+# conftest.py), and keying the rates on DEBUG made every throttling test
+# assert the loosened numbers instead of the ones that ship — four of them
+# failed, and the rest were silently checking nothing. Local tooling that
+# needs headroom (the Playwright recorder, say) sets RELAX_THROTTLES=1 in its
+# own environment; production never does, and nor do the tests.
+RELAX_THROTTLES = env.bool("RELAX_THROTTLES", default=False)
+
+
+def _throttle(enforced, relaxed):
+    return relaxed if RELAX_THROTTLES else enforced
+
+
 REST_FRAMEWORK = {
     # Normalizes DRF's own {"detail": ...} errors into this API's
     # {"error": {"code": ...}} contract — see core/exception_handler.py.
@@ -325,24 +340,24 @@ REST_FRAMEWORK = {
     # login/register/verification-request are brute-force / abuse targets).
     # Backed by CACHES["default"] (Upstash Redis in prod, LocMemCache in dev).
     'DEFAULT_THROTTLE_RATES': {
-        'login': '5/min',
-        'register': '10/hour',
-        'verify-request': '3/hour',
-        'search': '60/min',
-        'listing_create': '10/hour',
-        'refresh_token': '10/min',
-        'password_change': '5/min',
-        'password-reset-request': '3/hour',
+        'login': _throttle('5/min', '60/min'),
+        'register': _throttle('10/hour', '100/hour'),
+        'verify-request': _throttle('3/hour', '60/hour'),
+        'search': _throttle('60/min', '600/min'),
+        'listing_create': _throttle('10/hour', '1000/hour'),
+        'refresh_token': _throttle('10/min', '60/min'),
+        'password_change': _throttle('5/min', '60/min'),
+        'password-reset-request': _throttle('3/hour', '60/hour'),
         'cron': '60/hour',
         # Listing/chat image uploads (presign, direct-proxy and delete).
         # Generous enough for a 6-photo listing plus edits, but bounded so a
         # logged-in account can't run up storage costs by looping uploads.
-        'upload': '100/hour',
+        'upload': _throttle('100/hour', '500/hour'),
         'ad_stats': '60/min',
         # /auth/users/<int>/ answers with a name and a join date for any id,
         # and the ids are sequential — unthrottled that is a directory of
         # every account, walkable in one pass.
-        'public_profile': '30/min',
+        'public_profile': _throttle('30/min', '300/min'),
     },
 }
 

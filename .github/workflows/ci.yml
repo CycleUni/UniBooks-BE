@@ -36,3 +36,28 @@ jobs:
       # then fails at deploy, when it is most expensive to discover.
       - name: No missing migrations
         run: python manage.py makemigrations --check --dry-run
+        env:
+          DJANGO_READ_DOT_ENV_FILE: '0'
+          DEBUG: 'True'
+          SECRET_KEY: ci-only-fake-secret-key
+          JWT_SIGNING_KEY: ci-only-fake-jwt-signing-key
+          GOOGLE_BOOKS_API_KEY: ci-only-fake-google-books-key
+          GOOGLE_CLIENT_SECRET: ci-only-fake-google-client-secret
+          DEFAULT_FROM_EMAIL: noreply@example.invalid
+
+      # --database is what makes this worth running: index and constraint name
+      # limits are database-dependent checks, which plain `check` skips. An
+      # over-long index name passed the whole test suite and plain `check`,
+      # then failed `migrate`'s own checks in production — so that migration
+      # and the one after it never applied, and every query against the user
+      # table raised. pytest-django does not run system checks at all.
+      - name: Django system checks
+        run: python manage.py check --database default
+        env:
+          DJANGO_READ_DOT_ENV_FILE: '0'
+          DEBUG: 'True'
+          SECRET_KEY: ci-only-fake-secret-key
+          JWT_SIGNING_KEY: ci-only-fake-jwt-signing-key
+          GOOGLE_BOOKS_API_KEY: ci-only-fake-google-books-key
+          GOOGLE_CLIENT_SECRET: ci-only-fake-google-client-secret
+          DEFAULT_FROM_EMAIL: noreply@example.invalid
