@@ -5,11 +5,16 @@ Red line: every credential below is a fictitious test fake.
 """
 
 import time
+from types import SimpleNamespace
+from unittest import mock
 
 import pytest
+import requests
+from allauth.socialaccount.providers.oauth2.client import OAuth2Error
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
+from django.db.utils import OperationalError
 from django.test import Client
 from django.utils import timezone
 
@@ -573,3 +578,64 @@ def test_other_profile_fields_still_save_alongside_a_pending_email_change(api):
     user.refresh_from_db()
     assert user.first_name == "Changed"
     assert user.email == "both-fields@example.com"  # unchanged until confirmed
+
+
+# ---------------------------------------------------------------------
+# A broken backend is not a bad Google credential
+#
+# GoogleLoginView used to wrap its whole body in `except Exception` and
+# answer 401 auth.errInvalidToken. The deploy that shipped this file's
+# migration had not been migrated, so every query against accounts_user
+# raised — and Google sign-in reported that the user's token was invalid.
+# ---------------------------------------------------------------------
+
+GOOD_IDINFO = {
+    "sub": "g-infra", "email": "infra@example.com", "email_verified": True,
+    "given_name": "In", "family_name": "Fra",
+}
+
+
+def _google_post(api, credential="fake-id-token"):
+    return api.post("/api/v1/auth/google/", {"credential": credential},
+                    content_type="application/json")
+
+
+def _fake_provider():
+    adapter = mock.MagicMock()
+    adapter.get_provider.return_value.app = SimpleNamespace(client_id="fake-client-id")
+    return mock.patch("allauth.socialaccount.adapter.get_adapter", return_value=adapter)
+
+
+@pytest.mark.django_db
+def test_a_failure_after_verification_is_not_reported_as_a_bad_token(api):
+    """Anything that breaks once the credential has been accepted must
+    surface as a server error, not as 401 "your token is invalid"."""
+    with _fake_provider(), \
+         mock.patch("allauth.socialaccount.providers.google.views._verify_and_decode",
+                    return_value=GOOD_IDINFO), \
+         mock.patch("accounts.views.auth.issue_tokens",
+                    side_effect=OperationalError("no such column: accounts_user.deleted_at")):
+        with pytest.raises(OperationalError):
+            _google_post(api)
+
+
+@pytest.mark.django_db
+def test_unreachable_google_certificates_answer_503_not_401(api):
+    """Verification needs Google's signing keys. Not being able to fetch
+    them is our outage; 401 would blame the caller's account."""
+    with _fake_provider(), \
+         mock.patch("allauth.socialaccount.providers.google.views._verify_and_decode",
+                    side_effect=requests.ConnectionError("certs unreachable")):
+        resp = _google_post(api)
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "auth.errProviderNotConfigured"
+
+
+@pytest.mark.django_db
+def test_a_genuinely_bad_credential_is_still_401(api):
+    with _fake_provider(), \
+         mock.patch("allauth.socialaccount.providers.google.views._verify_and_decode",
+                    side_effect=OAuth2Error("Invalid id_token")):
+        resp = _google_post(api)
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "auth.errInvalidToken"

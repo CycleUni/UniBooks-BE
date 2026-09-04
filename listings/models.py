@@ -73,7 +73,7 @@ class Listing(models.Model):
             # Search facets group active listings by category and by course
             # (search.views.BookSearchView / CourseListView).
             models.Index(fields=['region', 'status', 'category'], name='listing_region_status_cat_idx'),
-            models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_course_idx'),
+            models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_crs_idx'),
             GinIndex(
                 name='listing_course_trgm_idx',
                 fields=['course_name'],

@@ -388,9 +388,13 @@ class GoogleLoginView(views.APIView):
         if not credential:
             return Response({"error": {"code": "auth.errMissingCredential"}}, status=status.HTTP_400_BAD_REQUEST)
 
+        import jwt
+        import requests
+
         from allauth.socialaccount.adapter import get_adapter
         from allauth.socialaccount.providers.google.provider import GoogleProvider
         from allauth.socialaccount.providers.google.views import _verify_and_decode
+        from allauth.socialaccount.providers.oauth2.client import OAuth2Error
         from allauth.socialaccount.models import SocialAccount
 
         try:
@@ -399,10 +403,22 @@ class GoogleLoginView(views.APIView):
         except Exception:
             return Response({"error": {"code": "auth.errProviderNotConfigured"}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        # Only the verification is guarded, and only against the errors that
+        # actually mean "this credential is no good".
+        #
+        # This used to be one `except Exception` wrapped around the whole
+        # method, answering 401 auth.errInvalidToken for anything that went
+        # wrong — including everything *after* the token had been accepted.
+        # A deploy whose migrations had not run reported "your Google token
+        # is invalid" for a missing database column, and the only way to find
+        # that out was to read the server log. Everything below this block is
+        # deliberately left to raise: a 500 with a traceback is the honest
+        # answer for a backend that is broken, and /core/healthz/ is where a
+        # schema-behind deploy is supposed to be noticed.
         try:
-            # allauth will securely verify the ID token signature, issuer, and audience (client_id)
-            # We monkey-patch PyJWT momentarily to add 5 seconds of leeway for clock skew (iat)
-            import jwt
+            # allauth verifies the signature, issuer and audience (client_id).
+            # PyJWT is monkey-patched for the duration to add 5 seconds of
+            # leeway for clock skew on `iat`.
             with _JWT_DECODE_PATCH_LOCK:
                 _original_jwt_decode = jwt.decode
 
@@ -415,103 +431,113 @@ class GoogleLoginView(views.APIView):
                     idinfo = _verify_and_decode(app, credential, verify_signature=True)
                 finally:
                     jwt.decode = _original_jwt_decode
+        except (OAuth2Error, jwt.PyJWTError, KeyError, ValueError) as e:
+            # OAuth2Error is allauth's wrapper for a bad signature, issuer or
+            # audience, for an unrecognised 'kid', and for a credential
+            # replayed inside its own lifetime. KeyError/ValueError come from
+            # trying to read the header of something that is not a JWT at all.
+            logger.info("Google ID token rejected: %s", e)
+            return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_401_UNAUTHORIZED)
+        except requests.RequestException:
+            # Verification needs Google's signing certificates. Failing to
+            # fetch them is our outage, not a bad credential — 401 here would
+            # tell the user their perfectly good account had been rejected,
+            # and invite them to retry something that cannot succeed.
+            logger.exception("Could not reach Google's certificate endpoint")
+            return Response({"error": {"code": "auth.errProviderNotConfigured"}}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-            email = idinfo.get('email')
-            if not email:
-                return Response({"error": {"code": "auth.errNoEmail"}}, status=status.HTTP_400_BAD_REQUEST)
+        email = idinfo.get('email')
+        if not email:
+            return Response({"error": {"code": "auth.errNoEmail"}}, status=status.HTTP_400_BAD_REQUEST)
 
-            # A Google account can carry an unverified address (Google-managed
-            # accounts created on a third-party email, or a changed recovery
-            # address). The ID token says so via `email_verified`; without this
-            # check anyone able to register such an account on someone else's
-            # address could sign straight into that person's UniBooks account,
-            # since the lookup below is by email alone.
-            email_verified = idinfo.get('email_verified')
-            if email_verified is not True and str(email_verified).lower() != 'true':
-                return Response({"error": {"code": "auth.errEmailNotVerified"}}, status=status.HTTP_403_FORBIDDEN)
+        # A Google account can carry an unverified address (Google-managed
+        # accounts created on a third-party email, or a changed recovery
+        # address). The ID token says so via `email_verified`; without this
+        # check anyone able to register such an account on someone else's
+        # address could sign straight into that person's UniBooks account,
+        # since the lookup below is by email alone.
+        email_verified = idinfo.get('email_verified')
+        if email_verified is not True and str(email_verified).lower() != 'true':
+            return Response({"error": {"code": "auth.errEmailNotVerified"}}, status=status.HTTP_403_FORBIDDEN)
 
-            # Stored lowercased and looked up case-insensitively, matching the
-            # password flows (RegisterSerializer / LoginView) so a Google
-            # sign-in can never mint a second account differing only by case.
-            email = email.strip().lower()
-            uid = idinfo.get('sub')
-            first_name = idinfo.get('given_name', '')
-            last_name = idinfo.get('family_name', '')
+        # Stored lowercased and looked up case-insensitively, matching the
+        # password flows (RegisterSerializer / LoginView) so a Google
+        # sign-in can never mint a second account differing only by case.
+        email = email.strip().lower()
+        uid = idinfo.get('sub')
+        first_name = idinfo.get('given_name', '')
+        last_name = idinfo.get('family_name', '')
 
-            avatar_url = idinfo.get('picture', '')
+        avatar_url = idinfo.get('picture', '')
 
-            # Find or create user
-            user = User.objects.filter(email__iexact=email).first()
-            created = user is None
-            if created:
-                # No password: create_user(password=None) stores an unusable one.
-                user = User.objects.create_user(
-                    email=email,
-                    first_name=first_name,
-                    last_name=last_name,
-                    avatar_url=avatar_url,
-                )
-            elif avatar_url and user.avatar_url != avatar_url:
-                user.avatar_url = avatar_url
-                user.save(update_fields=['avatar_url'])
+        # Find or create user
+        user = User.objects.filter(email__iexact=email).first()
+        created = user is None
+        if created:
+            # No password: create_user(password=None) stores an unusable one.
+            user = User.objects.create_user(
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                avatar_url=avatar_url,
+            )
+        elif avatar_url and user.avatar_url != avatar_url:
+            user.avatar_url = avatar_url
+            user.save(update_fields=['avatar_url'])
 
-            # Block login for disabled accounts. No auto-reactivation: once
-            # an admin disables an account, Google login alone does not
-            # bypass the block.
-            if not user.is_active:
-                return Response(
-                    {"error": {"code": "auth.errAccountDisabled"}},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            # Automatically bind and verify edu email if the Google email is a supported .edu.tw address
-            if _is_valid_edu_email(email):
-                school, region = resolve_school_from_email(email)
-                if school and region:
-                    from accounts.models import RegionVerification
-                    RegionVerification.objects.update_or_create(
-                        user=user,
-                        region=region,
-                        defaults={
-                            'school': school,
-                            'edu_email': email,
-                            'verified_at': timezone.now(),
-                            'is_active': True
-                        }
-                    )
-
-            # Link with SocialAccount
-            SocialAccount.objects.get_or_create(
-                user=user,
-                provider=GoogleProvider.id,
-                uid=uid,
-                defaults={
-                    'extra_data': idinfo
-                }
+        # Block login for disabled accounts. No auto-reactivation: once
+        # an admin disables an account, Google login alone does not
+        # bypass the block.
+        if not user.is_active:
+            return Response(
+                {"error": {"code": "auth.errAccountDisabled"}},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-            # Issued the same way as password login, so the refresh token
-            # is recorded in the JWT whitelist (jwt:rt:*/jwt:user:*) — a
-            # token minted directly via RefreshToken.for_user() would never
-            # be in that whitelist, making it both unrefreshable (rotation
-            # checks the whitelist) and invisible to revoke_all_tokens_for_user.
-            tokens = issue_tokens(user)
-            from core.region import get_region
-            region = get_region(request)
-            is_verified = user.region_verifications.verified_in(region).exists() if region else False
+        # Automatically bind and verify edu email if the Google email is a supported .edu.tw address
+        if _is_valid_edu_email(email):
+            school, region = resolve_school_from_email(email)
+            if school and region:
+                from accounts.models import RegionVerification
+                RegionVerification.objects.update_or_create(
+                    user=user,
+                    region=region,
+                    defaults={
+                        'school': school,
+                        'edu_email': email,
+                        'verified_at': timezone.now(),
+                        'is_active': True
+                    }
+                )
 
-            return Response({
-                "access": tokens['access'],
-                "refresh": tokens['refresh'],
-                "user_id": user.id,
-                "user": {
-                    "is_verified": is_verified
-                }
-            }, status=status.HTTP_200_OK)
+        # Link with SocialAccount
+        SocialAccount.objects.get_or_create(
+            user=user,
+            provider=GoogleProvider.id,
+            uid=uid,
+            defaults={
+                'extra_data': idinfo
+            }
+        )
 
-        except Exception as e:
-            logger.error(f"Google token verification failed: {e}", exc_info=True)
-            return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_401_UNAUTHORIZED)
+        # Issued the same way as password login, so the refresh token
+        # is recorded in the JWT whitelist (jwt:rt:*/jwt:user:*) — a
+        # token minted directly via RefreshToken.for_user() would never
+        # be in that whitelist, making it both unrefreshable (rotation
+        # checks the whitelist) and invisible to revoke_all_tokens_for_user.
+        tokens = issue_tokens(user)
+        from core.region import get_region
+        region = get_region(request)
+        is_verified = user.region_verifications.verified_in(region).exists() if region else False
+
+        return Response({
+            "access": tokens['access'],
+            "refresh": tokens['refresh'],
+            "user_id": user.id,
+            "user": {
+                "is_verified": is_verified
+            }
+        }, status=status.HTTP_200_OK)
 
 
 class LogoutView(views.APIView):

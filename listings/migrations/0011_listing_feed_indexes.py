@@ -25,6 +25,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name='listing',
-            index=models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_course_idx'),
+            index=models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_crs_idx'),
         ),
     ]
