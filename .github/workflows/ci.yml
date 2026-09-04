@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the version developed against; psycopg2-binary ships
+          # wheels, so no libpq or build toolchain is needed here.
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      # conftest.py injects the settings module and fake values for every
+      # required variable, and runs with DEBUG=True so the database and cache
+      # fall back to SQLite and LocMemCache. Nothing external is needed.
+      - name: Tests
+        run: pytest -q
+
+      # A model change committed without its migration passes every test and
+      # then fails at deploy, when it is most expensive to discover.
+      - name: No missing migrations
+        run: python manage.py makemigrations --check --dry-run
