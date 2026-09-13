@@ -1,13 +1,13 @@
 # 開發／測試依賴（版本固定）
 -r requirements.txt
 pytest==9.1.1
-pytest-django==4.12.0
+pytest-django==4.14.0
 pytest-cov==7.1.0
-coverage==7.15.2
-ruff==0.15.21
-PyJWT==2.13.0
+coverage==7.16.0
+ruff==0.16.7
+PyJWT==2.14.0
 # 間接依賴
 iniconfig==2.3.0
-packaging==26.2
+packaging==26.3
 pluggy==1.6.0
-Pygments==2.20.0
+Pygments==2.21.0

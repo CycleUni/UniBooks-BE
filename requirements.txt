@@ -1,28 +1,28 @@
 # 執行期依賴（版本固定；升級須經 security-manager 檢視）
-Django==6.0.7
-psycopg2-binary==2.9.12
-djangorestframework==3.17.1
+Django==6.1.1
+psycopg2-binary==2.9.13
+djangorestframework==3.18.1
 djangorestframework-simplejwt==5.5.1
-django-cors-headers==4.6.0
+django-cors-headers==4.9.0
 requests==2.34.2
 # CA bundle for the outbound call to CFEdgeChat; see orders/views/orders.py
 certifi==2026.7.22
 django-environ==0.14.0
-redis==8.0.1
+redis==8.1.0
 # Cloudflare R2（S3 相容 API）物件儲存後端，見 core/conf.py resolve_storage_config
 django-storages==1.14.6
-boto3==1.43.55
+boto3==1.43.93
 # Mailjet 寄信後端（教育信箱／註冊信箱驗證信），見 core/conf.py resolve_email_backend_config
-django-anymail==15.0
+django-anymail==15.2
 # 驗證上傳檔案確實是可解碼的圖片（listings/views.py ListingUploadURLView）
 Pillow==12.3.0
 
 # 間接依賴（一併固定，確保建置可重現）
 asgiref==3.12.1
-sqlparse==0.5.5
-django-allauth==65.18.0
-cryptography==49.0.0
-botocore==1.43.55
+sqlparse==0.6.0
+django-allauth==65.19.3
+cryptography==50.0.1
+botocore==1.43.93
 s3transfer==0.19.2
 jmespath==1.1.0
 python-dateutil==2.9.0.post0
