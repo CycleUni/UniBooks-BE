@@ -246,3 +246,147 @@ def test_edge_chat_webhook_tolerates_malformed_room_id(api, db):
 # mark-sender-as-read side effect, were intentionally removed (see commit
 # da79b12). That coverage now belongs in the CFEdgeChat worker's own test
 # suite, out of scope for this repo.
+
+
+# --- offline_email event: notify a participant who has the site closed ------
+#
+# CFEdgeChat's UserHub owns the "should we ask at all" half of this (no live
+# WebSocket for the recipient, and this conversation not already notified
+# since they last opened it — tested in the Worker's own suite). What is
+# tested here is the half Django owns: who the mail goes to, and whom it must
+# not go to.
+
+
+def _offline_email_payload(conversation, recipient, **overrides):
+    payload = {
+        "event": "offline_email",
+        "room_id": str(conversation.id),
+        "recipient_id": str(recipient.id),
+        "sender_id": str(conversation.listing.seller_id),
+        "preview": "are you free on Friday?",
+        "timestamp": 1234567890,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _post_offline_email(api, payload, secret=FAKE_WEBHOOK_SECRET):
+    return api.post(
+        "/api/v1/messaging/webhook/edge-chat/",
+        payload,
+        content_type="application/json",
+        HTTP_X_WEBHOOK_SECRET=secret,
+    )
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_still_requires_the_shared_secret(api, conversation, user, mailoutbox):
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user), secret="wrong-secret")
+    assert resp.status_code == 403
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_sends_to_the_recipient(api, conversation, user, mailoutbox):
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "sent"
+
+    assert len(mailoutbox) == 1
+    mail = mailoutbox[0]
+    assert mail.to == [user.email]
+    # Enough to know which conversation it is, and a link straight into it.
+    assert "Chat Test Book" in mail.body
+    # Region-prefixed, matching the frontend's /<region>/... route table.
+    assert f"/tw/messages?chat={conversation.id}" in mail.body
+    assert "are you free on Friday?" in mail.body
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_can_go_to_the_seller_too(api, conversation, mailoutbox):
+    seller = conversation.listing.seller
+    resp = _post_offline_email(
+        api,
+        _offline_email_payload(conversation, seller, sender_id=str(conversation.buyer_id)),
+    )
+    assert resp.status_code == 200
+    assert [m.to for m in mailoutbox] == [[seller.email]]
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_omits_system_placeholder_previews(api, conversation, user, mailoutbox):
+    # Image and order-notification previews are i18n tokens the frontend
+    # resolves per viewer; an email has no resolver, so the raw token must
+    # never appear in one.
+    resp = _post_offline_email(
+        api,
+        _offline_email_payload(conversation, user, preview="[SYSTEM:msg.imagePlaceholder]"),
+    )
+    assert resp.status_code == 200
+    assert len(mailoutbox) == 1
+    assert "[SYSTEM:" not in mailoutbox[0].body
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_truncates_a_long_preview(api, conversation, user, mailoutbox):
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user, preview="x" * 500))
+    assert resp.status_code == 200
+    assert "x" * 500 not in mailoutbox[0].body
+    assert "…" in mailoutbox[0].body
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_skips_a_conversation_the_recipient_deleted(api, conversation, user, mailoutbox):
+    # Deleting hides the conversation from their inbox for good, so the link
+    # would lead to something they cannot open.
+    conversation.buyer_deleted_at = timezone.now()
+    conversation.save(update_fields=["buyer_deleted_at"])
+
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "conversation_deleted"
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_skips_a_deactivated_recipient(api, conversation, user, mailoutbox):
+    user.is_active = False
+    user.save(update_fields=["is_active"])
+
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "recipient_unreachable"
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_rejects_a_non_participant_recipient(api, conversation, db, mailoutbox):
+    outsider = User.objects.create_user(
+        email="chat-outsider2@example.com", first_name="Out", last_name="Sider", password=PASSWORD
+    )
+    resp = _post_offline_email(api, _offline_email_payload(conversation, outsider))
+    assert resp.status_code == 400
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_tolerates_an_unknown_room(api, db, mailoutbox):
+    resp = _post_offline_email(
+        api,
+        {"event": "offline_email", "room_id": "unibooks:42", "recipient_id": "7", "preview": "hi"},
+    )
+    assert resp.status_code == 404
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_does_not_touch_the_inbox_preview(api, conversation, user, mailoutbox):
+    # The preview mirror is the *other* event on this URL; a notification
+    # request must not rewrite latest_message_body with a truncated copy.
+    conversation.latest_message_body = "the real latest message"
+    conversation.save(update_fields=["latest_message_body"])
+
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+    assert resp.status_code == 200
+    conversation.refresh_from_db()
+    assert conversation.latest_message_body == "the real latest message"
