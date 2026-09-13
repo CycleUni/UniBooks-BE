@@ -84,6 +84,10 @@ def test_notifies_user_with_new_listing_and_updates_notified_at(api, waitlister,
     assert len(mailoutbox) == 1
     assert waitlister.email in mailoutbox[0].to[0]
     assert "Waitlisted Book" in mailoutbox[0].body
+    # Region-prefixed, matching the frontend's /<region>/... route table: a
+    # bare /book link is resolved against whichever region the reader last
+    # used, not the one they subscribed in.
+    assert f"/tw/book?isbn={book.isbn13}" in mailoutbox[0].body
 
     sub.refresh_from_db()
     assert sub.notified_at is not None

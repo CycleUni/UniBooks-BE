@@ -99,7 +99,16 @@ class WaitlistNotifyView(views.APIView):
         for user, subs in batch:
             book_lines = []
             for sub in subs:
-                book_url = f"{settings.FRONTEND_URL}/book?isbn={sub.book.isbn13}" if sub.book.isbn13 else settings.FRONTEND_URL
+                # Region-prefixed: the frontend mounts every route under
+                # /<region>/, and catalog pages are scoped to it, so a bare
+                # /book link resolves against whichever region the reader last
+                # used rather than the one they subscribed in.
+                region = str(sub.region_id).lower()
+                book_url = (
+                    f"{settings.FRONTEND_URL}/{region}/book?isbn={sub.book.isbn13}"
+                    if sub.book.isbn13
+                    else f"{settings.FRONTEND_URL}/{region}"
+                )
                 book_lines.append(f"- {sub.book.title}: {book_url}")
             books_block = "\n".join(book_lines)
 
