@@ -231,14 +231,17 @@ class OrderViewSet(viewsets.ModelViewSet):
         listing = serializer.validated_data['listing']
 
         # In the new flow, we don't reserve immediately on request, wait for seller to accept.
-        region = get_region(self.request)
+        # Region and currency come from the listing, never the request:
+        # total_amount is the listing's price, which only means something in
+        # the currency it was listed in. OrderSerializer.validate has already
+        # refused a request made from any other region.
         order = serializer.save(
             buyer=self.request.user,
             seller=listing.seller,
             total_amount=listing.price,
             status='pending',
-            region=region,
-            currency=region.currency
+            region=listing.region,
+            currency=listing.currency
         )
 
         conv, _ = Conversation.objects.get_or_create(

@@ -186,6 +186,44 @@ def test_cross_region_allowed_after_verification(setup_data, hk_region):
     assert resp.status_code == 201
 
 
+def test_listing_detail_from_other_region_keeps_its_own_region_and_currency(setup_data):
+    # The listing page renders a listing reached through another region's URL
+    # (/hk/listing/<tw id>) in its own currency and warns about the mismatch;
+    # both depend on the payload naming the listing's region, not the caller's.
+    client = APIClient()
+    resp = client.get(f'/api/v1/listings/{setup_data["tw_listing"].id}/', HTTP_X_REGION='HK')
+    assert resp.status_code == 200
+    assert resp.json()['region'] == 'TW'
+    assert resp.json()['currency'] == 'TWD'
+
+
+def test_order_from_other_region_is_refused_not_relabelled(setup_data, hk_region):
+    # A buyer verified in both regions, who has already chatted about the TW
+    # listing, clears every other check. Placed from HK, the order used to be
+    # filed as HK/HKD with the TWD price copied into it.
+    from accounts.models import RegionVerification
+    from messaging.models import Conversation
+    from orders.models import Order
+
+    buyer = setup_data['hk_user']
+    RegionVerification.objects.create(user=buyer, region_id='TW', school=setup_data['tw_school'], edu_email='hk@ntu.edu.tw', is_active=True, is_manual_verification=True, verified_at=timezone.now())
+    listing = setup_data['tw_listing']
+    Conversation.objects.create(listing=listing, buyer=buyer)
+
+    client = APIClient()
+    client.force_authenticate(user=buyer)
+
+    resp = client.post('/api/v1/orders/', {'listing': listing.id}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 400
+    assert resp.json()['listing'] == ['checkout.errRegionMismatch']
+    assert not Order.objects.filter(listing=listing).exists()
+
+    resp = client.post('/api/v1/orders/', {'listing': listing.id}, format='json', HTTP_X_REGION='TW')
+    assert resp.status_code == 201
+    order = Order.objects.get(listing=listing)
+    assert (order.region_id, order.currency_id, order.total_amount) == ('TW', 'TWD', listing.price)
+
+
 # ---------------------------------------------------------------------
 # Cache isolation
 #

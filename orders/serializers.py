@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from core.region import get_region
 from .models import Order, Review
 from listings.models import Listing
 from accounts.models import User
@@ -31,7 +32,15 @@ class OrderSerializer(serializers.ModelSerializer):
         # Ensure the listing is available
         if listing.status != 'active':
             raise serializers.ValidationError({"listing": "checkout.errListingUnavailable"})
-            
+
+        # The listing page is reachable from any region's site (it shows the
+        # listing in its own currency and warns about the mismatch), but an
+        # order placed from there would be filed under the wrong region and
+        # its amount read in the wrong currency — TWD 350 recorded as HKD 350.
+        region = get_region(self.context['request'])
+        if region is not None and listing.region_id != region.pk:
+            raise serializers.ValidationError({"listing": "checkout.errRegionMismatch"})
+
         # Ensure the buyer is not the seller
         if self.context['request'].user == listing.seller:
             raise serializers.ValidationError({"listing": "checkout.errOwnListing"})
