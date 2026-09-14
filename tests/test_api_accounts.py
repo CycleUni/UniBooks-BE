@@ -434,6 +434,145 @@ def test_grace_period_constant_is_short():
 
 
 # ---------------------------------------------------------------------
+# Token store outages: our failure, not the caller's session
+# ---------------------------------------------------------------------
+
+
+class _FlakyTokenStore:
+    """Stands in for the cache inside accounts.services only — DRF's throttling
+    keeps the real one — and fails the operations a test names, the way an
+    Upstash timeout on a cold function does."""
+
+    def __init__(self, fail_get=None, fail_set=None):
+        self._fail_get = fail_get or (lambda key: False)
+        self._fail_set = fail_set or (lambda key: False)
+
+    def get(self, key, default=None):
+        if self._fail_get(key):
+            raise ConnectionError("redis timeout")
+        return cache.get(key, default)
+
+    def set(self, key, value, timeout=None):
+        if self._fail_set(key):
+            raise ConnectionError("redis timeout")
+        return cache.set(key, value, timeout=timeout)
+
+    def delete(self, key):
+        return cache.delete(key)
+
+
+def _refresh(api, refresh_token):
+    return api.post("/api/v1/auth/refresh/", {"refresh": refresh_token}, content_type="application/json")
+
+
+def _jti(refresh_token):
+    from rest_framework_simplejwt.tokens import RefreshToken
+    return RefreshToken(refresh_token)["jti"]
+
+
+def test_refresh_answers_503_not_401_when_the_token_store_is_unreachable(api, user):
+    # The production sign-outs: the whitelist read timed out, was folded into
+    # "not found", and the client was told its session was over.
+    tokens = issue_tokens(user)
+    flaky = _FlakyTokenStore(fail_get=lambda key: key.startswith("jwt:rt:"))
+
+    with mock.patch("accounts.services.cache", flaky):
+        resp = _refresh(api, tokens["refresh"])
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "auth.errSessionStoreUnavailable"
+    assert resp["Retry-After"] == "2"
+
+    # Nothing about the token changed; once the store is back it just works.
+    assert _refresh(api, tokens["refresh"]).status_code == 200
+
+
+def test_a_rotation_that_cannot_record_the_new_pair_leaves_the_old_token_working(api, user):
+    # The old flow deleted the old token's entry first. Failing the write
+    # after that left the client holding a token the server had forgotten, so
+    # the retry was a 401 and the visitor was signed out anyway.
+    tokens = issue_tokens(user)
+    old_key = f"jwt:rt:{_jti(tokens['refresh'])}"
+    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:") and key != old_key)
+
+    with mock.patch("accounts.services.cache", flaky):
+        assert _refresh(api, tokens["refresh"]).status_code == 503
+
+    retried = _refresh(api, tokens["refresh"])
+    assert retried.status_code == 200
+    assert retried.json()["refresh"] != tokens["refresh"]
+
+
+def test_a_rotation_that_cannot_record_the_rotation_leaves_the_old_token_working(api, user):
+    tokens = issue_tokens(user)
+    old_key = f"jwt:rt:{_jti(tokens['refresh'])}"
+    flaky = _FlakyTokenStore(fail_set=lambda key: key == old_key)
+
+    with mock.patch("accounts.services.cache", flaky):
+        assert _refresh(api, tokens["refresh"]).status_code == 503
+
+    assert _refresh(api, tokens["refresh"]).status_code == 200
+
+
+def test_a_genuinely_unknown_token_is_still_401(api, user):
+    # The 503 path must not swallow the real answer: evicted or never issued.
+    tokens = issue_tokens(user)
+    cache.delete(f"jwt:rt:{_jti(tokens['refresh'])}")
+
+    resp = _refresh(api, tokens["refresh"])
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "auth.errTokenRevoked"
+
+
+def test_login_answers_503_rather_than_issue_a_pair_that_cannot_refresh(api, user):
+    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:"))
+
+    with mock.patch("accounts.services.cache", flaky):
+        resp = api.post(
+            "/api/v1/auth/token/",
+            {"email": user.email, "password": PASSWORD},
+            content_type="application/json",
+        )
+
+    assert resp.status_code == 503
+    assert "refresh" not in resp.json()
+
+
+def test_issuing_tokens_never_drops_other_devices_from_the_revocation_list(user):
+    # A failed read of jwt:user:{id} used to degrade to [] and be written back,
+    # silently removing every other device from what "log out all devices"
+    # and password reset revoke.
+    from accounts.services import TokenStoreUnavailable
+
+    first = issue_tokens(user)
+    user_key = f"jwt:user:{user.id}"
+    flaky = _FlakyTokenStore(fail_get=lambda key: key == user_key)
+
+    with mock.patch("accounts.services.cache", flaky):
+        with pytest.raises(TokenStoreUnavailable):
+            issue_tokens(user)
+
+    assert cache.get(user_key) == [_jti(first["refresh"])]
+
+
+def test_a_registration_link_survives_a_token_store_outage(api, db):
+    new_user = User.objects.create_user(
+        email="fresh@example.com", first_name="Fresh", last_name="User", password=PASSWORD, is_active=False
+    )
+    cache.set("register-verify:link-token", {"user_id": new_user.id}, 3600)
+    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:"))
+
+    with mock.patch("accounts.services.cache", flaky):
+        first = api.post("/api/v1/auth/verify-registration/", {"token": "link-token"}, content_type="application/json")
+    assert first.status_code == 503
+
+    # Same link, store back: it still works.
+    again = api.post("/api/v1/auth/verify-registration/", {"token": "link-token"}, content_type="application/json")
+    assert again.status_code == 200
+    assert "refresh" in again.json()
+
+
+# ---------------------------------------------------------------------
 # Logout
 # ---------------------------------------------------------------------
 

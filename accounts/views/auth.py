@@ -26,6 +26,8 @@ from accounts.services import (
     get_grace_tokens,
     store_grace_tokens,
     was_rotated,
+    refresh_token_is_whitelisted,
+    forget_rotated_jti,
     email_already_used,
     email_change_token_key,
     email_change_pending_key,
@@ -286,9 +288,11 @@ class VerifyRegistrationView(views.APIView):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
-        cache.delete(f"register-verify:{token}")
 
+        # Issue before consuming the link: if the token store is unavailable
+        # this raises a 503, and the visitor can simply open the same link again.
         tokens = issue_tokens(user)
+        cache.delete(f"register-verify:{token}")
         return Response(tokens)
 
 
@@ -359,20 +363,26 @@ class RefreshTokenView(views.APIView):
                 logger.warning("Refresh token jti=%s replayed after the rotation grace window", jti)
                 return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
 
-            # Whitelist check; revokes the old jti on success. A bare "not
-            # found" (cache miss, eviction, dev-server restart) fails just
-            # this one refresh — it no longer nukes every other session; see
-            # verify_and_revoke_refresh_token's docstring for why that
-            # escalation was the actual bug behind frequent unwanted logouts.
-            if not verify_and_revoke_refresh_token(jti, user_id):
+            # Whitelist check. A bare "not found" (cache miss, eviction,
+            # dev-server restart) fails just this one refresh — it no longer
+            # nukes every other session; see refresh_token_is_whitelisted.
+            # An unreachable cache is neither: it raises TokenStoreUnavailable,
+            # answered as 503 so the client keeps its tokens and retries.
+            if not refresh_token_is_whitelisted(jti, user_id):
                 return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
 
             user = User.objects.get(id=user_id)
             if not user.is_active:
+                verify_and_revoke_refresh_token(jti, user_id)
                 return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 
+            # Issue and record the new pair first, and only then retire the old
+            # token by overwriting its entry with the rotation record. Each
+            # step either succeeds or raises before the old token has changed,
+            # so a failed rotation can always be retried with the same token.
             tokens = issue_tokens(user)
             store_grace_tokens(jti, user_id, tokens)
+            forget_rotated_jti(jti, user_id)
             return Response(tokens)
         except (TokenError, User.DoesNotExist):
             return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_401_UNAUTHORIZED)
