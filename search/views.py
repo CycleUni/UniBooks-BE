@@ -9,7 +9,11 @@ from catalog.services import (
     search_google_books, get_google_books_by_isbn,
     search_open_library_books, get_open_library_book_by_isbn,
     get_isbnnet_book_by_isbn,
-    GoogleBooksRateLimited, describe_source,
+    describe_source,
+)
+from catalog.services.engines import (
+    ISBN_FALLBACK_ORDER, KEYWORD_FALLBACK_ORDER, SOURCE_BY_ENGINE,
+    engine_order, lookup_in_order, region_search_engines,
 )
 from catalog.models import Book
 from listings.models import Listing
@@ -17,14 +21,34 @@ from subscriptions.models import Subscription
 from django.db.models import Count, Min, Q
 from core.region import get_region
 
-VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
-
 # Browsing by category or course reads Book rows straight out of the local
 # catalogue, and the whole matching set used to be pulled into Python before
 # paginating. The cap keeps that bounded; the response says when it bit
 # (results_truncated) so the client can tell the user to narrow the filters
 # rather than just running out of pages.
 LOCAL_BROWSE_LIMIT = 200
+
+
+def _isbn_lookups():
+    # Resolved per call so tests patching search.views.<name> are honoured.
+    return {
+        'googlebooks': get_google_books_by_isbn,
+        'isbnnet': get_isbnnet_book_by_isbn,
+        'openlibrary': get_open_library_book_by_isbn,
+    }
+
+
+def _keyword_lookups():
+    return {
+        'googlebooks': search_google_books,
+        'openlibrary': search_open_library_books,
+    }
+
+
+def _keyword_engine(engine):
+    # The ISBN registry cannot run a keyword search; a caller that named it
+    # has always had Google stand in for that part.
+    return 'googlebooks' if engine == 'isbnnet' else engine
 
 
 class BookSearchView(views.APIView):
@@ -63,10 +87,12 @@ class BookSearchView(views.APIView):
         filter_price = (p_min is not None or p_max is not None)
         in_stock_required = (request.GET.get('in_stock') == '1')
 
+        # Engines this region's admin settings allow. A named engine outside
+        # them is treated as no engine, and the fallback order below is cut
+        # down to them as well.
+        allowed_engines = region_search_engines(region)
         explicit_engine = request.GET.get('engine')
-        engine = explicit_engine if explicit_engine in VALID_SEARCH_ENGINES else None
-        if engine and engine not in (region.search_engines or ['googlebooks']):
-            engine = None
+        engine = explicit_engine if explicit_engine in allowed_engines else None
 
         if not query and not category and not course:
             return Response([])
@@ -112,49 +138,21 @@ class BookSearchView(views.APIView):
             is_isbn = query_stripped.isdigit() and len(query_stripped) in (10, 13)
             
             if is_isbn:
-                meta = {}
-                gb_book = None
-                
-                if engine:
-                    engine_used = engine
-                    if engine == 'openlibrary':
-                        gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
-                    elif engine == 'isbnnet':
-                        gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
-                    else:
-                        try:
-                            gb_book = get_google_books_by_isbn(query_stripped, _meta=meta)
-                        except GoogleBooksRateLimited:
-                            engine_used = 'openlibrary'
-                            google_unavailable = True
-                            meta = {}
-                            gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
-                else:
-                    try:
-                        gb_book = get_google_books_by_isbn(query_stripped, _meta=meta)
-                        engine_used = 'googlebooks'
-                    except GoogleBooksRateLimited:
-                        google_unavailable = True
-                    
-                    if not gb_book:
-                        meta = {}
-                        gb_book = get_isbnnet_book_by_isbn(query_stripped, _meta=meta)
-                        engine_used = 'isbnnet'
-                        
-                    if not gb_book:
-                        meta = {}
-                        gb_book = get_open_library_book_by_isbn(query_stripped, _meta=meta)
-                        engine_used = 'openlibrary'
+                # Named engine: that one alone. No engine: Google, then the
+                # ISBN registry, then Open Library, each asked when the one
+                # before has no record — within what the region allows.
+                gb_book, engine_used, meta, unavailable = lookup_in_order(
+                    query_stripped,
+                    engine_order(engine, allowed_engines, ISBN_FALLBACK_ORDER),
+                    _isbn_lookups(),
+                    allowed_engines,
+                )
+                google_unavailable = google_unavailable or unavailable
 
                 if gb_book:
                     if not gb_book.get('cover_url') and gb_book.get('isbn'):
                         gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
-                    if engine_used == 'isbnnet':
-                        gb_book['source'] = 'isbnnet_api'
-                    elif engine_used == 'openlibrary':
-                        gb_book['source'] = 'openlibrary_api'
-                    else:
-                        gb_book['source'] = 'google_api'
+                    gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
                 local_books = Book.objects.filter(isbn13=query_stripped)
@@ -167,67 +165,33 @@ class BookSearchView(views.APIView):
                 # keep results whose own ISBN matches what was searched, so
                 # this stays a precise ISBN lookup rather than a fuzzy one.
                 if not gb_book and not local_books.exists():
-                    try:
-                        if engine == 'openlibrary':
-                            fallback_results = search_open_library_books(query_stripped, _meta={})
-                            fallback_engine = 'openlibrary'
-                        else:
-                            fallback_results = search_google_books(query_stripped, _meta={})
-                            fallback_engine = 'googlebooks'
-                    except GoogleBooksRateLimited:
-                        fallback_results = []
-                        fallback_engine = None
-                    
-                    if not fallback_results and not engine:
-                        fallback_results = search_open_library_books(query_stripped, _meta={})
-                        fallback_engine = 'openlibrary'
-                        
-                    fallback_results = [item for item in fallback_results if item.get('isbn') == query_stripped]
+                    fallback_results, fallback_engine, _, _ = lookup_in_order(
+                        query_stripped,
+                        engine_order(_keyword_engine(engine), allowed_engines, KEYWORD_FALLBACK_ORDER),
+                        _keyword_lookups(),
+                        allowed_engines,
+                    )
+                    fallback_results = [item for item in (fallback_results or []) if item.get('isbn') == query_stripped]
                     for item in fallback_results:
                         if not item.get('cover_url') and item.get('isbn'):
                             item['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{item['isbn']}-L.jpg"
-                        if fallback_engine == 'isbnnet':
-                            item['source'] = 'isbnnet_api'
-                        elif fallback_engine == 'openlibrary':
-                            item['source'] = 'openlibrary_api'
-                        else:
-                            item['source'] = 'google_api'
+                        item['source'] = SOURCE_BY_ENGINE[fallback_engine]
                     gb_results = fallback_results
             else:
-                meta = {}
-                gb_results = []
-                if engine:
-                    engine_used = engine
-                    if engine_used == 'isbnnet':
-                        engine_used = 'googlebooks'
-
-                    if engine_used == 'openlibrary':
-                        gb_results = search_open_library_books(query, _meta=meta)
-                    else:
-                        try:
-                            gb_results = search_google_books(query, _meta=meta)
-                        except GoogleBooksRateLimited:
-                            engine_used = 'openlibrary'
-                            google_unavailable = True
-                            meta = {}
-                            gb_results = search_open_library_books(query, _meta=meta)
-                else:
-                    try:
-                        gb_results = search_google_books(query, _meta=meta)
-                        engine_used = 'googlebooks'
-                    except GoogleBooksRateLimited:
-                        google_unavailable = True
-                        
-                    if not gb_results:
-                        meta = {}
-                        gb_results = search_open_library_books(query, _meta=meta)
-                        engine_used = 'openlibrary'
+                gb_results, engine_used, meta, unavailable = lookup_in_order(
+                    query,
+                    engine_order(_keyword_engine(engine), allowed_engines, KEYWORD_FALLBACK_ORDER),
+                    _keyword_lookups(),
+                    allowed_engines,
+                )
+                gb_results = gb_results or []
+                google_unavailable = google_unavailable or unavailable
 
                 debug_source = describe_source(engine_used, meta.get('cache_hit', False))
                 for gb_book in gb_results:
                     if not gb_book.get('cover_url') and gb_book.get('isbn'):
                         gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
-                    gb_book['source'] = 'google_api' if engine_used == 'googlebooks' else 'openlibrary_api'
+                    gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = debug_source
                 listing_text_match = Q(listings__status='active') & (
                     Q(listings__course_name__icontains=query) |

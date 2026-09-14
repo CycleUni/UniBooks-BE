@@ -6,7 +6,11 @@ from catalog.serializers import BookSerializer
 from catalog.services import (
     get_google_books_by_isbn, get_open_library_book_by_isbn,
     get_isbnnet_book_by_isbn,
-    GoogleBooksRateLimited, describe_source,
+    describe_source,
+)
+from catalog.services.engines import (
+    ISBN_FALLBACK_ORDER, SOURCE_BY_ENGINE,
+    engine_order, lookup_in_order, region_search_engines,
 )
 from listings.serializers import ListingSerializer
 from django.core.cache import cache
@@ -14,12 +18,6 @@ from django.core.cache import cache
 from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key, region_versioned_key
 from core.region import get_region
 from core.authentication import OptionalJWTAuthentication
-
-# Kept in sync with search.views.VALID_SEARCH_ENGINES by hand rather than
-# imported from there — catalog is the lower-level app (search already
-# imports catalog.services), so importing the other way round would invert
-# that dependency.
-VALID_SEARCH_ENGINES = {'googlebooks', 'openlibrary', 'isbnnet'}
 
 
 class BookDetailView(views.APIView):
@@ -30,13 +28,6 @@ class BookDetailView(views.APIView):
         isbn = request.query_params.get('isbn')
         book_id = request.query_params.get('id')
         page_param = request.query_params.get('page', '1')
-        # Same default and validation as BookSearchView: Google stays the
-        # default engine, callers opt into Open Library / ISBNnet explicitly rather
-        # than the backend silently preferring one source over the other.
-        engine = request.query_params.get('engine', 'googlebooks')
-        if engine not in VALID_SEARCH_ENGINES:
-            engine = 'googlebooks'
-
         if not isbn and not book_id:
             return Response({"error": "isbn or id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -59,7 +50,12 @@ class BookDetailView(views.APIView):
         from core.i18n import resolve_language
         lang = resolve_language(request)
         region = get_region(request)
-        cache_key = region_versioned_key(region, "book_detail", lang, book_id or '', valid_isbn or '', page_param, engine)
+        # Same rules as BookSearchView: a named engine the region allows is
+        # used on its own, anything else gets the region's fallback order.
+        allowed_engines = region_search_engines(region)
+        requested_engine = request.query_params.get('engine')
+        engine = requested_engine if requested_engine in allowed_engines else None
+        cache_key = region_versioned_key(region, "book_detail", lang, book_id or '', valid_isbn or '', page_param, engine or 'auto')
         data = cache.get(cache_key)
 
         book = None
@@ -68,36 +64,27 @@ class BookDetailView(views.APIView):
                 if valid_isbn:
                     book = Book.objects.filter(region=region, isbn13=valid_isbn).first()
                 if not book:
-                    # Serve dynamically from the requested engine. Open
-                    # Library / ISBNnet, when explicitly requested, is used as-is with
-                    # no Google fallback — the caller asked for that source
-                    # on purpose (e.g. to match what a search result on the
-                    # same page already showed), so silently substituting a
-                    # different engine's data would reintroduce the exact
-                    # cross-source cover/title mismatch this param exists to
-                    # avoid. Google (the default) still falls back to Open
-                    # Library, but only on an actual rate limit.
-                    if engine == 'openlibrary':
-                        source = 'openlibrary_api'
-                        engine_used = 'openlibrary'
-                        meta = {}
-                        gb_data = get_open_library_book_by_isbn(valid_isbn, _meta=meta)
-                    elif engine == 'isbnnet':
-                        source = 'isbnnet_api'
-                        engine_used = 'isbnnet'
-                        meta = {}
-                        gb_data = get_isbnnet_book_by_isbn(valid_isbn, _meta=meta)
-                    else:
-                        source = 'google_api'
-                        engine_used = 'googlebooks'
-                        meta = {}
-                        try:
-                            gb_data = get_google_books_by_isbn(valid_isbn, _meta=meta)
-                        except GoogleBooksRateLimited:
-                            engine_used = 'openlibrary'
-                            meta = {}
-                            gb_data = get_open_library_book_by_isbn(valid_isbn, _meta=meta)
-                            source = 'openlibrary_api'
+                    # Serve dynamically. A named engine is used as-is, with no
+                    # other catalogue substituted when it has no record: the
+                    # link was built from a search result that engine produced
+                    # (see the frontend's bookLinkParams), and another
+                    # engine's data would reintroduce the cover/title mismatch
+                    # this param exists to avoid. Only a Google rate limit
+                    # still hands over to Open Library. Without an engine —
+                    # a shared or typed-in ISBN link — every catalogue the
+                    # region allows is tried in order until one has the book.
+                    gb_data = None
+                    if valid_isbn:
+                        gb_data, engine_used, meta, _ = lookup_in_order(
+                            valid_isbn,
+                            engine_order(engine, allowed_engines, ISBN_FALLBACK_ORDER),
+                            {
+                                'googlebooks': get_google_books_by_isbn,
+                                'isbnnet': get_isbnnet_book_by_isbn,
+                                'openlibrary': get_open_library_book_by_isbn,
+                            },
+                            allowed_engines,
+                        )
                     if gb_data:
                         return Response({
                             'id': '',
@@ -107,7 +94,7 @@ class BookDetailView(views.APIView):
                             'publisher': gb_data.get('publisher', ''),
                             'published_date': gb_data.get('published_date', ''),
                             'cover_url': gb_data.get('cover_url', ''),
-                            'source': source,
+                            'source': SOURCE_BY_ENGINE[engine_used],
                             'debug_source': describe_source(engine_used, meta.get('cache_hit', False)),
                             'listings': {
                                 'count': 0,

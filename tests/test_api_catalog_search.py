@@ -758,3 +758,103 @@ def setup_region_engines_fix(db):
     from django.core.cache import cache
     Region.objects.filter(code='TW').update(search_engines=['googlebooks', 'openlibrary', 'isbnnet'])
     cache.delete('active_regions')
+
+
+# ---------------------------------------------------------------------
+# Engine fallback order and the region's search_engines setting
+# ---------------------------------------------------------------------
+
+
+def _set_tw_engines(engines):
+    from core.models import Region
+    Region.objects.filter(code='TW').update(search_engines=engines)
+    cache.delete('active_regions')
+
+
+def _isbn_book(title, isbn):
+    return {"title": title, "authors": "A", "publisher": "", "published_date": "", "cover_url": "https://example.com/c.jpg", "isbn": isbn}
+
+
+def test_search_isbn_tries_isbn_registry_when_google_has_no_record(api, db):
+    # Not a rate limit: Google answers, it just has no record of the book.
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn", return_value=_isbn_book("Registry Book", "9786260000001")) as registry, \
+            mock.patch("search.views.get_open_library_book_by_isbn") as ol_isbn:
+        resp = api.get("/api/v1/search/books/?q=9786260000001")
+    assert resp.status_code == 200
+    registry.assert_called_once()
+    ol_isbn.assert_not_called()
+    hit = resp.json()["results"][0]
+    assert hit["source"] == "isbnnet_api"
+    assert hit["debug_source"] == "ISBNnet"
+
+
+def test_search_isbn_skips_engines_the_region_switched_off(api, db):
+    _set_tw_engines(['googlebooks', 'openlibrary'])
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn") as registry, \
+            mock.patch("search.views.get_open_library_book_by_isbn", return_value=_isbn_book("OL Book", "9786260000002")):
+        resp = api.get("/api/v1/search/books/?q=9786260000002")
+    assert resp.status_code == 200
+    registry.assert_not_called()
+    assert resp.json()["results"][0]["source"] == "openlibrary_api"
+
+
+def test_search_named_engine_outside_the_region_is_ignored(api, db):
+    _set_tw_engines(['googlebooks'])
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=_isbn_book("Google Book", "9786260000003")) as google, \
+            mock.patch("search.views.get_isbnnet_book_by_isbn") as registry:
+        resp = api.get("/api/v1/search/books/?q=9786260000003&engine=isbnnet")
+    assert resp.status_code == 200
+    registry.assert_not_called()
+    google.assert_called_once()
+    assert resp.json()["results"][0]["source"] == "google_api"
+
+
+def test_search_keyword_uses_only_the_region_engines(api, db):
+    _set_tw_engines(['openlibrary'])
+    with mock.patch("search.views.search_google_books") as google, \
+            mock.patch("search.views.search_open_library_books", return_value=[_isbn_book("OL Only", "9786260000004")]):
+        resp = api.get("/api/v1/search/books/?q=calculus")
+    assert resp.status_code == 200
+    google.assert_not_called()
+    assert resp.json()["results"][0]["source"] == "openlibrary_api"
+
+
+def test_search_rate_limit_does_not_fall_back_to_a_switched_off_engine(api, db):
+    _set_tw_engines(['googlebooks'])
+    with mock.patch("search.views.search_google_books", side_effect=GoogleBooksRateLimited("429")), \
+            mock.patch("search.views.search_open_library_books") as ol_search:
+        resp = api.get("/api/v1/search/books/?q=calculus&engine=googlebooks")
+    assert resp.status_code == 200
+    ol_search.assert_not_called()
+    assert resp.json()["google_unavailable"] is True
+
+
+def test_search_named_google_does_not_fall_through_on_no_record(api, db):
+    # A named engine is that engine alone; only a rate limit hands over.
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn") as registry, \
+            mock.patch("search.views.search_google_books", return_value=[]):
+        resp = api.get("/api/v1/search/books/?q=9786260000005&engine=googlebooks")
+    assert resp.status_code == 200
+    registry.assert_not_called()
+
+
+def test_book_detail_without_engine_tries_isbn_registry_when_google_has_no_record(api, db):
+    with mock.patch("catalog.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("catalog.views.get_isbnnet_book_by_isbn", return_value=_isbn_book("Registry Book", "9786260000006")):
+        resp = api.get("/api/v1/books/?isbn=9786260000006")
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "isbnnet_api"
+
+
+def test_book_detail_respects_the_region_engines(api, db):
+    _set_tw_engines(['googlebooks'])
+    with mock.patch("catalog.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("catalog.views.get_isbnnet_book_by_isbn") as registry, \
+            mock.patch("catalog.views.get_open_library_book_by_isbn") as ol_isbn:
+        resp = api.get("/api/v1/books/?isbn=9786260000007&engine=isbnnet")
+    assert resp.status_code == 404
+    registry.assert_not_called()
+    ol_isbn.assert_not_called()
