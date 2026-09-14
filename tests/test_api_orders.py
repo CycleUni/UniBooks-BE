@@ -184,3 +184,49 @@ def test_review_of_non_completed_order_returns_clean_400_not_500(api, order, buy
     )
     assert resp.status_code == 400
     assert "completed" in str(resp.json())
+
+
+# ---------------------------------------------------------------------
+# Inbox preview follows the chat room, not the attempt to post into it
+# ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("posted", [True, False])
+def test_order_notification_previews_only_what_reached_the_chat_room(api, order, seller_header, monkeypatch, posted):
+    # The opened conversation is rendered from CFEdgeChat's history. Writing
+    # the preview before (and regardless of) the post left the inbox saying
+    # "Seller rejected the meetup" over a conversation with no such message.
+    import orders.views.orders as order_views
+
+    conv = Conversation.objects.get(listing=order.listing, buyer=order.buyer)
+    conv.latest_message_body = "earlier user message"
+    conv.save(update_fields=["latest_message_body"])
+    calls = []
+    monkeypatch.setattr(order_views, "_post_edge_chat_message", lambda *args, **kwargs: calls.append(args) or posted)
+
+    resp = api.patch(f"/api/v1/orders/{order.id}/", {"status": "cancelled"},
+                     content_type="application/json", **seller_header)
+
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    conv.refresh_from_db()
+    expected = "[SYSTEM:order.notify.seller_rejected] System Notification" if posted else "earlier user message"
+    assert conv.latest_message_body == expected
+
+
+def test_edge_chat_post_failure_before_the_request_is_logged_not_raised(order, settings, monkeypatch):
+    # `url` used to be assigned inside the try, after the token was signed, so
+    # a failure there made the except branch's own log call raise instead.
+    from rest_framework_simplejwt.backends import TokenBackend
+    import orders.views.orders as order_views
+
+    settings.EDGE_CHAT_JWT_SECRET = "x" * 32
+    settings.EDGE_CHAT_URL = "https://edge.example"
+
+    def boom(self, payload):
+        raise RuntimeError("signing failed")
+
+    monkeypatch.setattr(TokenBackend, "encode", boom)
+    conv = Conversation.objects.get(listing=order.listing, buyer=order.buyer)
+
+    assert order_views._post_edge_chat_message(conv, order.buyer, "[SYSTEM:x]", log_prefix="Test") is False

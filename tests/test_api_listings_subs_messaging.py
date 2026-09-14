@@ -687,3 +687,19 @@ def test_home_metadata_accept_language_and_fallbacks(api, school):
     body = resp.json()
     assert body["schools"][0]["display_name"] == "Test University"
     assert body["categories"][0]["title"] == "商管學院"
+
+
+def test_deleting_a_conversation_does_not_move_it_in_the_other_partys_inbox(api, listing, seller, buyer):
+    # updated_at is the inbox's sort key and the time it shows for the latest
+    # message; one side hiding the conversation is not a new message.
+    conv = Conversation.objects.create(listing=listing, buyer=buyer, latest_message_body="hi")
+    Conversation.objects.filter(pk=conv.pk).update(updated_at="2026-01-01T00:00:00Z")
+    before = Conversation.objects.get(pk=conv.pk).updated_at
+
+    resp = api.delete(f"/api/v1/messaging/conversations/{conv.id}/delete/", **bearer(buyer))
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "hidden"
+
+    conv.refresh_from_db()
+    assert conv.buyer_deleted_at is not None
+    assert conv.updated_at == before

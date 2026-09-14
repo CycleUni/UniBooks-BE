@@ -28,12 +28,17 @@ class Conversation(models.Model):
         """Set the caller's deletion timestamp; remove the row if both are set."""
         from django.utils import timezone
         if self.buyer_id == user.id:
-            self.buyer_deleted_at = timezone.now()
+            field = 'buyer_deleted_at'
         elif self.listing.seller_id == user.id:
-            self.seller_deleted_at = timezone.now()
+            field = 'seller_deleted_at'
         else:
             return False  # not a participant
-        self.save()
+        setattr(self, field, timezone.now())
+        # Only this field: a plain save() also moved `updated_at` (auto_now),
+        # which the inbox sorts by and shows as the time of the latest message
+        # — so one side deleting the conversation made it jump to the top of
+        # the *other* side's inbox, stamped with a time nobody wrote anything.
+        self.save(update_fields=[field])
         if self.buyer_deleted_at and self.seller_deleted_at:
             self.delete()
             return 'deleted'

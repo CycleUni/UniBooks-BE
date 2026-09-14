@@ -51,18 +51,29 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
     there is exactly one place that builds the JWT and performs the webhook
     call. Never raises: a failure here must not fail the caller's primary
     operation (order creation / status update), it is only logged.
+
+    Returns True only when the room accepted the message. Callers mirror the
+    message into the inbox preview on that alone: the conversation view is
+    rendered from CFEdgeChat's history, so a preview written for a message
+    that never got there shows the inbox one thing ("Seller rejected the
+    meetup") and the opened conversation another (no such message at all).
     """
     edge_chat_url = getattr(settings, 'EDGE_CHAT_URL', 'http://localhost:8787')
     jwt_secret = getattr(settings, 'EDGE_CHAT_JWT_SECRET', '')
     if not (edge_chat_url and jwt_secret):
-        return
+        return False
 
+    app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
+    # Built before the try: every except branch below logs it, and a failure
+    # before it was assigned (signing the token, say) turned the log call
+    # itself into an UnboundLocalError that escaped this "never raises"
+    # function — and perform_create does not catch it.
+    url = f"{edge_chat_url}/api/{app_id}/{conv.id}/messages"
     try:
         import urllib.request
         import urllib.error
         import json
         from rest_framework_simplejwt.backends import TokenBackend
-        app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
         token = TokenBackend(algorithm="HS256", signing_key=jwt_secret).encode({
             "user_id": str(sender.id),
             "room_id": str(conv.id),
@@ -74,7 +85,6 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
             # messages into this room forever.
             "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5),
         })
-        url = f"{edge_chat_url}/api/{app_id}/{conv.id}/messages"
         req = urllib.request.Request(
             url,
             data=json.dumps({"content": msg_body}).encode('utf-8'),
@@ -91,6 +101,8 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
         if resp.status >= 400:
             body = resp.read().decode('utf-8', errors='replace')[:500]
             logger.error("[%s] POST %s -> HTTP %s body: %s", log_prefix, url, resp.status, body)
+            return False
+        return True
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', errors='replace')[:500] if e.fp else ''
         logger.error("[%s] POST %s -> HTTP %s body: %s", log_prefix, url, e.code, body)
@@ -98,6 +110,7 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
         logger.error("[%s] POST %s -> network error: %s", log_prefix, url, e)
     except Exception:
         logger.exception("[%s] POST %s -> unexpected error", log_prefix, url)
+    return False
 
 
 def send_order_notification(order, message_key, sender=None, recipient=None):
@@ -126,10 +139,12 @@ def send_order_notification(order, message_key, sender=None, recipient=None):
     try:
         # Create system message with i18n key
         msg_body = f"[SYSTEM:{message_key}] System Notification"
-        conv.latest_message_body = msg_body
-        conv.save(update_fields=['latest_message_body', 'updated_at'])
-
-        _post_edge_chat_message(conv, sender, msg_body, log_prefix='OrderNotify')
+        # Posted first, previewed only once it is in the room — see
+        # _post_edge_chat_message. The room's own REST path does not call the
+        # Django webhook back, so this write is the only one it gets.
+        if _post_edge_chat_message(conv, sender, msg_body, log_prefix='OrderNotify'):
+            conv.latest_message_body = msg_body
+            conv.save(update_fields=['latest_message_body', 'updated_at'])
     except Exception:
         logger.exception("[OrderNotify] Failed to send notification")
 
@@ -249,11 +264,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             buyer=order.buyer
         )
         msg_body = "[SYSTEM:order.notify.meetup_requested] System Notification"
-        conv.latest_message_body = msg_body
-        conv.save(update_fields=['latest_message_body', 'updated_at'])
 
-        # Sync message to CFEdgeChat Durable Object so it appears in history and triggers WebSocket updates
-        _post_edge_chat_message(conv, order.buyer, msg_body, log_prefix='MeetupMsg')
+        # Sync message to CFEdgeChat Durable Object so it appears in history and
+        # triggers WebSocket updates; the inbox preview follows only if it did
+        # (see send_order_notification).
+        if _post_edge_chat_message(conv, order.buyer, msg_body, log_prefix='MeetupMsg'):
+            conv.latest_message_body = msg_body
+            conv.save(update_fields=['latest_message_body', 'updated_at'])
 
     def perform_update(self, serializer):
         old_status = serializer.instance.status if serializer.instance else None
