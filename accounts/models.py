@@ -87,6 +87,18 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=True,
         help_text="Email the user about a chat message that arrives while they are not on the site",
     )
+    # 'auto' follows site_language. See core.i18n.email_language_for.
+    email_language = models.CharField(
+        max_length=10,
+        default='auto',
+        help_text="Language for notification emails: 'auto' (follow site_language), or zh-TW / zh-HK / en",
+    )
+    site_language = models.CharField(
+        max_length=10,
+        blank=True,
+        default='',
+        help_text="The language the user last used the site in, as reported by the frontend",
+    )
     # Set when the owner deletes their account. The row stays, stripped of
     # everything personal, because Order and Review point at it from both
     # sides: a real delete cascaded through them and took the *other* party's

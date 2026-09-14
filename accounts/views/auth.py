@@ -34,7 +34,7 @@ from accounts.services import (
     EMAIL_CHANGE_TTL,
 )
 from accounts.models import School
-from core.i18n import resolve_language
+from core.i18n import resolve_language, t
 
 
 def resolve_school_from_email(email):
@@ -90,6 +90,19 @@ User = get_user_model()
 _JWT_DECODE_PATCH_LOCK = threading.Lock()
 
 
+# Every account email built here has the same shape: why the link was sent,
+# the link, and what to do if the reader did not ask for it. `kind` names the
+# email's keys in core/locales (email.<kind>.subject / .intro / .ignore).
+LINK_EMAIL_KINDS = ('activation', 'eduVerification', 'passwordReset', 'emailChange')
+
+
+def _link_email(lang, kind, link):
+    """(subject, body) of the `kind` account email, in `lang`."""
+    subject = t(lang, f"email.{kind}.subject")
+    body = "\n\n".join((t(lang, f"email.{kind}.intro"), link, t(lang, f"email.{kind}.ignore")))
+    return subject, body
+
+
 def _send_verification_email(subject, message, recipient_email, log_context):
     """Best-effort send: the verification token is already cached by the
     caller before this runs, so a transient Mailjet/SMTP failure shouldn't
@@ -131,13 +144,7 @@ class RegisterView(views.APIView):
             cache.set(f"register-verify:{verify_token}", {"user_id": user.id}, timeout=86400)
             verify_link = f"{settings.FRONTEND_URL}/verify?token={verify_token}&type=register"
 
-            lang = resolve_language(request)
-            if lang == 'zh-TW':
-                subject = 'UniBooks 帳號啟用信'
-                message = f'感謝您註冊 UniBooks！請點擊以下連結以啟用您的帳號：\n\n{verify_link}\n\n如果您沒有註冊此帳號，請忽略這封信件。'
-            else:
-                subject = 'UniBooks Account Activation'
-                message = f'Thanks for signing up for UniBooks! Click the link below to activate your account:\n\n{verify_link}\n\nIf you did not sign up for this account, please ignore this email.'
+            subject, message = _link_email(resolve_language(request), 'activation', verify_link)
 
             name = f"{user.last_name}{user.first_name}".strip() or "User"
             recipient = f'"{name}" <{user.email}>'
@@ -175,13 +182,7 @@ class RequestEduVerificationView(views.APIView):
 
         verify_link = f"{settings.FRONTEND_URL}/verify?token={verify_token}&type=edu"
 
-        lang = resolve_language(request)
-        if lang == 'zh-TW':
-            subject = 'UniBooks 學生信箱驗證'
-            message = f'請點擊以下連結以驗證您的學生信箱：\n\n{verify_link}\n\n如果您沒有請求此驗證，請忽略這封信件。'
-        else:
-            subject = 'UniBooks Student Email Verification'
-            message = f'Click the link below to verify your student email:\n\n{verify_link}\n\nIf you did not request this verification, please ignore this email.'
+        subject, message = _link_email(resolve_language(request), 'eduVerification', verify_link)
 
         name = f"{request.user.last_name}{request.user.first_name}".strip() or "User"
         recipient = f'"{name}" <{edu_email}>'
@@ -694,15 +695,12 @@ class RequestPasswordResetView(views.APIView):
 
         reset_token = str(uuid.uuid4())
         cache.set(f"password-reset:{reset_token}", {"user_id": user.id}, timeout=3600)
-        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+        # /forgot-password is the page that, given a token, asks for the new
+        # password. There is no /reset-password route: the frontend took it
+        # for a region code and sent the link to the homepage.
+        reset_link = f"{settings.FRONTEND_URL}/forgot-password?token={reset_token}"
 
-        lang = resolve_language(request)
-        if lang == 'zh-TW':
-            subject = 'UniBooks 密碼重設'
-            message = f'請點擊以下連結以重設您的密碼（1 小時內有效）：\n\n{reset_link}\n\n如果您沒有請求重設密碼，請忽略這封信件，您的密碼不會被更動。'
-        else:
-            subject = 'UniBooks Password Reset'
-            message = f'Click the link below to reset your password (valid for 1 hour):\n\n{reset_link}\n\nIf you did not request this, you can ignore this email — your password will not be changed.'
+        subject, message = _link_email(resolve_language(request), 'passwordReset', reset_link)
 
         _send_verification_email(subject, message, user.email, f"password reset for user {user.id}")
 
@@ -743,16 +741,7 @@ def send_email_change_verification(request, user, new_email):
     )
 
     link = f"{settings.FRONTEND_URL}/account/settings?email_change_token={token}"
-    lang = resolve_language(request)
-    if lang == 'zh-TW':
-        subject = 'UniBooks 確認新的登入信箱'
-        message = f'請點擊以下連結，確認將 UniBooks 帳號的登入信箱改為這個地址（1 小時內有效）：\n\n{link}\n\n如果您沒有提出這項變更，請忽略這封信件，您的帳號不會有任何更動。'
-    elif lang == 'zh-HK':
-        subject = 'UniBooks 確認新的登入電郵'
-        message = f'請㩒以下連結，確認將 UniBooks 帳戶嘅登入電郵改成呢個地址（1 小時內有效）：\n\n{link}\n\n如果唔係你提出呢項更改，請唔好理呢封信，你個帳戶唔會有任何改動。'
-    else:
-        subject = 'UniBooks — confirm your new sign-in email'
-        message = f'Follow the link below to move your UniBooks sign-in email to this address (valid for 1 hour):\n\n{link}\n\nIf you did not ask for this, ignore this email — nothing about your account will change.'
+    subject, message = _link_email(resolve_language(request), 'emailChange', link)
 
     _send_verification_email(subject, message, new_email, f"email change for user {user.id}")
 

@@ -2,6 +2,7 @@
 triggered by an external scheduler (e.g. Vercel Cron) via a Bearer secret."""
 
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import Client
 from django.utils import timezone
@@ -91,6 +92,62 @@ def test_notifies_user_with_new_listing_and_updates_notified_at(api, waitlister,
 
     sub.refresh_from_db()
     assert sub.notified_at is not None
+
+
+def test_waitlist_email_says_how_to_stop_it(api, waitlister, seller, book, mailoutbox):
+    _subscribe_before_now(waitlister, book)
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition='new', status='active')
+
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    body = mailoutbox[0].body
+    assert body.count(f"{settings.FRONTEND_URL}/account/subscriptions") == 1
+    assert "我的求書" in body
+
+
+def test_waitlist_email_has_one_account_link_across_regions(api, waitlister, seller, book, mailoutbox):
+    _subscribe_before_now(waitlister, book)
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition='new', status='active')
+
+    hk_book = Book.objects.create(region_id='HK', isbn13="9782222222222", title="HK Waitlisted Book", source="manual")
+    hk_sub = Subscription.objects.create(region_id='HK', user=waitlister, book=hk_book)
+    Subscription.objects.filter(id=hk_sub.id).update(created_at=timezone.now() - timezone.timedelta(days=1))
+    Listing.objects.create(region_id='HK', currency_id='HKD', book=hk_book, seller=seller, price=100, condition='new', status='active')
+
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    assert len(mailoutbox) == 1
+    body = mailoutbox[0].body
+    # Each book keeps the region it was requested in...
+    assert f"/tw/book?isbn={book.isbn13}" in body
+    assert f"/hk/book?isbn={hk_book.isbn13}" in body
+    # ...while the account page is linked once, without a region.
+    assert body.count("/account/subscriptions") == 1
+    assert f"{settings.FRONTEND_URL}/account/subscriptions" in body
+
+
+@pytest.mark.parametrize("site_language, email_language, expect, absent", [
+    # Nothing known about the user yet: the region's default (TW -> zh-TW).
+    ("", "auto", "您求書清單中的以下書籍", "New listings are available"),
+    # Follows the language they last used the site in.
+    ("en", "auto", "New listings are available", "求書清單"),
+    ("zh-HK", "auto", "你的求書清單中以下書籍", "New listings are available"),
+    # An explicit choice beats the site language.
+    ("zh-TW", "en", "New listings are available", "求書清單"),
+])
+def test_waitlist_email_is_written_in_one_language(api, waitlister, seller, book, mailoutbox, site_language, email_language, expect, absent):
+    waitlister.site_language, waitlister.email_language = site_language, email_language
+    waitlister.save(update_fields=["site_language", "email_language"])
+    _subscribe_before_now(waitlister, book)
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition='new', status='active')
+
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    mail = mailoutbox[0]
+    assert expect in mail.body
+    assert absent not in mail.body
+    assert absent not in mail.subject
+    assert "---" not in mail.body
 
 
 def test_does_not_renotify_already_notified_subscription(api, waitlister, seller, book, mailoutbox):

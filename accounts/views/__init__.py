@@ -20,7 +20,7 @@ from .auth import (
     UnbindEduEmailView,
     _send_verification_email,
 )
-from .profile import MyProfileView, NotificationSettingsView, PublicUserProfileView
+from .profile import MyProfileView, NotificationSettingsView, PublicUserProfileView, SiteLanguageView
 from .home import (
     HomeMetadataView,
     invalidate_home_static_cache,
@@ -29,6 +29,7 @@ from .home import (
 
 __all__ = [
     "NotificationSettingsView",
+    "SiteLanguageView",
     "RegisterView",
     "RequestEduVerificationView",
     "AutoVerifyEduEmailView",

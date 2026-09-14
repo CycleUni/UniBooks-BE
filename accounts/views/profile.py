@@ -8,6 +8,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from core.i18n import EMAIL_LANGUAGES
 from core.region import get_region
 from django.contrib.auth import get_user_model
 
@@ -174,6 +175,25 @@ class NotificationSettingsView(views.APIView):
             return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
         return Response(serializer.data)
+
+
+class SiteLanguageView(views.APIView):
+    """PUT the language the signed-in user is using the site in.
+
+    The frontend reports it whenever it differs from what /auth/me/ says, so
+    this is "the language they last used", which notification emails follow
+    unless the user picked one (NotificationSettingsView).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        language = request.data.get('language')
+        if language not in EMAIL_LANGUAGES:
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+        if request.user.site_language != language:
+            request.user.site_language = language
+            request.user.save(update_fields=['site_language'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class PublicUserProfileView(views.APIView):

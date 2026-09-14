@@ -1,0 +1,30 @@
+{
+  "email.activation.subject": "UniBooks 帳戶啟用電郵",
+  "email.activation.intro": "多謝你註冊 UniBooks！請按以下連結啟用你的帳戶：",
+  "email.activation.ignore": "如果你沒有註冊這個帳戶，請忽略這封電郵。",
+
+  "email.eduVerification.subject": "UniBooks 學生電郵驗證",
+  "email.eduVerification.intro": "請按以下連結驗證你的學生電郵：",
+  "email.eduVerification.ignore": "如果你沒有要求這項驗證，請忽略這封電郵。",
+
+  "email.passwordReset.subject": "UniBooks 重設密碼",
+  "email.passwordReset.intro": "請按以下連結重設你的密碼（1 小時內有效）：",
+  "email.passwordReset.ignore": "如果你沒有要求重設密碼，請忽略這封電郵，你的密碼不會有任何改動。",
+
+  "email.emailChange.subject": "UniBooks 確認新的登入電郵",
+  "email.emailChange.intro": "請㩒以下連結，確認將 UniBooks 帳戶嘅登入電郵改成呢個地址（1 小時內有效）：",
+  "email.emailChange.ignore": "如果唔係你提出呢項更改，請唔好理呢封信，你個帳戶唔會有任何改動。",
+
+  "email.chatMessage.subject": "UniBooks：{sender} 向你傳送了新訊息",
+  "email.chatMessage.intro": "{sender} 在 UniBooks 向你傳送了新訊息。",
+  "email.chatMessage.listing": "書籍：{title}",
+  "email.chatMessage.message": "訊息：{preview}",
+  "email.chatMessage.open": "前往查看：{link}",
+  "email.chatMessage.once": "在你開啟這段對話之前，同一段對話的新訊息不會再以電郵通知。",
+  "email.chatMessage.turnOff": "不想收到這類通知？可以在「通知設定」關閉或更改電郵語言：{link}",
+
+  "email.waitlist.subject": "UniBooks 到貨通知：你的求書有新上架",
+  "email.waitlist.intro": "你的求書清單中以下書籍有新上架：",
+  "email.waitlist.logIn": "登入 UniBooks 查看詳情。",
+  "email.waitlist.stop": "不想再收到某本書的到貨通知？到「我的求書」移除即可："
+}

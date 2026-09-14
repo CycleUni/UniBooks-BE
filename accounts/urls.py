@@ -21,5 +21,6 @@ urlpatterns = [
     path('email/change/cancel/', views.CancelEmailChangeView.as_view(), name='auth-email-change-cancel'),
     path('me/', views.MyProfileView.as_view(), name='auth-me'),
     path('me/notifications/', views.NotificationSettingsView.as_view(), name='auth-me-notifications'),
+    path('me/site-language/', views.SiteLanguageView.as_view(), name='auth-me-site-language'),
     path('users/<int:pk>/', views.PublicUserProfileView.as_view(), name='auth-user-profile'),
 ]

@@ -6,6 +6,8 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.db.models import Count, F, Max, Q
 from django.utils import timezone
+
+from core.i18n import email_language_for, t
 from rest_framework import views, status
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
@@ -66,7 +68,7 @@ class WaitlistNotifyView(views.APIView):
         # subscription was notified (or never, if notified_at is unset).
         due = (
             Subscription.objects
-            .select_related('user', 'book')
+            .select_related('user', 'book', 'region')
             .annotate(
                 latest_active_listing_at=Max(
                     'book__listings__created_at',
@@ -112,12 +114,21 @@ class WaitlistNotifyView(views.APIView):
                 book_lines.append(f"- {sub.book.title}: {book_url}")
             books_block = "\n".join(book_lines)
 
-            subject = "UniBooks 到貨通知 / New listings for your waitlist"
+            # How to stop: without it, someone who forgot adding a book has
+            # only "report spam" left, which costs the sending domain the
+            # reputation the chat notification emails depend on too. One link
+            # however many regions the books came from: it is an account page,
+            # and the frontend adds the reader's region to an unprefixed path.
+            request_page = f"{settings.FRONTEND_URL}/account/subscriptions"
+
+            # Written in the recipient's language: a cron run has no request
+            # to read one from.
+            lang = email_language_for(user, subs[0].region)
+            subject = t(lang, "email.waitlist.subject")
             message = (
-                f"您求書清單中的以下書籍已有新上架商品：\n\n{books_block}\n\n"
-                "登入 UniBooks 查看詳情。\n\n---\n\n"
-                f"New listings are available for books on your UniBooks waitlist:\n\n{books_block}\n\n"
-                "Log in to UniBooks to view them."
+                f"{t(lang, 'email.waitlist.intro')}\n\n{books_block}\n\n"
+                f"{t(lang, 'email.waitlist.logIn')}\n\n"
+                f"{t(lang, 'email.waitlist.stop')}\n{request_page}"
             )
 
             try:

@@ -3,6 +3,7 @@ the offline-message webhook (messaging.views.ChatTokenView / EdgeChatWebhookView
 
 import jwt
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
 from django.utils import timezone
@@ -382,6 +383,38 @@ def test_one_participant_turning_message_emails_off_does_not_silence_the_other(a
     )
     assert resp.json()["status"] == "sent"
     assert [m.to for m in mailoutbox] == [[seller.email]]
+
+
+@pytest.mark.parametrize("site_language, email_language, expect, absent", [
+    # Nothing known about the user yet: the conversation's region default.
+    ("", "auto", "傳送了新訊息給您", "sent you a new message"),
+    # Follows the language they last used the site in.
+    ("en", "auto", "sent you a new message", "新訊息"),
+    ("zh-HK", "auto", "向你傳送了新訊息", "sent you a new message"),
+    # An explicit choice beats the site language.
+    ("en", "zh-TW", "傳送了新訊息給您", "sent you a new message"),
+])
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_is_written_in_one_language(api, conversation, user, mailoutbox, site_language, email_language, expect, absent):
+    user.site_language, user.email_language = site_language, email_language
+    user.save(update_fields=["site_language", "email_language"])
+
+    _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    mail = mailoutbox[0]
+    assert expect in mail.body
+    assert absent not in mail.body
+    assert absent not in mail.subject
+    assert "---" not in mail.body
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_points_at_the_notification_settings(api, conversation, user, mailoutbox):
+    _post_offline_email(api, _offline_email_payload(conversation, user))
+    body = mailoutbox[0].body
+    # An account page, so no region prefix; the conversation link keeps its own.
+    assert f"{settings.FRONTEND_URL}/account/notifications" in body
+    assert "/tw/account/" not in body
 
 
 @override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)

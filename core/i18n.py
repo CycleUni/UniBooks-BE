@@ -5,9 +5,50 @@ carry a `translations` JSONField shaped as
 {"zh-TW": {"field": "value", ...}, "<lang>": {...}} for any number of
 languages. Requests resolve a language via the `lang` query parameter or the
 Accept-Language header; unknown languages fall back to the canonical fields.
+
+Text the backend writes itself (emails) is not model content: it lives in
+core/locales/<lang>.json, one flat "namespace.name.part" key per string like the
+frontend's language files, and is looked up with t().
 """
 
+import json
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 DEFAULT_LANGUAGE = 'en'
+LOCALES_DIR = Path(__file__).resolve().parent / 'locales'
+
+
+def _load_catalogs():
+    return {
+        path.stem: json.loads(path.read_text(encoding='utf-8'))
+        for path in sorted(LOCALES_DIR.glob('*.json'))
+    }
+
+
+# Read once at import: the files ship with the code and change only with a
+# deploy, and a malformed one should stop the process starting rather than
+# surface as a failed email later.
+CATALOGS = _load_catalogs()
+
+
+def t(lang, key, **params):
+    """The string for `key` in `lang`, with `{name}` placeholders filled in.
+
+    An unknown language falls back to its base language (en-GB -> en), then to
+    English. A key missing from that language falls back to English too and is
+    logged; tests/test_locales.py keeps every file complete, so that is a safety
+    net rather than a way to leave strings untranslated.
+    """
+    catalog = CATALOGS.get(lang) or CATALOGS.get(str(lang or '').split('-')[0]) or CATALOGS[DEFAULT_LANGUAGE]
+    template = catalog.get(key)
+    if template is None:
+        if catalog is not CATALOGS[DEFAULT_LANGUAGE]:
+            logger.warning("Missing translation for %s in %s; using %s", key, lang, DEFAULT_LANGUAGE)
+        template = CATALOGS[DEFAULT_LANGUAGE][key]
+    return template.format(**params) if params else template
 
 
 def normalize_language(lang, region=None):
@@ -40,6 +81,31 @@ def normalize_language(lang, region=None):
         return 'zh-TW'
         
     return lang
+
+
+# Languages emails can be written in: one per file in core/locales. Adding a
+# language here also needs it in the frontend (its Lang type and language
+# files), which is where the email-language setting is chosen from.
+EMAIL_LANGUAGES = tuple(CATALOGS)
+EMAIL_LANGUAGE_AUTO = 'auto'
+
+
+def email_language_for(user, region=None):
+    """The one language a notification email to `user` is written in.
+
+    These emails go out with no request to read a language from (a chat
+    webhook, a daily cron), so the user's own settings decide: the language
+    they chose for emails, else the language they last used the site in, else
+    the default of the region the email is about.
+    """
+    for candidate in (
+        None if user.email_language == EMAIL_LANGUAGE_AUTO else user.email_language,
+        user.site_language,
+        getattr(region, 'default_language_id', None),
+    ):
+        if candidate in EMAIL_LANGUAGES:
+            return candidate
+    return DEFAULT_LANGUAGE
 
 
 def resolve_language(request):

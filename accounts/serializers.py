@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password as django_
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from core.i18n import DEFAULT_LANGUAGE, resolve_language
+from core.i18n import DEFAULT_LANGUAGE, EMAIL_LANGUAGE_AUTO, EMAIL_LANGUAGES, resolve_language
 from core.region import get_region
 
 User = get_user_model()
@@ -95,8 +95,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications')
-        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications')
+        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
+        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):
@@ -104,10 +104,14 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
     preference, not the column: new switches can join without the API naming
     storage details."""
     new_message_email = serializers.BooleanField(source='notify_new_message_email')
+    email_language = serializers.ChoiceField(choices=[EMAIL_LANGUAGE_AUTO, *EMAIL_LANGUAGES])
+    # What 'auto' currently resolves to, for the page to say so. Reported by
+    # the frontend through SiteLanguageView, never written here.
+    site_language = serializers.CharField(read_only=True)
 
     class Meta:
         model = User
-        fields = ['new_message_email']
+        fields = ['new_message_email', 'email_language', 'site_language']
 
 
 class PublicUserProfileSerializer(serializers.ModelSerializer):

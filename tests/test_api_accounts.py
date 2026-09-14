@@ -3,6 +3,7 @@
 from unittest import mock
 
 import pytest
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client
@@ -813,6 +814,27 @@ def test_request_password_reset_sends_email_for_known_user(api, user, mailoutbox
     assert user.email in mailoutbox[0].to[0]
 
 
+def test_password_reset_email_links_to_the_page_that_sets_the_password(api, user, mailoutbox):
+    api.post("/api/v1/auth/password/reset/request/", {"email": user.email}, content_type="application/json")
+    body = mailoutbox[0].body
+    # /reset-password is no frontend route and lands on the homepage.
+    assert f"{settings.FRONTEND_URL}/forgot-password?token=" in body
+    assert "/reset-password" not in body
+
+
+@pytest.mark.parametrize("headers, subject, absent", [
+    ({"HTTP_X_REGION": "TW"}, "UniBooks 密碼重設", "Password Reset"),
+    # Hong Kong used to fall through to English: only zh-TW had a branch.
+    ({"HTTP_X_REGION": "HK"}, "UniBooks 重設密碼", "Password Reset"),
+    ({"HTTP_X_REGION": "TW", "HTTP_ACCEPT_LANGUAGE": "en"}, "UniBooks Password Reset", "密碼"),
+])
+def test_password_reset_email_is_written_in_the_requests_language(api, user, mailoutbox, headers, subject, absent):
+    api.post("/api/v1/auth/password/reset/request/", {"email": user.email}, content_type="application/json", **headers)
+    mail = mailoutbox[0]
+    assert mail.subject == subject
+    assert absent not in mail.body
+
+
 def test_request_password_reset_sends_email_regardless_of_input_case(api, db, mailoutbox):
     # Regression test for the actual bug behind "forgot password doesn't
     # work, no email arrives" in production: this view always returns the
@@ -1078,18 +1100,18 @@ def test_new_message_email_is_on_by_default(api, user, auth_header):
     # It was the only behaviour before the switch existed.
     resp = api.get(NOTIFICATIONS_URL, **auth_header)
     assert resp.status_code == 200
-    assert resp.json() == {"new_message_email": True}
+    assert resp.json() == {"new_message_email": True, "email_language": "auto", "site_language": ""}
 
 
 def test_new_message_email_can_be_turned_off_and_on(api, user, auth_header):
     resp = api.patch(NOTIFICATIONS_URL, {"new_message_email": False}, content_type="application/json", **auth_header)
     assert resp.status_code == 200
-    assert resp.json() == {"new_message_email": False}
+    assert resp.json()["new_message_email"] is False
     user.refresh_from_db()
     assert user.notify_new_message_email is False
 
     resp = api.patch(NOTIFICATIONS_URL, {"new_message_email": True}, content_type="application/json", **auth_header)
-    assert resp.json() == {"new_message_email": True}
+    assert resp.json()["new_message_email"] is True
     user.refresh_from_db()
     assert user.notify_new_message_email is True
 
@@ -1123,4 +1145,74 @@ def test_notification_settings_ignore_unknown_fields(api, user, auth_header):
     user.refresh_from_db()
     assert user.is_staff is False
     assert user.email == "user@example.com"
+
+
+# ---------------------------------------------------------------------
+# Email language (Notifications) and the language the site was last used in
+# ---------------------------------------------------------------------
+
+SITE_LANGUAGE_URL = "/api/v1/auth/me/site-language/"
+
+
+@pytest.mark.parametrize("choice", ["en", "zh-HK", "zh-TW", "auto"])
+def test_email_language_can_be_set(api, user, auth_header, choice):
+    resp = api.patch(NOTIFICATIONS_URL, {"email_language": choice}, content_type="application/json", **auth_header)
+    assert resp.status_code == 200
+    assert resp.json()["email_language"] == choice
+    user.refresh_from_db()
+    assert user.email_language == choice
+
+
+def test_email_language_refuses_a_language_there_is_no_email_for(api, user, auth_header):
+    resp = api.patch(NOTIFICATIONS_URL, {"email_language": "fr"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+    user.refresh_from_db()
+    assert user.email_language == "auto"
+
+
+def test_site_language_is_not_writable_through_notification_settings(api, user, auth_header):
+    api.patch(NOTIFICATIONS_URL, {"site_language": "en"}, content_type="application/json", **auth_header)
+    user.refresh_from_db()
+    assert user.site_language == ""
+
+
+def test_site_language_requires_sign_in(api, db):
+    assert api.put(SITE_LANGUAGE_URL, {"language": "en"}, content_type="application/json").status_code == 401
+
+
+def test_site_language_is_recorded_and_shown(api, user, auth_header):
+    resp = api.put(SITE_LANGUAGE_URL, {"language": "zh-HK"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 204
+    user.refresh_from_db()
+    assert user.site_language == "zh-HK"
+
+    # Reported back where the frontend reads the profile, so it can skip
+    # reporting a language that has not changed.
+    assert api.get("/api/v1/auth/me/", **auth_header).json()["site_language"] == "zh-HK"
+    assert api.get(NOTIFICATIONS_URL, **auth_header).json()["site_language"] == "zh-HK"
+
+
+@pytest.mark.parametrize("value", ["fr", "", None, "zh"])
+def test_site_language_refuses_an_unsupported_language(api, user, auth_header, value):
+    resp = api.put(SITE_LANGUAGE_URL, {"language": value}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+    user.refresh_from_db()
+    assert user.site_language == ""
+
+
+def test_email_language_prefers_the_explicit_choice_then_the_site_language_then_the_region(user):
+    from core.i18n import email_language_for
+    from core.models import Region
+
+    hk = Region.objects.get(code="HK")
+    assert email_language_for(user, hk) == "zh-HK"          # nothing known: the region's default
+
+    user.site_language = "en"
+    assert email_language_for(user, hk) == "en"              # auto: the language last used
+
+    user.email_language = "zh-TW"
+    assert email_language_for(user, hk) == "zh-TW"           # an explicit choice wins
+
+    user.email_language, user.site_language = "auto", ""
+    assert email_language_for(user, None) == "en"            # nothing at all: the default
 

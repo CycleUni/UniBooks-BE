@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.backends import TokenBackend
 
+from core.i18n import email_language_for, t
 from messaging.models import Conversation
 
 logger = logging.getLogger(__name__)
@@ -214,7 +215,7 @@ class EdgeChatWebhookView(views.APIView):
         try:
             conversation = (
                 Conversation.objects
-                .select_related("listing__book", "listing__seller", "buyer")
+                .select_related("listing__book", "listing__seller", "listing__region", "buyer")
                 .get(id=room_id)
             )
         except (Conversation.DoesNotExist, ValidationError):
@@ -255,9 +256,8 @@ class EdgeChatWebhookView(views.APIView):
         Worker, which has already recorded that this conversation was
         notified and will not ask again until the recipient opens it.
 
-        Bilingual (zh-TW then English) like the waitlist mail in cron.views:
-        there is no request to resolve a language from here, and no stored
-        per-user language preference to read.
+        Written in one language, the recipient's (core.i18n.email_language_for):
+        there is no request to read one from here.
         """
         # Header values must not contain newlines, and display_name is
         # user-supplied; Django raises BadHeaderError rather than sending, but
@@ -272,19 +272,23 @@ class EdgeChatWebhookView(views.APIView):
         link = f"{settings.FRONTEND_URL}/{region}/messages?chat={conversation.id}"
         quoted = _chat_email_preview(preview)
 
-        subject = f"UniBooks 新訊息 / New message from {sender_name}"
-        zh_lines = [f"{sender_name} 在 UniBooks 傳送了新訊息給您。", ""]
-        en_lines = [f"{sender_name} sent you a new message on UniBooks.", ""]
+        # Notification settings belong to the account, not a region: no prefix,
+        # the frontend adds the reader's own.
+        settings_link = f"{settings.FRONTEND_URL}/account/notifications"
+
+        lang = email_language_for(recipient, conversation.listing.region)
+        lines = [t(lang, "email.chatMessage.intro", sender=sender_name), ""]
         if listing_title:
-            zh_lines.append(f"書籍：{listing_title}")
-            en_lines.append(f"Listing: {listing_title}")
+            lines.append(t(lang, "email.chatMessage.listing", title=listing_title))
         if quoted:
-            zh_lines.append(f"訊息：{quoted}")
-            en_lines.append(f"Message: {quoted}")
-        zh_lines += ["", f"前往查看：{link}", "", "在您開啟這則對話之前，同一則對話的後續訊息不會再寄送通知信。"]
-        en_lines += ["", f"Open the conversation: {link}", "",
-                     "You won't get another email about this conversation until you open it."]
-        message = "\n".join(zh_lines) + "\n\n---\n\n" + "\n".join(en_lines)
+            lines.append(t(lang, "email.chatMessage.message", preview=quoted))
+        lines += [
+            "", t(lang, "email.chatMessage.open", link=link),
+            "", t(lang, "email.chatMessage.once"),
+            "", t(lang, "email.chatMessage.turnOff", link=settings_link),
+        ]
+        subject = t(lang, "email.chatMessage.subject", sender=sender_name)
+        message = "\n".join(lines)
 
         try:
             send_mail(
