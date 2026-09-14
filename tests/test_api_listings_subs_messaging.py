@@ -87,6 +87,20 @@ def test_listing_list_filters_by_school_and_status(api, listing, seller, book):
     assert resp.json()["results"] == []
 
 
+def test_recent_books_quotes_the_cheapest_active_copy(api, listing, seller, book):
+    # Same condition on purpose: the tile once decided "several prices" from
+    # the number of distinct conditions, so two "new" copies read as one price.
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=10099, condition="new", status="active")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=50, condition="new", status="sold")
+
+    resp = api.get("/api/v1/listings/recent_books/?lang=en", HTTP_X_REGION='TW')
+    assert resp.status_code == 200
+    [hit] = resp.json()["results"]
+    assert hit["min_price"] == 200
+    assert hit["max_price"] == 10099
+    assert hit["conditions"] == {"new": 2}
+
+
 def test_listing_create_requires_login_and_verification(api, db, book, school):
     resp = api.post("/api/v1/listings/", {}, content_type="application/json")
     assert resp.status_code == 401

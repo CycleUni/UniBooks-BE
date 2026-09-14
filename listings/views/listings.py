@@ -166,6 +166,12 @@ class RecentBooksView(views.APIView):
         for book in books_to_process:
             stats = book_stats.get(book.id, {'prices': [], 'conditions': Counter()})
             avg_price = sum(stats['prices']) / len(stats['prices']) if stats['prices'] else None
+            # The tile quotes what the cheapest copy costs. An average is a
+            # price nobody is asking: NT$10,099 and NT$100 listed a book at
+            # NT$5,100. avg_price stays for frontends still reading it.
+            min_price = min(stats['prices']) if stats['prices'] else None
+            # Lets the tile say "From" only when the copies' prices differ.
+            max_price = max(stats['prices']) if stats['prices'] else None
 
             results.append({
                 'id': book.id,
@@ -174,6 +180,8 @@ class RecentBooksView(views.APIView):
                 'authors': book.authors,
                 'cover_url': book.cover_url,
                 'avg_price': round(avg_price) if avg_price is not None else None,
+                'min_price': min_price,
+                'max_price': max_price,
                 'conditions': dict(stats['conditions'])
             })
 
