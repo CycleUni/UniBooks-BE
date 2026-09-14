@@ -74,6 +74,32 @@ def test_book_detail_includes_listings_and_waitlist(api, book, user):
     assert body["is_subscribed"] is False  # anonymous request
 
 
+def test_book_detail_price_stats_cover_every_active_copy(api, book, user):
+    # The page of listings holds the 20 newest. Backdating the cheapest copy
+    # and adding 21 newer ones pushes it off that page — exactly the case a
+    # range built from the page would get wrong.
+    cheapest = Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=100, condition="noted", status="active")
+    Listing.objects.filter(pk=cheapest.pk).update(created_at="2020-01-01T00:00:00Z")
+    for _ in range(21):
+        Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=400, condition="noted", status="active")
+    # Sold and removed copies are not on offer and stay out of the range.
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=1, condition="noted", status="sold")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=99999, condition="noted", status="removed")
+
+    resp = api.get(f"/api/v1/books/?id={book.id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["listings"]["results"]) == 20
+    assert body["price_stats"] == {"count": 23, "min": 100, "max": 400}
+
+
+def test_book_detail_price_stats_empty_without_active_copies(api, db):
+    book = Book.objects.create(region_id='TW', isbn13="9782222222229", title="No Copies", source="manual")
+    resp = api.get(f"/api/v1/books/?id={book.id}")
+    assert resp.status_code == 200
+    assert resp.json()["price_stats"] == {"count": 0, "min": None, "max": None}
+
+
 def test_book_detail_reports_subscription_for_authed_user(api, book, user, auth_header):
     sub = Subscription.objects.create(region_id='TW', user=user, book=book)
     resp = api.get(f"/api/v1/books/?id={book.id}", **auth_header)

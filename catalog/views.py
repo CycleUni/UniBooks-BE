@@ -1,3 +1,4 @@
+from django.db.models import Max, Min
 from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -102,6 +103,7 @@ class BookDetailView(views.APIView):
                                 'previous': None,
                                 'results': []
                             },
+                            'price_stats': {'count': 0, 'min': None, 'max': None},
                             'waiting_count': 0,
                             'is_subscribed': False,
                             'subscription_id': None
@@ -140,6 +142,17 @@ class BookDetailView(views.APIView):
                         'previous': None,
                         'results': ListingSerializer(active_listings, many=True, context=public_context).data
                     }
+                # The price range across every active copy, not just the page
+                # of listings above: that page holds the 20 newest, so a
+                # cheaper older copy would be missing from a range the sell
+                # form derived from it. Seller-agnostic because this body is
+                # cached for everyone — a seller's own copies are included.
+                price_range = active_listings.aggregate(min=Min('price'), max=Max('price'))
+                data['price_stats'] = {
+                    'count': data['listings']['count'],
+                    'min': price_range['min'],
+                    'max': price_range['max'],
+                }
                 data['waiting_count'] = book.subscriptions.count()
                 cache.set(cache_key, data, timeout=BOOK_DETAIL_CACHE_TTL)
             
