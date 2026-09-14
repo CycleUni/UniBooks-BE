@@ -1,6 +1,6 @@
 import logging
 
-from django.db.models import Q, prefetch_related_objects
+from django.db.models import Count, Q, prefetch_related_objects
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import status, views
@@ -38,6 +38,15 @@ class MyProfileView(views.APIView):
         # Related data the frontend My Account page needs
         region = get_region(request)
         my_listings = user.listings.filter(region=region).select_related('book', 'seller', 'school').order_by('-created_at')
+
+        # The account page's "N active · N sold" counted the page of listings
+        # below, so a seller with more than a page of them was undercounted.
+        # Counted before the search filter: the totals describe the account.
+        counts = dict(
+            user.listings.filter(region=region, status__in=('active', 'sold'))
+            .order_by().values('status').annotate(n=Count('id')).values_list('status', 'n')
+        )
+        data['myListingCounts'] = {'active': counts.get('active', 0), 'sold': counts.get('sold', 0)}
 
         q = request.query_params.get('q', '').strip()
         if q:

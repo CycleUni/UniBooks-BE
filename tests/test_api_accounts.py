@@ -772,6 +772,18 @@ def test_my_profile_includes_listings_and_subscriptions(api, user, auth_header):
     assert body["mySubscriptions"][0]["isbn"] == "9781111111111"
 
 
+def test_my_profile_counts_every_listing_not_just_the_first_page(api, user, auth_header):
+    book = Book.objects.create(region_id='TW', isbn13="9781111111112", title="Many Copies", source="manual")
+    for _ in range(21):
+        Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=100, condition="new", status="active")
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=user, price=100, condition="new", status="sold")
+    Listing.objects.create(region_id='HK', currency_id='HKD', book=book, seller=user, price=100, condition="new", status="active")
+
+    body = api.get("/api/v1/auth/me/?q=nothing-matches", **auth_header).json()
+    assert body["myListings"]["results"] == []
+    assert body["myListingCounts"] == {"active": 21, "sold": 1}
+
+
 def test_my_profile_requires_auth(api, db):
     assert api.get("/api/v1/auth/me/").status_code == 401
 
