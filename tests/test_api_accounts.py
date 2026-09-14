@@ -1061,3 +1061,66 @@ def test_remove_password_is_staff_rejected(api, user):
     assert resp.status_code == 400
     assert resp.json()["error"]["code"] == "auth.errStaffCannotRemovePassword"
 
+
+# ---------------------------------------------------------------------
+# Notification settings (account page: Notifications)
+# ---------------------------------------------------------------------
+
+NOTIFICATIONS_URL = "/api/v1/auth/me/notifications/"
+
+
+def test_notification_settings_require_sign_in(api, db):
+    assert api.get(NOTIFICATIONS_URL).status_code == 401
+    assert api.patch(NOTIFICATIONS_URL, {"new_message_email": False}, content_type="application/json").status_code == 401
+
+
+def test_new_message_email_is_on_by_default(api, user, auth_header):
+    # It was the only behaviour before the switch existed.
+    resp = api.get(NOTIFICATIONS_URL, **auth_header)
+    assert resp.status_code == 200
+    assert resp.json() == {"new_message_email": True}
+
+
+def test_new_message_email_can_be_turned_off_and_on(api, user, auth_header):
+    resp = api.patch(NOTIFICATIONS_URL, {"new_message_email": False}, content_type="application/json", **auth_header)
+    assert resp.status_code == 200
+    assert resp.json() == {"new_message_email": False}
+    user.refresh_from_db()
+    assert user.notify_new_message_email is False
+
+    resp = api.patch(NOTIFICATIONS_URL, {"new_message_email": True}, content_type="application/json", **auth_header)
+    assert resp.json() == {"new_message_email": True}
+    user.refresh_from_db()
+    assert user.notify_new_message_email is True
+
+
+def test_notification_settings_reject_a_non_boolean(api, user, auth_header):
+    resp = api.patch(NOTIFICATIONS_URL, {"new_message_email": "sometimes"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "auth.errValidation"
+    user.refresh_from_db()
+    assert user.notify_new_message_email is True
+
+
+def test_notification_settings_only_change_the_signed_in_user(api, user, auth_header):
+    other = User.objects.create_user(email="other-notify@example.com", first_name="O", last_name="T", password=PASSWORD)
+
+    api.patch(NOTIFICATIONS_URL, {"new_message_email": False}, content_type="application/json", **auth_header)
+
+    other.refresh_from_db()
+    assert other.notify_new_message_email is True
+
+
+def test_notification_settings_ignore_unknown_fields(api, user, auth_header):
+    # A PATCH to this endpoint must not become a way to write other columns.
+    resp = api.patch(
+        NOTIFICATIONS_URL,
+        {"new_message_email": False, "is_staff": True, "email": "attacker@example.com"},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 200
+    user.refresh_from_db()
+    assert user.is_staff is False
+    assert user.email == "user@example.com"
+

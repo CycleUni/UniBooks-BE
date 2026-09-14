@@ -99,6 +99,17 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications')
 
 
+class NotificationSettingsSerializer(serializers.ModelSerializer):
+    """The account page's Notifications section. Field names are the
+    preference, not the column: new switches can join without the API naming
+    storage details."""
+    new_message_email = serializers.BooleanField(source='notify_new_message_email')
+
+    class Meta:
+        model = User
+        fields = ['new_message_email']
+
+
 class PublicUserProfileSerializer(serializers.ModelSerializer):
     school_name = serializers.SerializerMethodField()
     is_verified = serializers.SerializerMethodField()

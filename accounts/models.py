@@ -81,6 +81,12 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Notification preferences (the account page's Notifications section).
+    # On by default: it was the only behaviour before the switch existed.
+    notify_new_message_email = models.BooleanField(
+        default=True,
+        help_text="Email the user about a chat message that arrives while they are not on the site",
+    )
     # Set when the owner deletes their account. The row stays, stripped of
     # everything personal, because Order and Review point at it from both
     # sides: a real delete cascaded through them and took the *other* party's

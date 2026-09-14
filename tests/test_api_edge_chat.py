@@ -360,6 +360,31 @@ def test_offline_email_skips_a_deactivated_recipient(api, conversation, user, ma
 
 
 @override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_email_skips_a_recipient_who_turned_message_emails_off(api, conversation, user, mailoutbox):
+    user.notify_new_message_email = False
+    user.save(update_fields=["notify_new_message_email"])
+
+    resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+    assert resp.status_code == 200
+    assert resp.json()["reason"] == "opted_out"
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_one_participant_turning_message_emails_off_does_not_silence_the_other(api, conversation, user, mailoutbox):
+    user.notify_new_message_email = False
+    user.save(update_fields=["notify_new_message_email"])
+    seller = conversation.listing.seller
+
+    resp = _post_offline_email(
+        api,
+        _offline_email_payload(conversation, seller, sender_id=str(conversation.buyer_id)),
+    )
+    assert resp.json()["status"] == "sent"
+    assert [m.to for m in mailoutbox] == [[seller.email]]
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
 def test_offline_email_rejects_a_non_participant_recipient(api, conversation, db, mailoutbox):
     outsider = User.objects.create_user(
         email="chat-outsider2@example.com", first_name="Out", last_name="Sider", password=PASSWORD

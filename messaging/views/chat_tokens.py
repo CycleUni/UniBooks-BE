@@ -240,6 +240,12 @@ class EdgeChatWebhookView(views.APIView):
             return Response({"status": "skipped", "reason": "conversation_deleted"}, status=status.HTTP_200_OK)
         if recipient.deleted_at is not None or not recipient.is_active or not recipient.email:
             return Response({"status": "skipped", "reason": "recipient_unreachable"}, status=status.HTTP_200_OK)
+        if not recipient.notify_new_message_email:
+            # Turned off on their Notifications page. The Worker has already
+            # marked this conversation as notified, so turning it back on
+            # resumes with the next conversation they have not opened since —
+            # not a backlog of mail for everything that arrived meanwhile.
+            return Response({"status": "skipped", "reason": "opted_out"}, status=status.HTTP_200_OK)
 
         self._send_chat_notification_email(conversation, recipient, other, data.get("preview"))
         return Response({"status": "sent"}, status=status.HTTP_200_OK)

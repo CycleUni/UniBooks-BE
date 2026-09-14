@@ -12,7 +12,7 @@ from core.region import get_region
 from django.contrib.auth import get_user_model
 
 from accounts.models import School
-from accounts.serializers import PublicUserProfileSerializer, UserSerializer
+from accounts.serializers import NotificationSettingsSerializer, PublicUserProfileSerializer, UserSerializer
 from listings.serializers import ListingSerializer
 from subscriptions.models import subscriptions_with_new_listings_count
 from subscriptions.serializers import SubscriptionSerializer
@@ -154,6 +154,26 @@ class MyProfileView(views.APIView):
         # ask for it.
         request.user.delete()
         return Response({"code": "acct.deleted"}, status=status.HTTP_204_NO_CONTENT)
+
+
+class NotificationSettingsView(views.APIView):
+    """GET/PATCH the signed-in user's notification switches.
+
+    Its own endpoint rather than more fields on /auth/me/: that one answers
+    with listings and subscriptions on GET and runs the email-change flow on
+    PATCH, neither of which a switch on the Notifications page needs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(NotificationSettingsSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = NotificationSettingsSerializer(request.user, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class PublicUserProfileView(views.APIView):
