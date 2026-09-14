@@ -13,7 +13,7 @@ from catalog.services.engines import (
     ISBN_FALLBACK_ORDER, SOURCE_BY_ENGINE,
     engine_order, lookup_in_order, region_search_engines,
 )
-from listings.serializers import ListingSerializer
+from listings.serializers import ListingSerializer, with_seller_stats
 from django.core.cache import cache
 
 from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key, region_versioned_key
@@ -121,9 +121,9 @@ class BookDetailView(views.APIView):
                 # This body is cached and shared by every viewer of the book
                 # page — seller-only fields must not be serialized into it.
                 public_context = {'request': request, 'strip_private_note': True}
-                active_listings = book.listings.filter(region=region, status='active').select_related(
+                active_listings = with_seller_stats(book.listings.filter(region=region, status='active').select_related(
                     'book', 'seller', 'school'
-                ).order_by('-created_at')
+                )).order_by('-created_at')
                 
                 from rest_framework.pagination import PageNumberPagination
                 paginator = PageNumberPagination()

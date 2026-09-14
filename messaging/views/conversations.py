@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from listings.models import Listing
 from messaging.models import Conversation
 from messaging.serializers import ConversationSerializer
+from accounts.serializers import prefetch_verified_school
 from core.permissions import IsVerifiedInRegion
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,10 @@ class ConversationListView(generics.ListAPIView):
         ).select_related('listing__book', 'listing__seller', 'buyer').prefetch_related(
             # ConversationSerializer resolves each row's latest order; without
             # this it ran up to four queries per conversation in the inbox.
-            Prefetch('listing__orders', queryset=Order.objects.order_by('-created_at'), to_attr='prefetched_orders')
+            Prefetch('listing__orders', queryset=Order.objects.order_by('-created_at'), to_attr='prefetched_orders'),
+            # The other party's school, shown beside their name in the inbox.
+            prefetch_verified_school('buyer', region),
+            prefetch_verified_school('listing__seller', region),
         ).order_by('-updated_at').distinct()
 
     def post(self, request):

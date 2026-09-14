@@ -14,7 +14,7 @@ from django.contrib.auth import get_user_model
 
 from accounts.models import School
 from accounts.serializers import NotificationSettingsSerializer, PublicUserProfileSerializer, UserSerializer
-from listings.serializers import ListingSerializer
+from listings.serializers import ListingSerializer, with_seller_stats
 from subscriptions.models import subscriptions_with_new_listings_count
 from subscriptions.serializers import SubscriptionSerializer
 
@@ -37,7 +37,7 @@ class MyProfileView(views.APIView):
 
         # Related data the frontend My Account page needs
         region = get_region(request)
-        my_listings = user.listings.filter(region=region).select_related('book', 'seller', 'school').order_by('-created_at')
+        my_listings = with_seller_stats(user.listings.filter(region=region).select_related('book', 'seller', 'school')).order_by('-created_at')
 
         # The account page's "N active · N sold" counted the page of listings
         # below, so a seller with more than a page of them was undercounted.

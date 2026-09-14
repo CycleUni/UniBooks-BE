@@ -156,6 +156,47 @@ class PublicUserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+# A display name is not unique — two students both called 周恭煥 were
+# indistinguishable in a seller's order list and inbox. Wherever another user
+# is named to someone, their school in the region being browsed goes next to
+# the name. Never the email: that is the one identifier that must stay private.
+VERIFIED_HERE_ATTR = 'verified_here'
+
+
+def prefetch_verified_school(user_lookup, region):
+    """Prefetch for `<user_lookup>`'s verification (and school) in `region`.
+
+    Lands on the user as `verified_here`, which school_name_in_region reads,
+    so a list naming one other party per row costs one query in total rather
+    than one per row.
+    """
+    from django.db.models import Prefetch
+    from accounts.models import RegionVerification
+    return Prefetch(
+        f'{user_lookup}__region_verifications',
+        queryset=RegionVerification.objects.verified_in(region).select_related('school'),
+        to_attr=VERIFIED_HERE_ATTR,
+    )
+
+
+def school_name_in_region(user, request):
+    """`user`'s school in the request's region, localized; '' if none."""
+    if user is None:
+        return ''
+    rows = getattr(user, VERIFIED_HERE_ATTR, None)
+    if rows is None:
+        # Not prefetched: a single object (a create response). One query.
+        region = get_region(request) if request else None
+        if region is None:
+            return ''
+        rows = list(user.region_verifications.verified_in(region).select_related('school')[:1])
+    v = rows[0] if rows else None
+    if not v or not v.school:
+        return ''
+    lang = resolve_language(request) if request else DEFAULT_LANGUAGE
+    return v.school.localized_name(lang)
+
+
 from rest_framework.validators import UniqueValidator
 
 class RegisterSerializer(serializers.ModelSerializer):

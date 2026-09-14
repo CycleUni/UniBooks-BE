@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from django.core.cache import cache
 from listings.models import Listing
-from listings.serializers import ListingSerializer
+from listings.serializers import ListingSerializer, with_seller_stats
 
 from rest_framework.throttling import ScopedRateThrottle
 
@@ -41,9 +41,9 @@ class ListingListCreateView(views.APIView):
         if cached_data is not None:
             return Response(cached_data)
         # select_related avoids per-row queries for the serializer's related fields
-        listings = Listing.objects.filter(region=region, status='active').select_related(
+        listings = with_seller_stats(Listing.objects.filter(region=region, status='active').select_related(
                 'book', 'seller', 'school'
-        ).order_by('-created_at')
+        )).order_by('-created_at')
         if school:
             listings = listings.filter(school__name=school)
         if seller_id:
@@ -199,9 +199,9 @@ class ListingDetailView(views.APIView):
 
     def get_object(self, request, pk, require_seller=True):
         try:
-            listing = Listing.objects.select_related(
+            listing = with_seller_stats(Listing.objects.select_related(
             'book', 'seller', 'school'
-            ).get(pk=pk)
+            )).get(pk=pk)
             if require_seller and listing.seller != request.user:
                 return None
             return listing

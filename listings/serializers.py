@@ -14,6 +14,49 @@ from listings.utils import promote_tmp_photos
 MAX_LISTING_PHOTOS = 6
 
 
+def with_seller_stats(queryset):
+    """Annotate a Listing queryset with its seller's reputation.
+
+    ListingSerializer shows the seller's rating, review count and completed
+    sales on every card of a book page or listing feed. Read through the
+    User properties that would be three queries per row; as correlated
+    subqueries it stays one query however many sellers the page holds.
+    Every read path that serializes more than one listing must go through
+    this — the serializer only falls back to per-row queries for a lone
+    instance (a create or PATCH response).
+
+    The public listing and book caches are not bumped when a review lands, so
+    these figures can trail a new review by up to LISTING_CACHE_TTL /
+    BOOK_DETAIL_CACHE_TTL (5 minutes). Acceptable for a reputation summary;
+    invalidating every one of the seller's listings on each review is not.
+    """
+    from django.db.models import Avg, Count, FloatField, IntegerField, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+    from orders.models import Order, Review
+
+    # Same filter as User.review_count / average_rating: a no-show report
+    # carries no rating and must not drag the average towards zero.
+    reviews = (
+        Review.objects.filter(reviewee=OuterRef('seller_id'), is_no_show=False, rating__isnull=False)
+        .order_by().values('reviewee')
+    )
+    sales = (
+        Order.objects.filter(seller=OuterRef('seller_id'), status='completed')
+        .order_by().values('seller')
+    )
+    return queryset.annotate(
+        seller_review_count_annotated=Coalesce(
+            Subquery(reviews.annotate(n=Count('id')).values('n'), output_field=IntegerField()), 0
+        ),
+        seller_average_rating_annotated=Subquery(
+            reviews.annotate(avg=Avg('rating')).values('avg'), output_field=FloatField()
+        ),
+        seller_completed_sales_annotated=Coalesce(
+            Subquery(sales.annotate(n=Count('id')).values('n'), output_field=IntegerField()), 0
+        ),
+    )
+
+
 class ListingSerializer(serializers.ModelSerializer):
     seller_name = serializers.SerializerMethodField()
     seller_avatar_url = serializers.SerializerMethodField()
@@ -33,6 +76,12 @@ class ListingSerializer(serializers.ModelSerializer):
         allow_null=True
     )
     photo_url = serializers.SerializerMethodField()
+    # Seller reputation, so a buyer comparing copies can see who they would be
+    # meeting. seller_average_rating is null (not 0.0) for a seller nobody has
+    # reviewed yet: "0 ★" would read as a terrible seller, not a new one.
+    seller_average_rating = serializers.SerializerMethodField()
+    seller_review_count = serializers.SerializerMethodField()
+    seller_completed_sales = serializers.SerializerMethodField()
 
     class Meta:
         model = Listing
@@ -67,6 +116,28 @@ class ListingSerializer(serializers.ModelSerializer):
         if not obj.seller:
             return ''
         return obj.seller.avatar_url
+
+    def get_seller_review_count(self, obj):
+        annotated = getattr(obj, 'seller_review_count_annotated', None)
+        if annotated is not None:
+            return annotated
+        return obj.seller.review_count if obj.seller_id else 0
+
+    def get_seller_average_rating(self, obj):
+        if self.get_seller_review_count(obj) == 0:
+            return None
+        if hasattr(obj, 'seller_average_rating_annotated'):
+            avg = obj.seller_average_rating_annotated
+            return round(float(avg), 1) if avg is not None else None
+        return obj.seller.average_rating
+
+    def get_seller_completed_sales(self, obj):
+        annotated = getattr(obj, 'seller_completed_sales_annotated', None)
+        if annotated is not None:
+            return annotated
+        if not obj.seller_id:
+            return 0
+        return obj.seller.orders_sold.filter(status='completed').count()
 
     def get_photo_url(self, obj):
         if obj.photos and len(obj.photos) > 0:

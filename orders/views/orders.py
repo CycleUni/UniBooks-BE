@@ -9,16 +9,17 @@ import certifi
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Exists, OuterRef, Q, Subquery
 from rest_framework import serializers, viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from listings.models import Listing
 from messaging.models import Conversation
+from accounts.serializers import prefetch_verified_school
 
 from ..models import Order, Review
-from ..serializers import OrderSerializer, OrderStatusUpdateSerializer
+from ..serializers import OrderSerializer, OrderStatusUpdateSerializer, visible_conversations
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,17 @@ class OrderViewSet(viewsets.ModelViewSet):
             .annotate(has_reviewed_annotated=Exists(
                 Review.objects.filter(order=OuterRef('pk'), reviewer=user)
             ))
+            # Only ever the order's own buyer/seller conversation, and the
+            # queryset is already limited to orders the caller is party to.
+            .annotate(conversation_id_annotated=Subquery(
+                visible_conversations(user)
+                .filter(listing=OuterRef('listing'), buyer=OuterRef('buyer'))
+                .values('id')[:1]
+            ))
+            .prefetch_related(
+                prefetch_verified_school('buyer', region),
+                prefetch_verified_school('seller', region),
+            )
             .order_by('-created_at')
         )
         

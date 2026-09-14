@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from messaging.models import Conversation
 from listings.serializers import ListingSerializer
+from accounts.serializers import school_name_in_region
 
 class ConversationSerializer(serializers.ModelSerializer):
     listing_id = serializers.CharField(source='listing.id', read_only=True)
@@ -11,6 +12,10 @@ class ConversationSerializer(serializers.ModelSerializer):
     listing_course = serializers.CharField(source='listing.course_name', read_only=True, default='')
     other_party = serializers.SerializerMethodField()
     other_party_role = serializers.SerializerMethodField()
+    # Display names are not unique; the school tells two 周恭煥 apart without
+    # exposing anything private. See accounts.serializers.school_name_in_region.
+    other_party_school_name = serializers.SerializerMethodField()
+    other_party_avatar_url = serializers.SerializerMethodField()
     buyer_id = serializers.IntegerField(source='buyer.id', read_only=True)
     seller_id = serializers.IntegerField(source='listing.seller.id', read_only=True)
     latest_message = serializers.SerializerMethodField()
@@ -19,7 +24,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ['id', 'listing_id', 'listing_title', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status']
+        fields = ['id', 'listing_id', 'listing_title', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'other_party_school_name', 'other_party_avatar_url', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status']
 
     # A conversation can accumulate more than one Order over time (declined,
     # then the buyer requests again) — always resolve to the most recently
@@ -52,15 +57,22 @@ class ConversationSerializer(serializers.ModelSerializer):
         order = self._latest_order(obj)
         return order.status if order else None
 
-    def get_other_party(self, obj):
+    def _other_party_user(self, obj):
         request = self.context.get('request')
         if not request:
-            return ""
-        if obj.buyer_id == request.user.id:
-            user = obj.listing.seller
-        else:
-            user = obj.buyer
-        return user.display_name
+            return None
+        return obj.listing.seller if obj.buyer_id == request.user.id else obj.buyer
+
+    def get_other_party(self, obj):
+        user = self._other_party_user(obj)
+        return user.display_name if user else ""
+
+    def get_other_party_school_name(self, obj):
+        return school_name_in_region(self._other_party_user(obj), self.context.get('request'))
+
+    def get_other_party_avatar_url(self, obj):
+        user = self._other_party_user(obj)
+        return (user.avatar_url or "") if user else ""
 
     def get_other_party_role(self, obj):
         request = self.context.get('request')
