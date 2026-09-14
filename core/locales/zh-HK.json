@@ -12,8 +12,8 @@
   "email.passwordReset.ignore": "如果你沒有要求重設密碼，請忽略這封電郵，你的密碼不會有任何改動。",
 
   "email.emailChange.subject": "UniBooks 確認新的登入電郵",
-  "email.emailChange.intro": "請㩒以下連結，確認將 UniBooks 帳戶嘅登入電郵改成呢個地址（1 小時內有效）：",
-  "email.emailChange.ignore": "如果唔係你提出呢項更改，請唔好理呢封信，你個帳戶唔會有任何改動。",
+  "email.emailChange.intro": "請按以下連結，確認將 UniBooks 帳戶的登入電郵改為這個地址（1 小時內有效）：",
+  "email.emailChange.ignore": "如果你沒有提出這項更改，請忽略這封電郵，你的帳戶不會有任何改動。",
 
   "email.chatMessage.subject": "UniBooks：{sender} 向你傳送了新訊息",
   "email.chatMessage.intro": "{sender} 在 UniBooks 向你傳送了新訊息。",
