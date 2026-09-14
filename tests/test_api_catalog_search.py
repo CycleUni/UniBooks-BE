@@ -789,6 +789,31 @@ def test_search_isbn_tries_isbn_registry_when_google_has_no_record(api, db):
     assert hit["debug_source"] == "ISBNnet"
 
 
+def test_search_isbn_ignores_a_book_that_only_exists_in_another_region(api, user):
+    from core.models import Currency, Language, Region
+    hkd, _ = Currency.objects.get_or_create(code='HKD', defaults={'name': 'Hong Kong Dollar', 'symbol': 'HK$'})
+    zh_hk, _ = Language.objects.get_or_create(code='zh-HK', defaults={'name': 'Traditional Chinese (HK)'})
+    Region.objects.update_or_create(
+        code='HK',
+        defaults={'name': 'Hong Kong', 'currency': hkd, 'default_language': zh_hk, 'search_engines': ['googlebooks', 'openlibrary']},
+    )
+    cache.delete('active_regions')
+    hk_book = Book.objects.create(region_id='HK', isbn13="9786260000010", title="HK Only Book", source="manual")
+    Listing.objects.create(region_id='HK', currency_id='HKD', book=hk_book, seller=user, price=80, condition="noted", status="active")
+
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn", return_value=None), \
+            mock.patch("search.views.get_open_library_book_by_isbn", return_value=None), \
+            mock.patch("search.views.search_google_books", return_value=[]) as keyword_search, \
+            mock.patch("search.views.search_open_library_books", return_value=[]):
+        resp = api.get("/api/v1/search/books/?q=9786260000010&region=TW")
+    assert resp.status_code == 200
+    # The HK row is not a TW record: it must not show up in TW results, nor
+    # count as a local hit that skips the keyword fallback for this ISBN.
+    keyword_search.assert_called_once()
+    assert resp.json()["results"] == []
+
+
 def test_search_isbn_skips_engines_the_region_switched_off(api, db):
     _set_tw_engines(['googlebooks', 'openlibrary'])
     with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \

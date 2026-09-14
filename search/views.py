@@ -155,7 +155,7 @@ class BookSearchView(views.APIView):
                     gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
-                local_books = Book.objects.filter(isbn13=query_stripped)
+                local_books = Book.objects.filter(isbn13=query_stripped, region=region)
 
                 # The dedicated isbn: lookup occasionally misses a book that
                 # Google/Open Library do have indexed under this exact ISBN
