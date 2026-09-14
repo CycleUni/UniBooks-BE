@@ -10,6 +10,7 @@ from ._common import (
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    clean_publisher,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ def get_open_library_book_by_isbn(isbn, _meta=None):
             result = {
                 'title': entry.get('title', ''),
                 'authors': ', '.join(a.get('name', '') for a in entry.get('authors', [])),
-                'publisher': ', '.join(p.get('name', '') for p in entry.get('publishers', [])),
+                'publisher': clean_publisher(', '.join(p.get('name', '') for p in entry.get('publishers', []))),
                 'published_date': entry.get('publish_date', ''),
                 'cover_url': entry.get('cover', {}).get('medium', ''),
                 'isbn': isbn,
@@ -113,7 +114,7 @@ def search_open_library_books(query, _meta=None):
                 results.append({
                     'title': doc.get('title', ''),
                     'authors': ', '.join(doc.get('author_name', [])),
-                    'publisher': (doc.get('publisher') or [''])[0],
+                    'publisher': clean_publisher((doc.get('publisher') or [''])[0]),
                     'published_date': str(doc.get('first_publish_year', '')),
                     'cover_url': OPEN_LIBRARY_COVER_URL.format(cover_id=cover_id) if cover_id else '',
                     'isbn': isbn13,

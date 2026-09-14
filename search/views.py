@@ -9,6 +9,7 @@ from catalog.services import (
     search_google_books, get_google_books_by_isbn,
     search_open_library_books, get_open_library_book_by_isbn,
     get_isbnnet_book_by_isbn,
+    clean_publisher,
     describe_source,
 )
 from catalog.services.engines import (
@@ -296,7 +297,9 @@ class BookSearchView(views.APIView):
                 'author': item.get('authors', ''),
                 'isbn': isbn or '',
                 'coverUrl': item.get('cover_url', ''),
-                'publisher': item.get('publisher', ''),
+                # Local rows saved before the import fix, and catalogue lookups
+                # still in their cache, can carry wrapping quotes.
+                'publisher': clean_publisher(item.get('publisher', '')),
                 'published_date': item.get('published_date', ''),
                 'source': item.get('source', 'manual'),
                 'debug_source': item.get('debug_source'),

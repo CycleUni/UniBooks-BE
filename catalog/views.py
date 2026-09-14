@@ -7,6 +7,7 @@ from catalog.serializers import BookSerializer
 from catalog.services import (
     get_google_books_by_isbn, get_open_library_book_by_isbn,
     get_isbnnet_book_by_isbn,
+    clean_publisher,
     describe_source,
 )
 from catalog.services.engines import (
@@ -92,7 +93,10 @@ class BookDetailView(views.APIView):
                             'isbn13': valid_isbn,
                             'title': gb_data['title'],
                             'authors': gb_data['authors'],
-                            'publisher': gb_data.get('publisher', ''),
+                            # Cleaned here as well as at import: lookups are
+                            # cached for 30 days, so entries stored before the
+                            # import fix still carry the quotes.
+                            'publisher': clean_publisher(gb_data.get('publisher', '')),
                             'published_date': gb_data.get('published_date', ''),
                             'cover_url': gb_data.get('cover_url', ''),
                             'source': SOURCE_BY_ENGINE[engine_used],
@@ -201,7 +205,7 @@ class ManualBookCreateView(views.APIView):
                     existing_book.cover_url = data['cover_url']
                     updated = True
                 if not existing_book.publisher and data.get('publisher'):
-                    existing_book.publisher = data['publisher']
+                    existing_book.publisher = clean_publisher(data['publisher'])
                     updated = True
                 if not existing_book.published_date and data.get('published_date'):
                     existing_book.published_date = data['published_date']

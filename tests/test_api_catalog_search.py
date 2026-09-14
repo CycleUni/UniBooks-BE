@@ -13,7 +13,7 @@ from catalog.services import (
     get_google_books_by_isbn, search_google_books,
     get_open_library_book_by_isbn, search_open_library_books,
     get_isbnnet_book_by_isbn,
-    GoogleBooksRateLimited, describe_source,
+    GoogleBooksRateLimited, describe_source, clean_publisher,
     _NOT_FOUND_CACHE_TTL,
 )
 from listings.models import Listing
@@ -107,6 +107,36 @@ def test_book_detail_reports_subscription_for_authed_user(api, book, user, auth_
     body = resp.json()
     assert body["is_subscribed"] is True
     assert body["subscription_id"] == str(sub.id)
+
+
+def test_book_detail_strips_quotes_wrapping_a_stored_publisher(api, db):
+    # Imported before the fix: Google Books hands O'Reilly titles over as
+    # "\"O'Reilly Media, Inc.\"", and that is what the row holds.
+    quoted = Book.objects.create(
+        region_id='TW', isbn13="9781449319793", title="Python for Data Analysis",
+        publisher='"O\'Reilly Media, Inc."', source="google_api",
+    )
+    resp = api.get(f"/api/v1/books/?id={quoted.id}")
+    assert resp.status_code == 200
+    assert resp.json()["publisher"] == "O'Reilly Media, Inc."
+    # Display-side only: the stored value is left for the owner to migrate.
+    quoted.refresh_from_db()
+    assert quoted.publisher == '"O\'Reilly Media, Inc."'
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ('"O\'Reilly Media, Inc."', "O'Reilly Media, Inc."),
+    ('  "Pub"  ', "Pub"),
+    ("\u201cCurly Press\u201d", "Curly Press"),
+    ("Plain Press", "Plain Press"),
+    ('"A" & "B"', '"A" & "B"'),  # two quoted names, not one wrapped one
+    ('"', '"'),
+    ('""', '""'),
+    ("", ""),
+    (None, None),
+])
+def test_clean_publisher(raw, expected):
+    assert clean_publisher(raw) == expected
 
 
 def test_book_detail_not_found(api, db):
@@ -208,6 +238,16 @@ def test_get_google_books_by_isbn_parses_and_caches(db):
         again = get_google_books_by_isbn("9784444444444")
         assert again == result
         assert get.call_count == 1
+
+
+def test_get_google_books_by_isbn_strips_wrapping_quotes_from_publisher(db):
+    payload = {"totalItems": 1, "items": [{"volumeInfo": {
+        **GOOGLE_PAYLOAD["items"][0]["volumeInfo"], "publisher": '"O\'Reilly Media, Inc."',
+    }}]}
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response(payload)):
+        assert get_google_books_by_isbn("9781449319793")["publisher"] == "O'Reilly Media, Inc."
+    with mock.patch("catalog.services.requests.get", return_value=_fake_response(payload)):
+        assert search_google_books("quoted publisher")[0]["publisher"] == "O'Reilly Media, Inc."
 
 
 def test_get_google_books_by_isbn_handles_no_results_and_errors(db):

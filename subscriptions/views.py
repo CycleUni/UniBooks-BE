@@ -35,7 +35,7 @@ class SubscriptionListView(views.APIView):
                 book = Book.objects.filter(region=region, isbn13=valid_isbn).first()
                 if not book:
                     # Create it dynamically from Google Books API
-                    from catalog.services import get_google_books_by_isbn
+                    from catalog.services import get_google_books_by_isbn, clean_publisher
                     gb_data = get_google_books_by_isbn(valid_isbn)
                     if not gb_data:
                         return Response({"error": "Book not found in Google Books"}, status=status.HTTP_404_NOT_FOUND)
@@ -44,7 +44,7 @@ class SubscriptionListView(views.APIView):
                         isbn13=valid_isbn,
                         title=gb_data['title'],
                         authors=gb_data['authors'],
-                        publisher=gb_data.get('publisher', ''),
+                        publisher=clean_publisher(gb_data.get('publisher', '')),
                         published_date=gb_data.get('published_date', ''),
                         cover_url=gb_data.get('cover_url', ''),
                         source='google_api',

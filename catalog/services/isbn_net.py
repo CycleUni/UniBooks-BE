@@ -10,6 +10,7 @@ from ._common import (
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    clean_publisher,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ def get_isbnnet_book_by_isbn(isbn, _meta=None):
             result = {
                 'title': data.get('title', ''),
                 'authors': data.get('authors', ''),
-                'publisher': data.get('publisher', ''),
+                'publisher': clean_publisher(data.get('publisher', '')),
                 'published_date': data.get('published_date', ''),
                 'cover_url': data.get('cover_url', ''),
                 'isbn': data.get('isbn', isbn),

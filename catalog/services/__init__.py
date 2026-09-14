@@ -7,6 +7,7 @@ from ._common import (
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    clean_publisher,
     describe_source,
     logger,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "search_open_library_books",
     "get_isbnnet_book_by_isbn",
     "describe_source",
+    "clean_publisher",
     "GOOGLE_BOOKS_API_URL",
     "OPEN_LIBRARY_SEARCH_URL",
     "OPEN_LIBRARY_ISBN_URL",

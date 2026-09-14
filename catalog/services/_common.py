@@ -26,6 +26,35 @@ _NOT_FOUND_CACHE_TTL = 3600  # 1 hour
 EXTERNAL_API_TIMEOUT = 3
 
 
+# Pairs of characters a catalogue has been seen to wrap a whole field in.
+_WRAPPING_QUOTES = (('"', '"'), ('\u201c', '\u201d'))
+
+
+def clean_publisher(value):
+    """A publisher name without the quotation marks some records wrap it in.
+
+    Google Books returns `"O'Reilly Media, Inc."` — quotes included, as part
+    of the string — for O'Reilly titles, and the book page printed them
+    verbatim. Only a pair that wraps the whole value is removed, and only
+    when that quote character does not also appear inside it: `"A" & "B"`
+    is two quoted names, not one wrapped one, and stays as it is.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    for opening, closing in _WRAPPING_QUOTES:
+        inner = text[len(opening):-len(closing)]
+        if (
+            len(text) > len(opening) + len(closing)
+            and text.startswith(opening)
+            and text.endswith(closing)
+            and opening not in inner
+            and closing not in inner
+        ):
+            return inner.strip()
+    return text
+
+
 def _safe_cache_get(key):
     """cache.get() that degrades to a plain cache miss on a Redis hiccup
     (timeout, connection reset) instead of crashing the whole request — this

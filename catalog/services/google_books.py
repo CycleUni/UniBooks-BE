@@ -11,6 +11,7 @@ from ._common import (
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    clean_publisher,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ def get_google_books_by_isbn(isbn, _meta=None):
                 result = {
                     'title': item.get('title', ''),
                     'authors': ', '.join(item.get('authors', [])),
-                    'publisher': item.get('publisher', ''),
+                    'publisher': clean_publisher(item.get('publisher', '')),
                     'published_date': item.get('publishedDate', ''),
                     'cover_url': item.get('imageLinks', {}).get('thumbnail', '').replace('http:', 'https:'),
                     'isbn': isbn,
@@ -155,7 +156,7 @@ def search_google_books(query, _meta=None):
                 results.append({
                     'title': info.get('title', ''),
                     'authors': ', '.join(info.get('authors', [])),
-                    'publisher': info.get('publisher', ''),
+                    'publisher': clean_publisher(info.get('publisher', '')),
                     'published_date': info.get('publishedDate', ''),
                     'cover_url': info.get('imageLinks', {}).get('thumbnail', '').replace('http:', 'https:'),
                     'isbn': next((id['identifier'] for id in info.get('industryIdentifiers', []) if id['type'] == 'ISBN_13'), None)
