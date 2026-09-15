@@ -18,12 +18,23 @@ _NOT_FOUND_SENTINEL = "__gb_not_found__"
 # different facts with very different appropriate lifetimes.
 _NOT_FOUND_CACHE_TTL = 3600  # 1 hour
 
-# Per-call timeout for the external catalogue APIs. An ISBN lookup tries them
-# one after another (Google → ISBNnet → Open Library), and at the old 5s each
-# a run where all three hang took 15s against a Vercel maxDuration of 10 — the
-# function is killed and the caller gets a 504 having waited the full budget.
-# At 3s the whole chain fits inside it with room to spare.
-EXTERNAL_API_TIMEOUT = 3
+# Per-call timeout for the external catalogue APIs. With Vercel maxDuration
+# increased to 30s, 5s allows cold-start connections and upstream crawling
+# (ISBNnet, Google Books) to reliably complete without timing out.
+EXTERNAL_API_TIMEOUT = 5
+
+# Outcome status for external book catalogue lookups
+STATUS_FOUND = "found"
+STATUS_NOT_FOUND = "not_found"
+STATUS_TIMEOUT = "timeout"
+STATUS_RATE_LIMITED = "rate_limited"
+STATUS_ERROR = "error"
+
+
+def _set_status(meta, value):
+    """Set the lookup status on a meta dict when one was provided."""
+    if meta is not None:
+        meta['status'] = value
 
 
 # Pairs of characters a catalogue has been seen to wrap a whole field in.

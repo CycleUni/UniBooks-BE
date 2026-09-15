@@ -917,9 +917,12 @@ def test_search_rate_limit_does_not_fall_back_to_a_switched_off_engine(api, db):
     with mock.patch("search.views.search_google_books", side_effect=GoogleBooksRateLimited("429")), \
             mock.patch("search.views.search_open_library_books") as ol_search:
         resp = api.get("/api/v1/search/books/?q=calculus&engine=googlebooks")
-    assert resp.status_code == 200
+    # Google is the only allowed engine and it's rate-limited → upstream
+    # unavailable (504), but Open Library must still not be called because
+    # the region has it switched off.
+    assert resp.status_code == 504
     ol_search.assert_not_called()
-    assert resp.json()["google_unavailable"] is True
+    assert resp.json()["error"] == "upstream_unavailable"
 
 
 def test_search_named_google_does_not_fall_through_on_no_record(api, db):
@@ -949,3 +952,49 @@ def test_book_detail_respects_the_region_engines(api, db):
     assert resp.status_code == 404
     registry.assert_not_called()
     ol_isbn.assert_not_called()
+
+
+def test_search_endpoint_returns_504_when_all_external_engines_time_out(api, db):
+    _set_tw_engines(['googlebooks', 'isbnnet', 'openlibrary'])
+
+    def mock_timeout(query, _meta=None):
+        if _meta is not None:
+            _meta['status'] = 'timeout'
+        return None
+
+    def mock_empty_timeout(query, _meta=None):
+        if _meta is not None:
+            _meta['status'] = 'timeout'
+        return []
+
+    with mock.patch("search.views.get_google_books_by_isbn", side_effect=mock_timeout), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn", side_effect=mock_timeout), \
+            mock.patch("search.views.get_open_library_book_by_isbn", side_effect=mock_timeout), \
+            mock.patch("search.views.search_google_books", side_effect=mock_empty_timeout), \
+            mock.patch("search.views.search_open_library_books", side_effect=mock_empty_timeout):
+        resp = api.get("/api/v1/search/books/?q=9786260000099")
+    assert resp.status_code == 504
+    data = resp.json()
+    assert data["error"] == "upstream_unavailable"
+    assert len(data["attempts"]) > 0
+
+
+def test_search_endpoint_returns_200_when_engine_confirms_not_found(api, db):
+    _set_tw_engines(['googlebooks'])
+
+    def mock_gb(isbn, _meta=None):
+        if _meta is not None:
+            _meta['status'] = 'not_found'
+        return None
+
+    def mock_search_not_found(query, _meta=None):
+        if _meta is not None:
+            _meta['status'] = 'not_found'
+        return []
+
+    with mock.patch("search.views.get_google_books_by_isbn", side_effect=mock_gb), \
+            mock.patch("search.views.search_google_books", side_effect=mock_search_not_found):
+        resp = api.get("/api/v1/search/books/?q=9786260000098&engine=googlebooks")
+    assert resp.status_code == 200
+    assert resp.json()["results"] == []
+

@@ -46,6 +46,17 @@ def _keyword_lookups():
     }
 
 
+def _upstream_unavailable_response(attempts):
+    """504 when every external catalogue timed out or errored — tells the
+    caller the book *might* exist but we couldn't reach anyone to check."""
+    return Response({
+        'error': 'upstream_unavailable',
+        'detail': 'All external book catalogues timed out or failed to connect.',
+        'attempts': attempts,
+        'results': [],
+    }, status=status.HTTP_504_GATEWAY_TIMEOUT)
+
+
 def _keyword_engine(engine):
     # The ISBN registry cannot run a keyword search; a caller that named it
     # has always had Google stand in for that part.
@@ -137,6 +148,7 @@ class BookSearchView(views.APIView):
         else:
             query_stripped = query.strip()
             is_isbn = query_stripped.isdigit() and len(query_stripped) in (10, 13)
+            attempts = []
             
             if is_isbn:
                 # Named engine: that one alone. No engine: Google, then the
@@ -149,6 +161,7 @@ class BookSearchView(views.APIView):
                     allowed_engines,
                 )
                 google_unavailable = google_unavailable or unavailable
+                attempts.extend(meta.get('attempts', []))
 
                 if gb_book:
                     if not gb_book.get('cover_url') and gb_book.get('isbn'):
@@ -166,18 +179,29 @@ class BookSearchView(views.APIView):
                 # keep results whose own ISBN matches what was searched, so
                 # this stays a precise ISBN lookup rather than a fuzzy one.
                 if not gb_book and not local_books.exists():
-                    fallback_results, fallback_engine, _, _ = lookup_in_order(
+                    fallback_results, fallback_engine, fallback_meta, fallback_unavail = lookup_in_order(
                         query_stripped,
                         engine_order(_keyword_engine(engine), allowed_engines, KEYWORD_FALLBACK_ORDER),
                         _keyword_lookups(),
                         allowed_engines,
                     )
+                    google_unavailable = google_unavailable or fallback_unavail
+                    attempts.extend(fallback_meta.get('attempts', []))
                     fallback_results = [item for item in (fallback_results or []) if item.get('isbn') == query_stripped]
                     for item in fallback_results:
                         if not item.get('cover_url') and item.get('isbn'):
                             item['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{item['isbn']}-L.jpg"
                         item['source'] = SOURCE_BY_ENGINE[fallback_engine]
                     gb_results = fallback_results
+
+                # If no book was found anywhere (neither locally nor in external catalogues),
+                # check whether ALL attempted external lookups failed due to timeout / connection error.
+                # If so, return 504 Gateway Timeout rather than 200 with [] so callers can distinguish
+                # an unreachable upstream catalogue from a confirmed empty catalogue.
+                if not gb_results and not local_books.exists() and attempts:
+                    all_failed = all(a.get('status') in ('timeout', 'error', 'rate_limited') for a in attempts)
+                    if all_failed:
+                        return _upstream_unavailable_response(attempts)
             else:
                 gb_results, engine_used, meta, unavailable = lookup_in_order(
                     query,
@@ -187,6 +211,7 @@ class BookSearchView(views.APIView):
                 )
                 gb_results = gb_results or []
                 google_unavailable = google_unavailable or unavailable
+                attempts.extend(meta.get('attempts', []))
 
                 debug_source = describe_source(engine_used, meta.get('cache_hit', False))
                 for gb_book in gb_results:
@@ -217,6 +242,15 @@ class BookSearchView(views.APIView):
                 # Limit local books to 100 to prevent memory explosion when merging
                 # with Google Books API results in Python.
                 local_books = local_books.distinct().order_by('-created_at')[:100]
+
+                # Mirror the ISBN path: if no external catalogue returned
+                # results and every attempt failed (timeout / error /
+                # rate-limit), tell the caller the upstream is unavailable
+                # rather than pretending the book doesn't exist.
+                if not gb_results and not local_books.exists() and attempts:
+                    all_failed = all(a.get('status') in ('timeout', 'error', 'rate_limited') for a in attempts)
+                    if all_failed:
+                        return _upstream_unavailable_response(attempts)
             
             local_results = []
             for book in local_books:

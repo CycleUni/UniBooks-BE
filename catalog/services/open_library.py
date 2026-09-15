@@ -6,10 +6,15 @@ import requests
 
 from ._common import (
     EXTERNAL_API_TIMEOUT,
+    STATUS_ERROR,
+    STATUS_FOUND,
+    STATUS_NOT_FOUND,
+    STATUS_TIMEOUT,
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    _set_status,
     clean_publisher,
 )
 
@@ -31,8 +36,10 @@ def get_open_library_book_by_isbn(isbn, _meta=None):
             _meta['cache_hit'] = True
         if cached == _NOT_FOUND_SENTINEL:
             logger.debug("Cache hit (not found) for Open Library ISBN: %s", isbn)
+            _set_status(_meta, STATUS_NOT_FOUND)
             return None
         logger.debug("Cache hit for Open Library ISBN: %s", isbn)
+        _set_status(_meta, STATUS_FOUND)
         return json.loads(cached)
     if _meta is not None:
         _meta['cache_hit'] = False
@@ -51,6 +58,7 @@ def get_open_library_book_by_isbn(isbn, _meta=None):
             entry = data.get(f"ISBN:{isbn}")
             if not entry:
                 _safe_cache_set(cache_key, _NOT_FOUND_SENTINEL, _NOT_FOUND_CACHE_TTL)
+                _set_status(_meta, STATUS_NOT_FOUND)
                 return None
             result = {
                 'title': entry.get('title', ''),
@@ -61,9 +69,17 @@ def get_open_library_book_by_isbn(isbn, _meta=None):
                 'isbn': isbn,
             }
             _safe_cache_set(cache_key, json.dumps(result), 86400 * 30)
+            _set_status(_meta, STATUS_FOUND)
             return result
+        else:
+            _set_status(_meta, STATUS_ERROR)
+            return None
+    except requests.exceptions.Timeout:
+        logger.warning("Open Library ISBN lookup timed out for %s", isbn)
+        _set_status(_meta, STATUS_TIMEOUT)
     except (requests.RequestException, ValueError, KeyError):
         logger.exception("Open Library ISBN lookup failed for %s", isbn)
+        _set_status(_meta, STATUS_ERROR)
     return None
 
 
@@ -77,8 +93,10 @@ def search_open_library_books(query, _meta=None):
             _meta['cache_hit'] = True
         if cached == _NOT_FOUND_SENTINEL:
             logger.debug("Cache hit (not found) for Open Library query: %r", query)
+            _set_status(_meta, STATUS_NOT_FOUND)
             return []
         logger.debug("Cache hit for Open Library query: %r", query)
+        _set_status(_meta, STATUS_FOUND)
         return json.loads(cached)
     if _meta is not None:
         _meta['cache_hit'] = False
@@ -101,6 +119,7 @@ def search_open_library_books(query, _meta=None):
             docs = data.get('docs', [])[:10]
             if not docs:
                 _safe_cache_set(cache_key, _NOT_FOUND_SENTINEL, _NOT_FOUND_CACHE_TTL)
+                _set_status(_meta, STATUS_NOT_FOUND)
                 return []
             results = []
             for doc in docs:
@@ -121,7 +140,15 @@ def search_open_library_books(query, _meta=None):
                 })
             # cache for 24 hours, matching search_google_books
             _safe_cache_set(cache_key, json.dumps(results), 86400)
+            _set_status(_meta, STATUS_FOUND)
             return results
+        else:
+            _set_status(_meta, STATUS_ERROR)
+            return []
+    except requests.exceptions.Timeout:
+        logger.warning("Open Library search timed out for query %r", query)
+        _set_status(_meta, STATUS_TIMEOUT)
     except (requests.RequestException, ValueError, KeyError):
         logger.exception("Open Library search failed for query %r", query)
+        _set_status(_meta, STATUS_ERROR)
     return []

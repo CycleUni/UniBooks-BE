@@ -6,10 +6,15 @@ from django.conf import settings
 
 from ._common import (
     EXTERNAL_API_TIMEOUT,
+    STATUS_ERROR,
+    STATUS_FOUND,
+    STATUS_NOT_FOUND,
+    STATUS_TIMEOUT,
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
     _safe_cache_get,
     _safe_cache_set,
+    _set_status,
     clean_publisher,
 )
 
@@ -26,8 +31,10 @@ def get_isbnnet_book_by_isbn(isbn, _meta=None):
             _meta['cache_hit'] = True
         if cached == _NOT_FOUND_SENTINEL:
             logger.debug("Cache hit (not found) for ISBNnet ISBN: %s", isbn)
+            _set_status(_meta, STATUS_NOT_FOUND)
             return None
         logger.debug("Cache hit for ISBNnet ISBN: %s", isbn)
+        _set_status(_meta, STATUS_FOUND)
         return json.loads(cached)
     if _meta is not None:
         _meta['cache_hit'] = False
@@ -53,13 +60,20 @@ def get_isbnnet_book_by_isbn(isbn, _meta=None):
                 'isbn': data.get('isbn', isbn),
             }
             _safe_cache_set(cache_key, json.dumps(result), 86400 * 30)
+            _set_status(_meta, STATUS_FOUND)
             return result
         elif response.status_code == 404:
             _safe_cache_set(cache_key, _NOT_FOUND_SENTINEL, _NOT_FOUND_CACHE_TTL)
+            _set_status(_meta, STATUS_NOT_FOUND)
             return None
         else:
             logger.warning("ISBNnet lookup returned unexpected status %s for %s", response.status_code, isbn)
+            _set_status(_meta, STATUS_ERROR)
             return None
+    except requests.exceptions.Timeout:
+        logger.warning("ISBNnet ISBN lookup timed out for %s", isbn)
+        _set_status(_meta, STATUS_TIMEOUT)
     except (requests.RequestException, ValueError, KeyError):
         logger.exception("ISBNnet ISBN lookup failed for %s", isbn)
+        _set_status(_meta, STATUS_ERROR)
     return None

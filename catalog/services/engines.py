@@ -54,6 +54,7 @@ def lookup_in_order(query, order, lookups, allowed):
     order = list(order)
     result, engine_used, meta = None, None, {}
     google_unavailable = False
+    attempts = []
     i = 0
     while i < len(order):
         engine_used = order[i]
@@ -64,8 +65,15 @@ def lookup_in_order(query, order, lookups, allowed):
         except GoogleBooksRateLimited:
             google_unavailable = True
             result = None
+            meta['status'] = 'rate_limited'
             if 'openlibrary' in allowed and 'openlibrary' not in order:
                 order.append('openlibrary')
+        attempts.append({
+            'engine': engine_used,
+            'status': meta.get('status', 'not_found' if not result else 'found'),
+            'cache_hit': meta.get('cache_hit', False),
+        })
         if result:
             break
+    meta['attempts'] = attempts
     return result, engine_used, meta, google_unavailable
