@@ -10,6 +10,9 @@ class Conversation(models.Model):
 
     latest_message_body = models.TextField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # When the buyer first opened the chat. Null for conversations started
+    # before this was recorded; statistics leave those out of timed figures.
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     # --- Read-state (DEPRECATED — now owned by CFEdgeChat UserHub) ---
     # DEPRECATED: Read-state is now managed by CFEdgeChat's UserHub

@@ -26,6 +26,15 @@ from .views.ads import (
     AdminAdListView,
     AdminAdDetailView,
 )
+from .views.stats import (
+    AdminStatsOverviewView,
+    AdminStatsTimeseriesView,
+    AdminStatsBookRankingView,
+    AdminStatsBookRequestsView,
+    AdminStatsBreakdownView,
+    AdminStatsBookDetailView,
+)
+from .views.growth import AdminStatsGrowthView, AdminStatsRetentionView
 from .views.uploads import (
     AdminAdUploadURLView,
     AdminAdUploadDirectView,
@@ -36,6 +45,14 @@ urlpatterns = [
     path('regions/<str:pk>/', AdminRegionDetailView.as_view(), name='admin-region-detail'),
     path('currencies/', AdminCurrencyListView.as_view(), name='admin-currency-list'),
     path('currencies/<str:pk>/', AdminCurrencyDetailView.as_view(), name='admin-currency-detail'),
+    path('stats/overview/', AdminStatsOverviewView.as_view(), name='admin-stats-overview'),
+    path('stats/timeseries/', AdminStatsTimeseriesView.as_view(), name='admin-stats-timeseries'),
+    path('stats/books/ranking/', AdminStatsBookRankingView.as_view(), name='admin-stats-book-ranking'),
+    path('stats/growth/', AdminStatsGrowthView.as_view(), name='admin-stats-growth'),
+    path('stats/retention/', AdminStatsRetentionView.as_view(), name='admin-stats-retention'),
+    path('stats/breakdown/', AdminStatsBreakdownView.as_view(), name='admin-stats-breakdown'),
+    path('stats/books/requests/', AdminStatsBookRequestsView.as_view(), name='admin-stats-book-requests'),
+    path('stats/books/<int:pk>/', AdminStatsBookDetailView.as_view(), name='admin-stats-book-detail'),
     path('users/', AdminUserListView.as_view(), name='admin-user-list'),
     path('users/<int:pk>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('managers/<int:pk>/toggle/', AdminManagerToggleView.as_view(), name='admin-manager-toggle'),

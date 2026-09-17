@@ -112,10 +112,12 @@ def test_buyer_cannot_mark_handed_over(api, order, seller_header, buyer_header):
 def test_buyer_confirms_completion_after_handover(api, order, seller_header, buyer_header):
     _patch_status(api, order, "accepted", seller_header)
     _patch_status(api, order, "handed_over", seller_header)
+    assert Order.objects.get(pk=order.pk).completed_at is None
     resp = _patch_status(api, order, "completed", buyer_header)
     assert resp.status_code == 200
     order.refresh_from_db()
     assert order.status == "completed"
+    assert order.completed_at is not None  # the completion time statistics rely on
 
 
 def test_either_party_can_cancel_pending_order(api, order, buyer_header):

@@ -10,6 +10,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, Subquery
+from django.utils import timezone
 from rest_framework import serializers, viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -313,6 +314,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order.listing.status = 'reserved'
                 order.listing.save(update_fields=['status'])
             elif new_status == 'completed':
+                if order.completed_at is None:
+                    order.completed_at = timezone.now()
+                    order.save(update_fields=['completed_at'])
                 order.listing.status = 'sold'
                 order.listing.save(update_fields=['status'])
 

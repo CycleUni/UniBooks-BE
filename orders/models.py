@@ -28,6 +28,15 @@ class Order(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Set once, when the buyer confirms receipt. updated_at is no stand-in:
+    # any later save moves it.
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            # Admin statistics filter every query by region and a created_at window.
+            models.Index(fields=['region', 'created_at'], name='order_region_created_idx'),
+        ]
 
     def __str__(self):
         return f"Order #{self.id} - {self.listing.book.title} ({self.status})"
