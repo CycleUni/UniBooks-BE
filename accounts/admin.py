@@ -2,7 +2,7 @@ from django.contrib import admin
 from django import forms
 from django.utils import timezone
 from django.contrib.auth.forms import UserChangeForm
-from .models import User, School, RegionVerification
+from .models import User, School, RegionVerification, SchoolRequest
 
 class UserAdminForm(UserChangeForm):
     class Meta:
@@ -65,3 +65,15 @@ class SchoolAdmin(admin.ModelAdmin):
     list_display = ('code', 'name', 'email_domain', 'region')
     search_fields = ('code', 'name', 'email_domain')
     list_filter = ('region',)
+
+
+@admin.register(SchoolRequest)
+class SchoolRequestAdmin(admin.ModelAdmin):
+    list_display = ('school_name', 'school_website', 'user', 'region', 'status', 'created_at')
+    list_filter = ('status', 'region')
+    search_fields = ('school_name', 'school_website', 'user__email', 'edu_email')
+    # The reporter and what they typed are the record; staff decide the
+    # outcome, they do not rewrite the request.
+    readonly_fields = ('user', 'region', 'school_name', 'school_website', 'edu_email', 'created_at', 'updated_at')
+    list_select_related = ('user',)
+    ordering = ('-created_at',)

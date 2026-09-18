@@ -34,6 +34,7 @@ from .views.stats import (
     AdminStatsBreakdownView,
     AdminStatsBookDetailView,
 )
+from .views.school_requests import AdminSchoolRequestListView, AdminSchoolRequestDetailView
 from .views.growth import AdminStatsGrowthView, AdminStatsRetentionView
 from .views.uploads import (
     AdminAdUploadURLView,
@@ -64,6 +65,8 @@ urlpatterns = [
     path('schools/', AdminSchoolListView.as_view(), name='admin-school-list'),
     path('schools/bulk/', AdminSchoolBulkImportView.as_view(), name='admin-school-bulk'),
     path('schools/<int:pk>/', AdminSchoolDetailView.as_view(), name='admin-school-detail'),
+    path('school-requests/', AdminSchoolRequestListView.as_view(), name='admin-school-request-list'),
+    path('school-requests/<int:pk>/', AdminSchoolRequestDetailView.as_view(), name='admin-school-request-detail'),
     path('categories/', AdminCategoryListView.as_view(), name='admin-categories-list'),
     path('categories/bulk/', AdminCategoryBulkImportView.as_view(), name='admin-categories-bulk'),
     path('categories/<int:pk>/', AdminCategoryDetailView.as_view(), name='admin-categories-detail'),

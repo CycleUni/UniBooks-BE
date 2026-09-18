@@ -8,6 +8,7 @@ urlpatterns = [
     path('verify/request/', views.RequestEduVerificationView.as_view(), name='auth-verify-request'),
     path('verify/auto/', views.AutoVerifyEduEmailView.as_view(), name='auth-verify-auto'),
     path('verify/unbind/', views.UnbindEduEmailView.as_view(), name='auth-verify-unbind'),
+    path('school-requests/', views.SchoolRequestCreateView.as_view(), name='auth-school-request-create'),
     path('token/', views.LoginView.as_view(), name='auth-login'),
     path('google/', views.GoogleLoginView.as_view(), name='auth-google'),
     path('config/', views.AuthConfigView.as_view(), name='auth-config'),

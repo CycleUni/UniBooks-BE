@@ -3,6 +3,7 @@ import uuid
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.cache import cache
 from django.db import models
+from django.db.models.functions import Lower
 from django.contrib.postgres.indexes import GinIndex
 from django.core.validators import RegexValidator
 from django.utils import timezone
@@ -211,6 +212,9 @@ class User(AbstractBaseUser, PermissionsMixin):
             self.region_verifications.all().delete()
             self.subscriptions.all().delete()
             self.socialaccount_set.all().delete()
+            # School requests stay: which campuses people asked for is the
+            # useful part, and it names nobody. The address they typed does.
+            self.school_requests.exclude(edu_email='').update(edu_email='')
 
             self.email = f"deleted-{uuid.uuid4().hex}@deleted.invalid"
             self.first_name = "Deleted account"
@@ -292,3 +296,57 @@ class RegionVerification(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['user', 'region'], name='one_verification_per_user_region'),
         ]
+
+
+class SchoolRequest(models.Model):
+    """A user's "please support my school" report.
+
+    Filed from the campus-email verification form when the address resolves
+    to no School: until now that answer was a dead end, and the only record
+    that anyone had asked for a campus was the user's own frustration. Staff
+    triage these in the admin console and add the School by hand — nothing
+    here creates one, because the email domain a campus really uses is not
+    something the reporter can be trusted to spell (see _is_valid_edu_email
+    on how far real domains stray from the region's suffix).
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_ADDED = 'added'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CHOICES = (
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_ADDED, 'Added'),
+        (STATUS_REJECTED, 'Rejected'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='school_requests')
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT, related_name='school_requests')
+    school_name = models.CharField(max_length=255)
+    school_website = models.URLField(max_length=500)
+    # What the user typed into the verification form, if anything. Kept so
+    # staff can read the domain off it; it is not verified and never becomes
+    # a RegionVerification.
+    edu_email = models.EmailField(blank=True, default='')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    admin_note = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        indexes = [
+            models.Index(fields=['region', 'status', '-created_at'], name='schoolreq_region_status_idx'),
+        ]
+        constraints = [
+            # One open request per user, region and school. The view answers a
+            # repeat with the existing row; this is what still holds when two
+            # submits (a double click) race past that check together.
+            # Case-folded so "NTU" and "ntu" count as the same school.
+            models.UniqueConstraint(
+                'user', 'region', Lower('school_name'),
+                condition=models.Q(status='pending'),
+                name='one_pending_school_request_per_user_region_name',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.school_name} ({self.region_id}, {self.status})"

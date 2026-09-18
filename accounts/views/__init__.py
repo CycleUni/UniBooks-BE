@@ -20,6 +20,7 @@ from .auth import (
     UnbindEduEmailView,
     _send_verification_email,
 )
+from .school_requests import SchoolRequestCreateView
 from .profile import MyProfileView, NotificationSettingsView, PublicUserProfileView, SiteLanguageView
 from .home import (
     HomeMetadataView,
@@ -47,6 +48,7 @@ __all__ = [
     "ConfirmEmailChangeView",
     "CancelEmailChangeView",
     "UnbindEduEmailView",
+    "SchoolRequestCreateView",
     "MyProfileView",
     "PublicUserProfileView",
     "HomeMetadataView",

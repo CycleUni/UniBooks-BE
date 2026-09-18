@@ -355,6 +355,10 @@ REST_FRAMEWORK = {
         'refresh_token': _throttle('10/min', '60/min'),
         'password_change': _throttle('5/min', '60/min'),
         'password-reset-request': _throttle('3/hour', '60/hour'),
+        # "Report my school" from the verification form. A real user files
+        # one or two; the cap is what keeps a script from filling the admin
+        # queue (the per-name dedup in the view does not stop varied names).
+        'school-request': _throttle('5/hour', '60/hour'),
         'cron': '60/hour',
         # Listing/chat image uploads (presign, direct-proxy and delete).
         # Generous enough for a 6-photo listing plus edits, but bounded so a

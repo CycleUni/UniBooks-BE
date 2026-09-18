@@ -7,6 +7,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from core.i18n import DEFAULT_LANGUAGE, EMAIL_LANGUAGE_AUTO, EMAIL_LANGUAGES, resolve_language
 from core.region import get_region
 
+from accounts.models import SchoolRequest
+
 User = get_user_model()
 
 class UserSerializer(serializers.ModelSerializer):
@@ -247,3 +249,56 @@ class RegisterSerializer(serializers.ModelSerializer):
             is_active=False,
         )
         return user
+
+
+class SchoolRequestCreateSerializer(serializers.ModelSerializer):
+    """What the verification form's "report my school" panel posts.
+
+    Error messages are i18n keys rather than prose: the frontend's
+    parseApiError reads a DRF field error (`{"school_website": ["<key>"]}`)
+    by looking its first entry up in the dictionary, so a key here comes out
+    as a sentence in the user's language and DRF's English would not.
+    """
+    school_name = serializers.CharField(
+        max_length=255,
+        # 2, not 1: a single character is never a school, and it is the
+        # cheapest way to fill the admin queue with noise.
+        min_length=2,
+        trim_whitespace=True,
+        error_messages={
+            'required': 'acct.errSchoolRequestName',
+            'blank': 'acct.errSchoolRequestName',
+            'min_length': 'acct.errSchoolRequestName',
+            'max_length': 'acct.errSchoolRequestName',
+        },
+    )
+    school_website = serializers.URLField(
+        max_length=500,
+        error_messages={
+            'required': 'acct.errSchoolRequestWebsite',
+            'blank': 'acct.errSchoolRequestWebsite',
+            'invalid': 'acct.errSchoolRequestWebsite',
+            'max_length': 'acct.errSchoolRequestWebsite',
+        },
+    )
+    edu_email = serializers.EmailField(
+        required=False,
+        allow_blank=True,
+        error_messages={'invalid': 'acct.errSchoolRequestEmail'},
+    )
+
+    class Meta:
+        model = SchoolRequest
+        fields = ('id', 'school_name', 'school_website', 'edu_email', 'status', 'created_at')
+        read_only_fields = ('id', 'status', 'created_at')
+
+    def validate_school_website(self, value):
+        # URLValidator also admits ftp:// and ftps://. Staff open this link
+        # from the admin table, so only the two schemes a school's homepage
+        # is actually served on get through.
+        if not value.lower().startswith(('http://', 'https://')):
+            raise serializers.ValidationError('acct.errSchoolRequestWebsite')
+        return value
+
+    def validate_edu_email(self, value):
+        return value.strip().lower()

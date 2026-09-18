@@ -7,7 +7,7 @@ letting is_staff/is_superuser/password through) precisely per-endpoint.
 """
 from rest_framework import serializers
 
-from accounts.models import User, School
+from accounts.models import User, School, SchoolRequest
 from accounts.school_codes import is_valid_code, normalize_code
 from core.models import Category, Region, Currency, Language
 from listings.models import Listing
@@ -287,6 +287,23 @@ class AdminChatReportSerializer(serializers.ModelSerializer):
         model = ChatReport
         fields = ('id', 'conversation_id', 'listing_title', 'reporter_email',
                   'reported_party_email', 'reason', 'detail', 'status', 'created_at', 'region')
+        read_only_fields = fields
+
+
+class AdminSchoolRequestSerializer(serializers.ModelSerializer):
+    # Read-only like the rest of this module; the detail view's PATCH applies
+    # its own two-field allow-list (status, admin_note).
+    user = serializers.SerializerMethodField()
+
+    def get_user(self, obj):
+        # id so the admin table can link to the user's detail page, email so
+        # staff can tell who asked without opening it.
+        return {'id': obj.user_id, 'email': obj.user.email}
+
+    class Meta:
+        model = SchoolRequest
+        fields = ('id', 'user', 'region', 'school_name', 'school_website', 'edu_email',
+                  'status', 'admin_note', 'created_at', 'updated_at')
         read_only_fields = fields
 
 
