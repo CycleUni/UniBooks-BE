@@ -247,7 +247,14 @@ WSGI_APPLICATION = "unibooks.wsgi.application"
 # For standard Vercel Pro, keep 0. Configurable so that call can be made from
 # the environment, on the deployment where it can actually be observed,
 # rather than needing a code change and a redeploy to try.
-CONN_MAX_AGE = env.int("CONN_MAX_AGE", default=0)
+#
+# Django reads this per database, not as a top-level setting: a bare
+# `CONN_MAX_AGE = ...` here was silently ignored, so setting the variable on
+# the deployment changed nothing. Health checks make a reused connection that
+# Neon closed while the instance sat idle get replaced instead of failing the
+# next request.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=0)
+DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
 # Neon pooler rejects statement_timeout as a startup parameter and requires
 # SSL. Set sslmode=require by default (overridable via POSTGRES_SSLMODE for
