@@ -781,7 +781,61 @@ def test_my_profile_counts_every_listing_not_just_the_first_page(api, user, auth
 
     body = api.get("/api/v1/auth/me/?q=nothing-matches", **auth_header).json()
     assert body["myListings"]["results"] == []
-    assert body["myListingCounts"] == {"active": 21, "sold": 1}
+    # Every status the seller's own page offers as a tab, plus the total.
+    assert body["myListingCounts"] == {
+        "active": 21, "reserved": 0, "sold": 1, "removed": 0, "all": 22,
+    }
+
+
+def _listing(user, book, **kwargs):
+    return Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=user,
+        condition="new", **kwargs,
+    )
+
+
+@pytest.fixture
+def listing_shelf(user):
+    """One listing per status, at prices that order differently from their age."""
+    book = Book.objects.create(region_id='TW', isbn13="9781111111113", title="Shelf Book", source="manual")
+    return {
+        'active': _listing(user, book, price=300, status="active"),
+        'reserved': _listing(user, book, price=100, status="reserved"),
+        'sold': _listing(user, book, price=500, status="sold"),
+        'removed': _listing(user, book, price=200, status="removed"),
+    }
+
+
+def test_my_listings_filter_by_status(api, auth_header, listing_shelf):
+    body = api.get("/api/v1/auth/me/?status=sold", **auth_header).json()
+    assert [l["id"] for l in body["myListings"]["results"]] == [str(listing_shelf['sold'].id)]
+    assert body["myListings"]["count"] == 1
+    # The tab labels keep counting the whole shelf, not the filtered view.
+    assert body["myListingCounts"] == {"active": 1, "reserved": 1, "sold": 1, "removed": 1, "all": 4}
+
+
+def test_my_listings_ignore_an_unknown_status(api, auth_header, listing_shelf):
+    body = api.get("/api/v1/auth/me/?status=banana", **auth_header).json()
+    assert body["myListings"]["count"] == 4
+
+
+def test_my_listings_sorting(api, auth_header, listing_shelf):
+    def prices(query):
+        return [l["price"] for l in api.get(f"/api/v1/auth/me/?{query}", **auth_header).json()["myListings"]["results"]]
+
+    newest = prices("")                      # created last first
+    assert newest == prices("sort=newest")
+    assert newest[0] == 200                  # the removed one was created last
+    assert prices("sort=oldest") == list(reversed(newest))
+    assert prices("sort=price_asc") == [100, 200, 300, 500]
+    assert prices("sort=price_desc") == [500, 300, 200, 100]
+    assert prices("sort=banana") == newest   # unknown sort falls back
+
+
+def test_my_listings_status_and_search_together(api, auth_header, listing_shelf):
+    body = api.get("/api/v1/auth/me/?status=active&q=Shelf", **auth_header).json()
+    assert body["myListings"]["count"] == 1
+    assert api.get("/api/v1/auth/me/?status=active&q=nothing", **auth_header).json()["myListings"]["count"] == 0
 
 
 def test_my_profile_requires_auth(api, db):

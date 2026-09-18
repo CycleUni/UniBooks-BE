@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 
 from accounts.models import School
 from accounts.serializers import NotificationSettingsSerializer, PublicUserProfileSerializer, UserSerializer
+from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
 from subscriptions.models import subscriptions_with_new_listings_count
 from subscriptions.serializers import SubscriptionSerializer
@@ -21,6 +22,16 @@ from subscriptions.serializers import SubscriptionSerializer
 logger = logging.getLogger(__name__)
 
 User = get_user_model()
+
+
+# How the seller's own listings page may order them. Every ordering ends on
+# `-created_at` so equal prices keep a stable, meaningful order.
+LISTING_SORTS = {
+    'newest': ('-created_at',),
+    'oldest': ('created_at',),
+    'price_asc': ('price', '-created_at'),
+    'price_desc': ('-price', '-created_at'),
+}
 
 
 class MyProfileView(views.APIView):
@@ -37,16 +48,24 @@ class MyProfileView(views.APIView):
 
         # Related data the frontend My Account page needs
         region = get_region(request)
-        my_listings = with_seller_stats(user.listings.filter(region=region).select_related('book', 'seller', 'school')).order_by('-created_at')
+        my_listings = with_seller_stats(user.listings.filter(region=region).select_related('book', 'seller', 'school'))
 
         # The account page's "N active · N sold" counted the page of listings
         # below, so a seller with more than a page of them was undercounted.
-        # Counted before the search filter: the totals describe the account.
+        # Counted before the search and status filters: the totals describe
+        # the account, and the listings page labels its status tabs with them.
         counts = dict(
-            user.listings.filter(region=region, status__in=('active', 'sold'))
+            user.listings.filter(region=region)
             .order_by().values('status').annotate(n=Count('id')).values_list('status', 'n')
         )
-        data['myListingCounts'] = {'active': counts.get('active', 0), 'sold': counts.get('sold', 0)}
+        data['myListingCounts'] = {
+            **{value: counts.get(value, 0) for value, _ in Listing.STATUS_CHOICES},
+            'all': sum(counts.values()),
+        }
+
+        status_filter = request.query_params.get('status', '').strip()
+        if status_filter in dict(Listing.STATUS_CHOICES):
+            my_listings = my_listings.filter(status=status_filter)
 
         q = request.query_params.get('q', '').strip()
         if q:
@@ -55,6 +74,8 @@ class MyProfileView(views.APIView):
                 Q(book__authors__icontains=q) |
                 Q(book__isbn13__icontains=q)
             )
+
+        my_listings = my_listings.order_by(*LISTING_SORTS.get(request.query_params.get('sort'), LISTING_SORTS['newest']))
 
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(my_listings, request)
