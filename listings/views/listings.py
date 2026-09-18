@@ -10,6 +10,7 @@ from rest_framework.throttling import ScopedRateThrottle
 
 from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, region_versioned_key
 from core.permissions import IsVerifiedInRegion
+from accounts.school_codes import school_filter_id
 
 
 class ListingListCreateView(views.APIView):
@@ -36,7 +37,10 @@ class ListingListCreateView(views.APIView):
         page_param = request.query_params.get('page', '1')
 
         region = get_region(request)
-        cache_key = region_versioned_key(region, 'listing_list', lang, school, seller_id, page_param)
+        # Keyed on the resolved id, not the raw parameter: "ntu", "NTU" and
+        # the legacy full name are one school and share one cache entry.
+        school_id = school_filter_id(region, school)
+        cache_key = region_versioned_key(region, 'listing_list', lang, '' if school_id is None else school_id, seller_id, page_param)
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)
@@ -44,8 +48,8 @@ class ListingListCreateView(views.APIView):
         listings = with_seller_stats(Listing.objects.filter(region=region, status='active').select_related(
                 'book', 'seller', 'school'
         )).order_by('-created_at')
-        if school:
-            listings = listings.filter(school__name=school)
+        if school_id is not None:
+            listings = listings.filter(school_id=school_id)
         if seller_id:
             listings = listings.filter(seller_id=seller_id)
 
@@ -96,10 +100,11 @@ class RecentBooksView(views.APIView):
         # with zero hit rate. A page size is also a real cap, not a suggestion.
         limit = min(max(int(limit_param), 1), 200) if limit_param.isdigit() else 200
         page_param = page_param if page_param.isdigit() else '1'
-        import urllib.parse
-        safe_school = urllib.parse.quote(school)
         region = get_region(request)
-        cache_key = f"{region.code}_recent_books_{lang}_{safe_school}_{page_param}_{limit}"
+        # The resolved id rather than the raw (attacker-chosen) string also
+        # bounds the cache keys the same way `limit` is bounded above.
+        school_id = school_filter_id(region, school)
+        cache_key = f"{region.code}_recent_books_{lang}_{'' if school_id is None else school_id}_{page_param}_{limit}"
         cached_data = cache.get(cache_key)
         if cached_data is not None:
             return Response(cached_data)
@@ -120,8 +125,8 @@ class RecentBooksView(views.APIView):
         # null price and zero sellers. search/views.py already builds its
         # filter this way.
         book_filter = Q(listings__status='active')
-        if school:
-            book_filter &= Q(listings__school__name=school)
+        if school_id is not None:
+            book_filter &= Q(listings__school_id=school_id)
         # Must build on `base_qs`, not a fresh Book.objects — starting over
         # here silently dropped the region filter and served every region's
         # books from this endpoint. The cache key is region-stamped, so the
@@ -149,8 +154,8 @@ class RecentBooksView(views.APIView):
         # and condition stats aggregate listings, and a book carried by both
         # regions would otherwise mix another region's prices into this one.
         active_filter = {'book_id__in': book_ids, 'status': 'active', 'region': region}
-        if school:
-            active_filter['school__name'] = school
+        if school_id is not None:
+            active_filter['school_id'] = school_id
 
         all_book_listings = Listing.objects.filter(**active_filter).values('book_id', 'price', 'condition')
 

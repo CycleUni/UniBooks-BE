@@ -62,6 +62,6 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(School)
 class SchoolAdmin(admin.ModelAdmin):
-    list_display = ('name', 'email_domain', 'region')
-    search_fields = ('name', 'email_domain')
+    list_display = ('code', 'name', 'email_domain', 'region')
+    search_fields = ('code', 'name', 'email_domain')
     list_filter = ('region',)

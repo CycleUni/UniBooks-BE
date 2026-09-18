@@ -38,6 +38,7 @@ class UserSerializer(serializers.ModelSerializer):
             {
                 'region': v.region_id,
                 'school': v.school_id,
+                'school_code': v.school.code if v.school else '',
                 'school_name': v.school.localized_name(lang) if v.school else '',
                 'edu_email': v.edu_email,
                 'verified_at': v.verified_at,

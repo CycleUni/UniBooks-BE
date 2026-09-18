@@ -266,7 +266,7 @@ def test_book_detail(api, data):
     assert summary["rank"] == 1
     assert body["by_status"]["cancelled"] == 1
     assert body["series"][-1] == {"date": body["series"][-1]["date"], "orders": 3, "completed": 2}
-    assert body["top_schools"] == [{"id": body["top_schools"][0]["id"], "name": "NTU", "completed_orders": 2}]
+    assert body["top_schools"] == [{"id": body["top_schools"][0]["id"], "code": "NTU", "name": "NTU", "completed_orders": 2}]
     assert len(body["recent_orders"]) == 4
     assert [l["price"] for l in body["active_listings"]] == [300]
 

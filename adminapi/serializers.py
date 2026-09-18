@@ -8,6 +8,7 @@ letting is_staff/is_superuser/password through) precisely per-endpoint.
 from rest_framework import serializers
 
 from accounts.models import User, School
+from accounts.school_codes import is_valid_code, normalize_code
 from core.models import Category, Region, Currency, Language
 from listings.models import Listing
 from moderation.models import ChatReport
@@ -71,6 +72,33 @@ class AdminAdSerializer(serializers.ModelSerializer):
 class AdminSchoolSerializer(serializers.ModelSerializer):
     user_count = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    # Declared rather than generated: the generated field would validate the
+    # raw input against the model's pattern before normalization, and the
+    # (region, code) UniqueConstraint would make DRF require `code` on every
+    # create. Omitted or blank, School.save() derives one from the domain.
+    code = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_code(self, value):
+        code = normalize_code(value)
+        if code and not is_valid_code(code):
+            raise ValidationError('admin.errSchoolCodeInvalid')
+        return code
+
+    def validate(self, attrs):
+        # Checked here, per region, instead of left to the database: an
+        # IntegrityError would surface as a bare 500, and the admin needs to
+        # be told it is the *code* that clashes (and that only this region's
+        # schools count — the other region having the same code is fine).
+        instance = self.instance
+        region = attrs.get('region', instance.region if instance else None)
+        code = attrs.get('code', instance.code if instance else '')
+        if code and region is not None:
+            clash = School.objects.filter(region=region, code=code)
+            if instance is not None:
+                clash = clash.exclude(pk=instance.pk)
+            if clash.exists():
+                raise ValidationError({'code': 'admin.errSchoolCodeTaken'})
+        return attrs
 
     def get_user_count(self, obj):
         # Prefer the annotation from the list view; fall back to a query so the
@@ -84,7 +112,11 @@ class AdminSchoolSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = School
-        fields = ('id', 'name', 'display_name', 'email_domain', 'translations', 'region', 'user_count')
+        fields = ('id', 'code', 'name', 'display_name', 'email_domain', 'translations', 'region', 'user_count')
+        # validate() checks (region, code) itself, with an error the admin UI
+        # can translate; DRF's generated UniqueTogetherValidator would also
+        # make `code` mandatory.
+        validators = []
 
 
 class AdminCategorySerializer(serializers.ModelSerializer):
@@ -133,6 +165,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
             {
                 'region': v.region_id,
                 'school': v.school_id,
+                'school_code': v.school.code if v.school else '',
                 'school_name': (v.school.localized_name(lang) if lang else v.school.name) if v.school else '',
                 'edu_email': v.edu_email,
                 'verified_at': v.verified_at,
@@ -192,7 +225,7 @@ class AdminListingSerializer(serializers.ModelSerializer):
     def get_school(self, obj):
         if not obj.school_id:
             return None
-        return {'id': obj.school_id, 'name': obj.school.name}
+        return {'id': obj.school_id, 'code': obj.school.code, 'name': obj.school.name}
 
     class Meta:
         model = Listing

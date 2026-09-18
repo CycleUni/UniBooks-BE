@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from adminapi.pagination import AdminPagination
 from accounts.models import School
+from accounts.school_codes import dedupe_code, derive_code, is_valid_code, normalize_code
 from accounts.views import invalidate_home_static_cache
 
 from ..permissions import IsRegionManager
@@ -37,6 +38,7 @@ class AdminSchoolListView(generics.ListCreateAPIView):
         if q:
             qs = qs.filter(
                 Q(name__icontains=q) |
+                Q(code__icontains=q) |
                 Q(email_domain__icontains=q)
             )
         # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
@@ -125,6 +127,20 @@ class AdminSchoolBulkImportView(views.APIView):
         if not request.user.is_superuser and current_region not in managed_region_codes:
             return Response({"error": {"code": "admin.errRegionForbidden"}}, status=status.HTTP_403_FORBIDDEN)
 
+        # Codes are settled for the whole batch before anything is written, so
+        # a clash found halfway through cannot leave half the file applied.
+        # `taken` is this region's codes only — the other region using the
+        # same code is not a clash.
+        region_schools = [s for s in existing_schools.values() if s.region_id == current_region]
+        taken = {s.code for s in region_schools}
+        code_owner = {s.code: s.email_domain for s in region_schools}
+        # Codes the file spells out, kept away from the derived ones even when
+        # the item naming them comes later in the list.
+        reserved = {normalize_code(i.get('code')) for i in items if isinstance(i, dict) and i.get('code')}
+        planned = []
+        bad_codes = []
+        clashing = []
+
         valid_count = 0
         for idx, item in enumerate(items):
             domain = item.get('email_domain')
@@ -144,21 +160,65 @@ class AdminSchoolBulkImportView(views.APIView):
                 forbidden_items.append(item)
                 continue
 
+            # A `code` in the item is taken as given (normalized); without one
+            # a new school gets the derived default and an existing school
+            # keeps the code it has.
+            code = None
+            if item.get('code'):
+                code = normalize_code(item['code'])
+                if not is_valid_code(code):
+                    bad_codes.append(domain)
+                    continue
+                owner = code_owner.get(code)
+                if owner is not None and owner != domain:
+                    clashing.append(domain)
+                    continue
+            elif not existing:
+                code = dedupe_code(derive_code(domain), taken | reserved)
+            if code is not None:
+                if existing and existing.code != code:
+                    # Its old code is free again for later items in the batch.
+                    taken.discard(existing.code)
+                    code_owner.pop(existing.code, None)
+                taken.add(code)
+                code_owner[code] = domain
+            planned.append((item, existing, code))
+
+        if bad_codes:
+            return Response(
+                {"error": {"code": "admin.errSchoolCodeInvalid", "domains": bad_codes}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if clashing:
+            return Response(
+                {"error": {"code": "admin.errSchoolCodeTaken", "domains": clashing}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        for item, existing, code in planned:
+            domain = item['email_domain']
             if not existing:
-                new_items.append(item)
+                # Echo the code it will get, so the preview shows the derived one.
+                new_items.append({**item, 'code': code})
                 if action == 'apply':
                     School.objects.create(
                         name=item.get('name', ''),
                         email_domain=domain,
                         region_id=current_region,
+                        code=code,
                         translations=item.get('translations', {})
                     )
             else:
                 # Check for changes
                 name = item.get('name', existing.name)
                 translations = item.get('translations', existing.translations)
+                new_code = code if code is not None else existing.code
                 
-                is_changed = existing.name != name or existing.translations != translations
+                is_changed = (
+                    existing.name != name
+                    or existing.translations != translations
+                    or existing.code != new_code
+                )
                 if is_changed:
                     modified_items.append({
                         'old': AdminSchoolSerializer(existing).data,
@@ -167,6 +227,7 @@ class AdminSchoolBulkImportView(views.APIView):
                     if action == 'apply':
                         existing.name = name
                         existing.translations = translations
+                        existing.code = new_code
                         existing.save()
                 else:
                     unchanged_items.append(item)

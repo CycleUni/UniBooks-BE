@@ -225,6 +225,7 @@ def _top_schools(orders, lang, with_gmv=True, limit=10):
         school = schools.get(r['listing__school'])
         item = {
             'id': r['listing__school'],
+            'code': school.code if school else '',
             'name': school.localized_name(lang) if school else '',
             'completed_orders': r['completed_orders'],
         }

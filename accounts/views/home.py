@@ -5,6 +5,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from accounts.models import School
+from accounts.school_codes import resolve_school
 from core.cache import HOME_STATIC_TTL, HOME_WAITLIST_TTL
 from core.i18n import resolve_language
 from core.region import get_region
@@ -49,11 +50,17 @@ class HomeMetadataView(views.APIView):
         # 1. Static data (Schools & Categories) cached for 24 hours
         static_cache_key = f"home_static_{region.code}_{lang}"
         static_data = cache.get(static_cache_key)
+        # A payload cached before schools had codes would hand the frontend
+        # a school list it cannot select from for up to a day after the
+        # deploy (it selects and links by code). Treated as a miss instead.
+        if static_data and any('code' not in s for s in static_data.get('schools', [])):
+            static_data = None
 
         if not static_data:
             schools = [
                 {
                     'id': school.id,
+                    'code': school.code,
                     'name': school.name,
                     'display_name': school.localized_name(lang),
                     'email_domain': school.email_domain,
@@ -78,13 +85,17 @@ class HomeMetadataView(views.APIView):
         # 2. Dynamic data (Most Wanted). Deliberately TTL-only in production —
         # see core.cache — so this TTL *is* the staleness window, kept short
         # while the dataset is small.
-        school_name = request.query_params.get('school')
+        # A code (or, from older links, a full name) — only ever looked up in
+        # this request's region: the same code names a different school in
+        # the other one.
+        school_param = request.query_params.get('school')
         school_id = None
         invalid_school = False
-        if school_name:
-            try:
-                school_id = School.objects.values_list('id', flat=True).get(name=school_name)
-            except School.DoesNotExist:
+        if school_param:
+            school = resolve_school(region, school_param)
+            if school:
+                school_id = school.id
+            else:
                 invalid_school = True
 
         if invalid_school:

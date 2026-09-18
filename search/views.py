@@ -21,6 +21,7 @@ from listings.models import Listing
 from subscriptions.models import Subscription
 from django.db.models import Count, Min, Q
 from core.region import get_region
+from accounts.school_codes import school_filter_id
 
 # Browsing by category or course reads Book rows straight out of the local
 # catalogue, and the whole matching set used to be pulled into Python before
@@ -73,8 +74,12 @@ class BookSearchView(views.APIView):
         query = request.GET.get('q', '')
         category = request.GET.get('category', '')
         course = request.GET.get('course', '')
-        school = request.GET.get('school', '')
         region = get_region(request)
+        # None = no school filter; otherwise the id to filter on, resolved in
+        # this region (codes repeat across regions). Every filter below
+        # compares ids, so an unknown school matches nothing rather than
+        # silently dropping the filter.
+        school_id = school_filter_id(region, request.GET.get('school', ''))
         
         condition_param = request.GET.get('condition')
         if condition_param == 'none':
@@ -122,8 +127,8 @@ class BookSearchView(views.APIView):
                 base_filter &= Q(listings__category__slug=category)
             if course:
                 base_filter &= Q(listings__course_name=course)
-            if school:
-                base_filter &= Q(listings__school__name=school)
+            if school_id is not None:
+                base_filter &= Q(listings__school_id=school_id)
             # Bounded and ordered: this used to pull every matching Book into
             # Python before paginating, in whatever order the database felt
             # like, so page 2 could repeat page 1.
@@ -223,8 +228,8 @@ class BookSearchView(views.APIView):
                     Q(listings__course_name__icontains=query) |
                     Q(listings__professor_name__icontains=query)
                 )
-                if school:
-                    listing_text_match &= Q(listings__school__name=school)
+                if school_id is not None:
+                    listing_text_match &= Q(listings__school_id=school_id)
 
                 local_books = Book.objects.filter(
                     Q(title__icontains=query) | 
@@ -235,8 +240,8 @@ class BookSearchView(views.APIView):
                 )
                 if course:
                     course_filter = Q(listings__course_name=course, listings__status='active')
-                    if school:
-                        course_filter &= Q(listings__school__name=school)
+                    if school_id is not None:
+                        course_filter &= Q(listings__school_id=school_id)
                     local_books = local_books.filter(course_filter)
                 
                 # Limit local books to 100 to prevent memory explosion when merging
@@ -283,8 +288,8 @@ class BookSearchView(views.APIView):
         if isbns or ids:
             global_active_filter = Q(listings__status='active')
             local_active_filter = Q(listings__status='active')
-            if school:
-                local_active_filter &= Q(listings__school__name=school)
+            if school_id is not None:
+                local_active_filter &= Q(listings__school_id=school_id)
 
             books = Book.objects.filter(Q(isbn13__in=isbns) | Q(id__in=ids), region=region).annotate(
                 global_active_listings_count=Count(
@@ -304,8 +309,8 @@ class BookSearchView(views.APIView):
         conditions_by_book_id = {}
         if books_by_id:
             condition_filter = {'book_id__in': list(books_by_id.keys()), 'status': 'active'}
-            if school:
-                condition_filter['school__name'] = school
+            if school_id is not None:
+                condition_filter['school_id'] = school_id
             condition_rows = Listing.objects.filter(**condition_filter).values_list('book_id', 'condition').distinct()
             for book_id, condition in condition_rows:
                 conditions_by_book_id.setdefault(book_id, []).append(condition)
@@ -368,8 +373,8 @@ class BookSearchView(views.APIView):
             filtered_results.append(item)
 
         facet_base_q = Q(status='active', book__region=region)
-        if school:
-            facet_base_q &= Q(school__name=school)
+        if school_id is not None:
+            facet_base_q &= Q(school_id=school_id)
             
         if category or (course and not query):
             if category:
@@ -396,8 +401,8 @@ class BookSearchView(views.APIView):
         
         # Base query that DOES NOT have category or course applied (we will apply them selectively)
         base_facet_no_cat_no_course = Q(status='active', book__region=region)
-        if school:
-            base_facet_no_cat_no_course &= Q(school__name=school)
+        if school_id is not None:
+            base_facet_no_cat_no_course &= Q(school_id=school_id)
             
         if category or (course and not query):
             # In this branch, query is ignored by the main search.
@@ -433,8 +438,8 @@ class BookSearchView(views.APIView):
         course_counts_dict = {row['course_name']: row['c'] for row in course_rows}
         
         courses_q = Q(status='active', book__region=region)
-        if school:
-            courses_q &= Q(school__name=school)
+        if school_id is not None:
+            courses_q &= Q(school_id=school_id)
         if category:
             courses_q &= Q(category__slug=category)
         top_courses = Listing.objects.filter(courses_q).exclude(course_name='').values('course_name').annotate(c=Count('id')).order_by('-c', 'course_name')[:20]
@@ -482,23 +487,23 @@ class CourseListView(views.APIView):
     throttle_scope = 'search'
 
     def get(self, request):
-        school = request.GET.get('school', '')
         category = request.GET.get('category', '')
 
         region = get_region(request)
+        school_id = school_filter_id(region, request.GET.get('school', ''))
         # Hand-rolled cache rather than cache_page: that keyed on the URL
         # alone, while the region comes from the X-Region header or cookie as
         # well, so Hong Kong could be served Taiwan's course list for an
         # hour. Stamped with the listing_list generation, it is also
         # invalidated the moment a listing changes instead of going stale.
-        cache_key = region_versioned_key(region, 'listing_list', 'courses', school, category)
+        cache_key = region_versioned_key(region, 'listing_list', 'courses', '' if school_id is None else school_id, category)
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
 
         courses = Listing.objects.filter(region=region, status='active').exclude(course_name__exact='')
-        if school:
-            courses = courses.filter(school__name=school)
+        if school_id is not None:
+            courses = courses.filter(school_id=school_id)
         if category:
             courses = courses.filter(category__slug=category)
         

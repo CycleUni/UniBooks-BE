@@ -4,7 +4,12 @@ from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, Permis
 from django.core.cache import cache
 from django.db import models
 from django.contrib.postgres.indexes import GinIndex
+from django.core.validators import RegexValidator
 from django.utils import timezone
+
+from accounts.school_codes import (
+    CODE_INPUT_PATTERN, CODE_MAX_LENGTH, dedupe_code, derive_code, normalize_code,
+)
 
 
 class School(models.Model):
@@ -13,11 +18,47 @@ class School(models.Model):
     `name` is the canonical (English) name. Localized names live in
     `translations`, keyed by language code:
     {"zh-TW": {"name": "國立台灣大學"}, "ja": {"name": "..."}}
+
+    `code` is the short identifier the frontend selects and links by ("NTU",
+    "HKU"). It is unique per region, not globally: Taiwan's Hung Kuang and
+    the University of Hong Kong are both HKU. See accounts.school_codes.
     """
     email_domain = models.CharField(max_length=255, unique=True, help_text="e.g.: ntu.edu.tw")
     name = models.CharField(max_length=255, help_text="Canonical English name, e.g. National Taiwan University")
     translations = models.JSONField(default=dict, blank=True, help_text='Localized fields per language, e.g. {"zh-TW": {"name": "國立台灣大學"}}')
     region = models.ForeignKey('core.Region', on_delete=models.PROTECT, related_name='schools')
+    code = models.CharField(
+        max_length=CODE_MAX_LENGTH,
+        blank=True,
+        # Lowercase accepted: this runs on form input before save() uppercases it.
+        validators=[RegexValidator(CODE_INPUT_PATTERN, 'Use only letters, digits and "-".')],
+        help_text="Short code, unique within the region, e.g. NTU. Left blank, one is derived from the email domain.",
+    )
+
+    def clean(self):
+        # Before validate_constraints, which runs after this in full_clean():
+        # checked as typed, "ntu" would pass the uniqueness check against an
+        # existing "NTU" and then fail at the database once save() uppercased it.
+        super().clean()
+        self.code = normalize_code(self.code)
+
+    def save(self, *args, **kwargs):
+        # Normalized here rather than only in the admin serializer: seed
+        # scripts, the Django admin and bulk import all save Schools, and a
+        # lowercase "ntu" stored by any of them would never match a lookup.
+        self.code = normalize_code(self.code)
+        if not self.code:
+            # A School created without a code (tests, older scripts) gets the
+            # same default the backfill migration gave the existing rows,
+            # rather than '' — which the per-region unique constraint would
+            # allow exactly once per region.
+            taken = set(
+                School.objects.filter(region_id=self.region_id)
+                .exclude(pk=self.pk)
+                .values_list('code', flat=True)
+            )
+            self.code = dedupe_code(derive_code(self.email_domain), taken)
+        super().save(*args, **kwargs)
 
     def localized_name(self, lang):
         """Name in the requested language, falling back to the canonical name."""
@@ -34,6 +75,9 @@ class School(models.Model):
                 fields=['name', 'email_domain'],
                 opclasses=['gin_trgm_ops', 'gin_trgm_ops']
             )
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['region', 'code'], name='school_unique_code_per_region'),
         ]
 
 

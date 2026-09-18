@@ -13,6 +13,7 @@ from core.models import AuditEvent
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminUserSerializer
+from accounts.school_codes import admin_school_filter_id
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,11 @@ class AdminUserListView(generics.ListAPIView):
             qs = qs.filter(is_active=is_active.lower() == 'true')
         school = self.request.query_params.get('school')
         if school:
-            qs = qs.filter(region_verifications__school_id=school)
+            # Admin screens filter by id; a code or name (as the public pages
+            # send) is resolved inside the request's region, since the same
+            # code names a different school in the other one. Anything else
+            # used to reach the id filter and 500 on a non-integer.
+            qs = qs.filter(region_verifications__school_id=admin_school_filter_id(self.request, school))
         # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
         # region the way the URL does (lowercase) and ApiUrlInterceptor
         # appends it to every request — so an unnormalized comparison made

@@ -11,6 +11,7 @@ from listings.models import Listing
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
+from accounts.school_codes import admin_school_filter_id
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class AdminListingListView(generics.ListAPIView):
                 Q(book__title__icontains=q)
                 | Q(seller__email__icontains=q)
                 | Q(school__name__icontains=q)
+                | Q(school__code__iexact=q)
             )
         status_param = self.request.query_params.get('status')
         if status_param:
@@ -40,7 +42,11 @@ class AdminListingListView(generics.ListAPIView):
             qs = qs.filter(condition=condition)
         school = self.request.query_params.get('school')
         if school:
-            qs = qs.filter(school_id=school)
+            # Admin screens filter by id; a code or name (as the public pages
+            # send) is resolved inside the request's region, since the same
+            # code names a different school in the other one. Anything else
+            # used to reach the id filter and 500 on a non-integer.
+            qs = qs.filter(school_id=admin_school_filter_id(self.request, school))
         # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
         # region the way the URL does (lowercase) and ApiUrlInterceptor
         # appends it to every request — so an unnormalized comparison made

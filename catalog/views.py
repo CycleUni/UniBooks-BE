@@ -178,11 +178,12 @@ class BookDetailView(views.APIView):
         school_param = request.query_params.get('school')
         if school_param and response_data.get('id'):
             from listings.models import Listing
+            from accounts.school_codes import school_filter_id
             response_data['local_listings_count'] = Listing.objects.filter(
                 region=region,
                 book_id=response_data['id'],
                 status='active',
-                school__name=school_param
+                school_id=school_filter_id(region, school_param),
             ).count()
         else:
             response_data['local_listings_count'] = None

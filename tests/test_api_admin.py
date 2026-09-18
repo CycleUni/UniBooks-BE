@@ -520,7 +520,7 @@ def test_admin_schools_list_pagination(api, superuser):
     
     # Create 30 schools (more than default page size 20)
     schools = [
-        School(name=f"Test School {i}", email_domain=f"test{i}.edu", region_id="TW")
+        School(name=f"Test School {i}", email_domain=f"test{i}.edu", region_id="TW", code=f"TS{i}")
         for i in range(30)
     ]
     School.objects.bulk_create(schools)

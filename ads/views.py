@@ -14,6 +14,7 @@ from core.cache import versioned_key, region_versioned_key
 from core.region import get_region
 from django.core.cache import cache
 from core.i18n import resolve_language
+from accounts.school_codes import school_filter_id
 
 class ActiveAdsListView(generics.ListAPIView):
     """GET /api/v1/ads/active/"""
@@ -36,11 +37,14 @@ class ActiveAdsListView(generics.ListAPIView):
         if position:
             qs = qs.filter(position=position)
             
-        school_name = self.request.query_params.get('school')
-        if school_name:
+        school_param = self.request.query_params.get('school')
+        if school_param:
+            # Resolved in this region: a code alone is ambiguous (HKU is one
+            # school in TW and another in HK), and an ad targeting one of
+            # them must not show to students of the other.
             qs = qs.filter(
                 Q(advertiser__all_schools=True) |
-                Q(advertiser__schools__name=school_name)
+                Q(advertiser__schools__id=school_filter_id(region, school_param))
             ).distinct()
         else:
             qs = qs.filter(advertiser__all_schools=True)
@@ -54,7 +58,10 @@ class ActiveAdsListView(generics.ListAPIView):
         lang = resolve_language(request)
         region = get_region(request)
         
-        cache_key = region_versioned_key(region, 'ads', position, school, page, lang)
+        # Keyed on the resolved id: "hku", "HKU" and the legacy full name are
+        # one school, and an arbitrary string should not mint a cache entry.
+        school_id = school_filter_id(region, school)
+        cache_key = region_versioned_key(region, 'ads', position, '' if school_id is None else school_id, page, lang)
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)
