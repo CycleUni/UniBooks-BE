@@ -151,6 +151,36 @@ def test_listing_create_validation_error(api, seller, book):
     assert resp.status_code == 400
 
 
+def test_listing_category_slug_resolves_in_the_listing_region(api, listing, seller, book):
+    # Category slugs are unique per region only: with "management" in both
+    # Taiwan and Hong Kong, resolving the slug across every region found two
+    # rows and turned creating or editing a listing into a 500.
+    from core.models import Category
+    tw_cat, _ = Category.objects.get_or_create(region_id='TW', slug='management', defaults={'title': 'Management'})
+    Category.objects.get_or_create(region_id='HK', slug='management', defaults={'title': 'Management'})
+    Category.objects.filter(slug='management').update(is_active=True)
+
+    resp = api.patch(
+        f"/api/v1/listings/{listing.id}/",
+        {"category": "management"},
+        content_type="application/json",
+        **bearer(seller),
+    )
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.category_id == tw_cat.id
+
+    resp = api.post(
+        "/api/v1/listings/",
+        {"book": book.id, "price": 250, "condition": "like_new", "category": "management"},
+        content_type="application/json",
+        HTTP_X_REGION='tw',
+        **bearer(seller),
+    )
+    assert resp.status_code == 201
+    assert Listing.objects.get(id=resp.json()["id"]).category_id == tw_cat.id
+
+
 def test_listing_patch_and_delete_own_only(api, listing, seller, buyer):
     other_header = bearer(buyer)
     own_header = bearer(seller)

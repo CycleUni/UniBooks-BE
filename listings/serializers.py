@@ -88,6 +88,23 @@ class ListingSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('seller', 'school', 'region', 'currency', 'created_at', 'updated_at')
 
+    def get_fields(self):
+        fields = super().get_fields()
+        # Category slugs are unique per region, not globally (Taiwan and Hong
+        # Kong each have "management"), so resolving one across every region
+        # found two rows and failed with a 500 — on creating a listing and on
+        # every edit that sent its category back. Resolved in the listing's
+        # own region; for a new listing, the region the request is made in.
+        if isinstance(self.instance, Listing):
+            region_id = self.instance.region_id
+        else:
+            request = self.context.get('request')
+            region = get_region(request) if request is not None else None
+            region_id = region.pk if region is not None else None
+        if region_id is not None:
+            fields['category'].queryset = Category.objects.filter(is_active=True, region_id=region_id)
+        return fields
+
     def to_representation(self, instance):
         rep = super().to_representation(instance)
         # `private_note` is seller-only. It is dropped for anyone but the
