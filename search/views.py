@@ -168,9 +168,15 @@ class BookSearchView(views.APIView):
                 google_unavailable = google_unavailable or unavailable
                 attempts.extend(meta.get('attempts', []))
 
+                # A result without a cover keeps an empty cover_url. It used
+                # to be given a guessed Open Library URL, but by the time a
+                # result gets here Google and Open Library have usually
+                # already answered that they have no such book, so the guess
+                # almost never pointed at an image: it credited a registry
+                # record with a cover from another catalogue and left a URL
+                # that could only fail. An empty one shows the placeholder
+                # without a request.
                 if gb_book:
-                    if not gb_book.get('cover_url') and gb_book.get('isbn'):
-                        gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
                     gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = describe_source(engine_used, meta.get('cache_hit', False))
                 gb_results = [gb_book] if gb_book else []
@@ -194,8 +200,6 @@ class BookSearchView(views.APIView):
                     attempts.extend(fallback_meta.get('attempts', []))
                     fallback_results = [item for item in (fallback_results or []) if item.get('isbn') == query_stripped]
                     for item in fallback_results:
-                        if not item.get('cover_url') and item.get('isbn'):
-                            item['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{item['isbn']}-L.jpg"
                         item['source'] = SOURCE_BY_ENGINE[fallback_engine]
                     gb_results = fallback_results
 
@@ -220,8 +224,6 @@ class BookSearchView(views.APIView):
 
                 debug_source = describe_source(engine_used, meta.get('cache_hit', False))
                 for gb_book in gb_results:
-                    if not gb_book.get('cover_url') and gb_book.get('isbn'):
-                        gb_book['cover_url'] = f"https://covers.openlibrary.org/b/isbn/{gb_book['isbn']}-L.jpg"
                     gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = debug_source
                 listing_text_match = Q(listings__status='active') & (

@@ -601,6 +601,30 @@ def test_search_endpoint_isbn_falls_back_to_keyword_search_when_isbn_lookup_empt
     assert results[0]["source"] == "google_api"
 
 
+def test_search_endpoint_leaves_a_coverless_result_without_a_cover(api, db):
+    # A result with no cover used to get a guessed Open Library URL. For a
+    # record from the ISBN registry — found only after Google had no such book
+    # — that credited it with another catalogue's cover and stored a URL that
+    # could only fail (9786263241893). It now stays empty: the placeholder.
+    from core.models import Region
+    Region.objects.filter(code='TW').update(search_engines=['googlebooks', 'isbnnet', 'openlibrary'])
+    registry_record = {"title": "Registry only", "authors": "A", "publisher": "", "published_date": "",
+                       "cover_url": "", "isbn": "9786263241893"}
+    with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
+            mock.patch("search.views.get_isbnnet_book_by_isbn", return_value=registry_record), \
+            mock.patch("search.views.search_google_books", return_value=[
+                {"title": "Keyword hit", "authors": "B", "publisher": "", "published_date": "", "cover_url": "", "isbn": "9780000000001"},
+            ]):
+        isbn_resp = api.get("/api/v1/search/books/?q=9786263241893", HTTP_X_REGION='tw')
+        keyword_resp = api.get("/api/v1/search/books/?q=python", HTTP_X_REGION='tw')
+
+    hit = next(item for item in isbn_resp.json()["results"] if item["isbn"] == "9786263241893")
+    assert hit["source"] == "isbnnet_api"
+    assert hit["coverUrl"] == ""
+    for item in keyword_resp.json()["results"]:
+        assert "covers.openlibrary.org" not in (item.get("coverUrl") or "")
+
+
 def test_search_endpoint_isbn_skips_keyword_fallback_when_local_match_exists(api, book, db):
     with mock.patch("search.views.get_google_books_by_isbn", return_value=None), \
             mock.patch("search.views.search_google_books") as gb_search:
