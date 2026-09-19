@@ -44,8 +44,29 @@ def _guard_dev_fallback(var_name, fallback_desc, extra_warning, *, debug):
     )
 
 
+def _pg_env(env, postgres_key, pg_key, default=""):
+    """Read a Postgres connection variable, preferring POSTGRES_* over PG* (libpq standard).
+
+    Priority: POSTGRES_<X> → PG<X> → default.
+    Both naming conventions are accepted so the same codebase works on:
+      - Local / Docker Compose  (POSTGRES_* set explicitly)
+      - Vercel / Neon           (POSTGRES_* injected by the integration)
+      - Railway                 (injects PG* libpq-standard names alongside DATABASE_URL)
+      - psql / libpq tools      (PG* is the native convention)
+    DATABASE_URL (handled before this helper is called) still takes highest priority.
+    """
+    return env.str(postgres_key, default="").strip() or env.str(pg_key, default="").strip() or default
+
+
 def resolve_database_config(env, *, debug, base_dir):
-    """DATABASE_URL or POSTGRES_* unset → fall back to SQLite (DEBUG=True only, with a warning)."""
+    """DATABASE_URL or POSTGRES_*/PG* unset → fall back to SQLite (DEBUG=True only, with a warning).
+
+    Variable resolution order (highest → lowest priority):
+      1. DATABASE_URL            — single connection string (Railway / Neon / any platform)
+      2. POSTGRES_*              — explicit four-variable form (Vercel Postgres integration)
+      3. PG*                     — libpq standard names (Railway individual vars, psql tools)
+      4. SQLite fallback         — DEBUG=True only, with a RuntimeWarning
+    """
     db_url = env.str("DATABASE_URL", default="").strip()
     if db_url:
         config = env.db_url_config(db_url)
@@ -53,11 +74,12 @@ def resolve_database_config(env, *, debug, base_dir):
             config["ENGINE"] = "django.db.backends.postgresql"
         return config
 
-    db_name = env.str("POSTGRES_DATABASE", default="")
-    db_user = env.str("POSTGRES_USER", default="")
-    db_password = env.str("POSTGRES_PASSWORD", default="")
-    db_host = env.str("POSTGRES_HOST", default="")
-    
+    # Resolve each credential accepting both naming conventions.
+    db_name     = _pg_env(env, "POSTGRES_DATABASE", "PGDATABASE")
+    db_user     = _pg_env(env, "POSTGRES_USER",     "PGUSER")
+    db_password = _pg_env(env, "POSTGRES_PASSWORD", "PGPASSWORD")
+    db_host     = _pg_env(env, "POSTGRES_HOST",     "PGHOST")
+
     # We check the primary 4 variables to determine if Postgres is being configured.
     core_vars = [db_name, db_user, db_password, db_host]
     all_set = all(core_vars)
@@ -65,20 +87,25 @@ def resolve_database_config(env, *, debug, base_dir):
 
     if any_set and not all_set:
         missing = [
-            name for name, value in [
-                ("POSTGRES_DATABASE", db_name), ("POSTGRES_USER", db_user),
-                ("POSTGRES_PASSWORD", db_password), ("POSTGRES_HOST", db_host),
+            label for label, value in [
+                ("POSTGRES_DATABASE / PGDATABASE", db_name),
+                ("POSTGRES_USER / PGUSER",         db_user),
+                ("POSTGRES_PASSWORD / PGPASSWORD", db_password),
+                ("POSTGRES_HOST / PGHOST",         db_host),
             ] if not value
         ]
         raise ImproperlyConfigured(
             f"Database is partially configured — missing {', '.join(missing)}. "
-            f"Set all of POSTGRES_DATABASE/POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_HOST, "
+            f"Set all four credentials (via POSTGRES_* or PG* names), "
             f"or none of them to use the local dev fallback (backend-ssd §8.1 guard)."
         )
 
     if all_set:
-        # DB_PORT defaults to 5432 if Postgres is configured but DB_PORT is omitted.
-        db_port = env.str("DB_PORT", default="5432")
+        # DB_PORT / PGPORT default to 5432 if Postgres is configured but port is omitted.
+        db_port = _pg_env(env, "DB_PORT", "PGPORT", default="5432")
+        # POSTGRES_SSLMODE / PGSSLMODE: default "require" matches Neon/Railway pooler.
+        # Override to "disable" for local dev databases without SSL (e.g. postgres:16-alpine).
+        db_sslmode = _pg_env(env, "POSTGRES_SSLMODE", "PGSSLMODE", default="require")
         return {
             "ENGINE": "django.db.backends.postgresql",
             "NAME": db_name,
@@ -86,9 +113,10 @@ def resolve_database_config(env, *, debug, base_dir):
             "PASSWORD": db_password,
             "HOST": db_host,
             "PORT": db_port,
+            "OPTIONS": {"sslmode": db_sslmode, "connect_timeout": 8},
         }
 
-    _guard_dev_fallback("Database credentials (POSTGRES_DATABASE etc.)", "SQLite (db.sqlite3)", "", debug=debug)
+    _guard_dev_fallback("Database credentials (POSTGRES_DATABASE / PGDATABASE etc.)", "SQLite (db.sqlite3)", "", debug=debug)
     return {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(Path(base_dir) / "db.sqlite3"),

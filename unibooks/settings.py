@@ -269,19 +269,11 @@ WSGI_APPLICATION = "unibooks.wsgi.application"
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=0)
 DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
-# Neon pooler rejects statement_timeout as a startup parameter and requires
-# SSL. Set sslmode=require by default (overridable via POSTGRES_SSLMODE for
-# local/dev databases like postgres:16-alpine that don't have SSL configured).
-# For query-timeout protection, set a short connect_timeout — the frontend
-# RetryInterceptor will handle the rest.
-if DATABASES["default"]["ENGINE"] == "django.db.backends.postgresql":
-    current_options = DATABASES["default"].get("OPTIONS", {})
-    # Only merge options that we know aren't already set by the user
-    DATABASES["default"]["OPTIONS"] = {
-        "sslmode": env.str("POSTGRES_SSLMODE", default="require"),
-        "connect_timeout": 8,
-        **current_options,
-    }
+# sslmode and connect_timeout are set by core/conf.py resolve_database_config
+# (via POSTGRES_SSLMODE / PGSSLMODE, default "require").  The merge block that
+# used to live here was removed to avoid duplicating logic and to ensure the
+# PG* libpq alias is honoured consistently in one place.
+
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
