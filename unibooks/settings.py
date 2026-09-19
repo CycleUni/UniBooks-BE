@@ -78,6 +78,17 @@ CRON_SECRET = env.str("CRON_SECRET", default="")
 DEBUG = env.bool("DEBUG", default=False)
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=[])
+CSRF_TRUSTED_ORIGINS = env.list("CSRF_TRUSTED_ORIGINS", default=[])
+
+# Auto-allow Railway public domain if present
+_railway_public_domain = env.str("RAILWAY_PUBLIC_DOMAIN", default="").strip()
+if _railway_public_domain:
+    if _railway_public_domain not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_railway_public_domain)
+    _railway_origin = f"https://{_railway_public_domain}"
+    if _railway_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_railway_origin)
+
 _cors_origins = env.list("CORS_ALLOWED_ORIGINS", default=[])
 if "*" in _cors_origins:
     CORS_ALLOW_ALL_ORIGINS = True
@@ -103,6 +114,8 @@ if DEBUG:
 _frontend_origin = f"{_parsed_frontend.scheme}://{_parsed_frontend.netloc}"
 if not CORS_ALLOW_ALL_ORIGINS and _frontend_origin not in CORS_ALLOWED_ORIGINS:
     CORS_ALLOWED_ORIGINS.append(_frontend_origin)
+if _frontend_origin not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(_frontend_origin)
 
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True

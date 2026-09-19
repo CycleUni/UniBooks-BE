@@ -45,7 +45,14 @@ def _guard_dev_fallback(var_name, fallback_desc, extra_warning, *, debug):
 
 
 def resolve_database_config(env, *, debug, base_dir):
-    """POSTGRES_* unset → fall back to SQLite (DEBUG=True only, with a warning)."""
+    """DATABASE_URL or POSTGRES_* unset → fall back to SQLite (DEBUG=True only, with a warning)."""
+    db_url = env.str("DATABASE_URL", default="").strip()
+    if db_url:
+        config = env.db_url_config(db_url)
+        if config.get("ENGINE") == "django.db.backends.postgresql_psycopg2":
+            config["ENGINE"] = "django.db.backends.postgresql"
+        return config
+
     db_name = env.str("POSTGRES_DATABASE", default="")
     db_user = env.str("POSTGRES_USER", default="")
     db_password = env.str("POSTGRES_PASSWORD", default="")
@@ -89,15 +96,15 @@ def resolve_database_config(env, *, debug, base_dir):
 
 
 def resolve_cache_config(env, *, debug):
-    """REDIS_URL unset → fall back to LocMemCache (DEBUG=True only, with a warning).
+    """REDIS_URL or REDIS_PRIVATE_URL unset → fall back to LocMemCache (DEBUG=True only, with a warning).
 
     Note: production uses Upstash (REST) with separate auth/cache databases
     per A4; the REST cache backend belongs to a later core-abstraction task.
     For the skeleton phase this uses Django's built-in RedisCache config
     (lazy initialization, no connection at startup).
     """
-    redis_url = env.str("REDIS_URL", default="")
-    if redis_url.strip():
+    redis_url = env.str("REDIS_PRIVATE_URL", default="").strip() or env.str("REDIS_URL", default="").strip()
+    if redis_url:
         return {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
             "LOCATION": redis_url,
@@ -116,7 +123,7 @@ def resolve_cache_config(env, *, debug):
             },
         }
     _guard_dev_fallback(
-        "REDIS_URL",
+        "REDIS_URL (or REDIS_PRIVATE_URL)",
         "LocMemCache",
         "Rate limiting and the JWT whitelist are only valid within a single process; local development only.",
         debug=debug,

@@ -16,6 +16,8 @@ boto3==1.43.93
 django-anymail==15.2
 # 驗證上傳檔案確實是可解碼的圖片（listings/views.py ListingUploadURLView）
 Pillow==12.3.0
+# Railway / 其他常駐容器部署用生產級 WSGI 伺服器（取代本機開發用的 runserver）
+gunicorn==26.2.0
 
 # 間接依賴（一併固定，確保建置可重現）
 asgiref==3.12.1
