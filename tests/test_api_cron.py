@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from catalog.models import Book
 from listings.models import Listing
+from orders.models import Order
 from subscriptions.models import Subscription
 
 User = get_user_model()
@@ -372,3 +373,176 @@ def test_notify_stops_at_the_per_run_cap_and_says_how_many_are_left(
     assert resp.json()["notified_users"] == 1
     assert resp.json()["remaining_users"] == 0
     assert len(mailoutbox) == 2
+
+
+# ── MeetupReminderView tests ──────────────────────────────────────────────────
+
+
+def test_meetup_reminder_rejects_missing_auth_header(api, db):
+    resp = api.get("/api/cron/meetup-reminder/")
+    assert resp.status_code == 403
+
+
+def test_meetup_reminder_rejects_wrong_token(api, db):
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth("wrong-token"))
+    assert resp.status_code == 403
+
+
+def test_meetup_reminder_rejects_when_cron_secret_unset(api, db, settings):
+    settings.CRON_SECRET = ""
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp.status_code == 403
+
+
+def test_meetup_reminder_noop_when_no_orders(api, db):
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "reminded_orders": 0,
+        "notified_users": 0,
+        "remaining_orders": 0,
+    }
+
+
+def test_meetup_reminder_notifies_buyer_and_seller(api, db, seller, mailoutbox):
+    buyer = User.objects.create_user(
+        email="buyer@example.com", first_name="Buy", last_name="Er", password="x"
+    )
+    test_book = Book.objects.create(region_id='TW', isbn13="9782222222222", title="Algorithms Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=350, condition="good", status="reserved"
+    )
+    meetup_dt = timezone.now() + timezone.timedelta(minutes=30)
+    order = Order.objects.create(
+        region_id='TW',
+        currency_id='TWD',
+        buyer=buyer,
+        seller=seller,
+        listing=test_listing,
+        total_amount=test_listing.price,
+        status='accepted',
+        meetup_time=meetup_dt,
+        meetup_location="Main Library Gate",
+    )
+
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reminded_orders"] == 1
+    assert data["notified_users"] == 2
+    assert data["remaining_orders"] == 0
+
+    assert len(mailoutbox) == 2
+    recipients = {m.to[0] for m in mailoutbox}
+    assert recipients == {"buyer@example.com", "seller@example.com"}
+
+    for mail in mailoutbox:
+        assert "Algorithms Book" in mail.subject
+        assert "Main Library Gate" in mail.body
+        assert "/account/orders" in mail.body
+
+    order.refresh_from_db()
+    assert order.meetup_reminder_sent_at is not None
+
+    # Re-running immediately does not re-notify (deduplication)
+    mailoutbox.clear()
+    resp2 = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp2.status_code == 200
+    assert resp2.json()["reminded_orders"] == 0
+    assert len(mailoutbox) == 0
+
+
+def test_meetup_reminder_ignores_past_and_distant_meetups(api, db, seller, mailoutbox):
+    buyer = User.objects.create_user(email="buyer2@example.com", first_name="Buy2", last_name="Er2", password="x")
+    test_book = Book.objects.create(region_id='TW', title="Far Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=100, status="reserved"
+    )
+    # Past meetup
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='accepted',
+        meetup_time=timezone.now() - timezone.timedelta(minutes=15)
+    )
+    # More than 1 hour away
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='accepted',
+        meetup_time=timezone.now() + timezone.timedelta(hours=2)
+    )
+
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp.status_code == 200
+    assert resp.json()["reminded_orders"] == 0
+    assert len(mailoutbox) == 0
+
+
+def test_meetup_reminder_ignores_non_accepted_statuses(api, db, seller, mailoutbox):
+    buyer = User.objects.create_user(email="buyer3@example.com", first_name="Buy3", last_name="Er3", password="x")
+    test_book = Book.objects.create(region_id='TW', title="Pending Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=100, status="active"
+    )
+    due_time = timezone.now() + timezone.timedelta(minutes=20)
+    # Pending order
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='pending',
+        meetup_time=due_time
+    )
+    # Completed order
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='completed',
+        meetup_time=due_time
+    )
+    # Cancelled order
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='cancelled',
+        meetup_time=due_time
+    )
+
+    resp = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    assert resp.status_code == 200
+    assert resp.json()["reminded_orders"] == 0
+    assert len(mailoutbox) == 0
+
+
+def test_meetup_rescheduling_clears_reminder_sent_at(api, db, seller):
+    from accounts.services import issue_tokens
+    from accounts.models import RegionVerification
+    from messaging.models import Conversation
+
+    buyer = User.objects.create_user(email="buyer4@example.com", first_name="Buy4", last_name="Er4", password="x")
+    for u in (buyer, seller):
+        RegionVerification.objects.update_or_create(
+            user=u, region_id='TW', defaults={'edu_email': u.email, 'verified_at': timezone.now()}
+        )
+    test_book = Book.objects.create(region_id='TW', title="Reschedule Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=100, status="reserved"
+    )
+    Conversation.objects.get_or_create(listing=test_listing, buyer=buyer)
+    meetup_dt = timezone.now() + timezone.timedelta(minutes=30)
+    order = Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller,
+        listing=test_listing, total_amount=100, status='accepted',
+        meetup_time=meetup_dt, meetup_reminder_sent_at=timezone.now()
+    )
+
+    new_time = (timezone.now() + timezone.timedelta(hours=3)).isoformat()
+    seller_header = {"HTTP_AUTHORIZATION": f"Bearer {issue_tokens(seller)['access']}"}
+    resp = api.patch(
+        f"/api/v1/orders/{order.id}/",
+        {"meetup_time": new_time},
+        content_type="application/json",
+        **seller_header,
+    )
+    assert resp.status_code == 200
+    order.refresh_from_db()
+    assert order.meetup_reminder_sent_at is None

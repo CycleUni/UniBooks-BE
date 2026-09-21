@@ -188,7 +188,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     }
 
     def get_serializer_class(self):
-        if self.action in ['partial_update', 'update']:
+        if self.action in ['partial_update', 'update']:\
             return OrderStatusUpdateSerializer
         return OrderSerializer
 
@@ -287,6 +287,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         old_status = serializer.instance.status if serializer.instance else None
+        old_meetup_time = serializer.instance.meetup_time if serializer.instance else None
         new_status = serializer.validated_data.get('status', old_status)
 
         with transaction.atomic():
@@ -300,6 +301,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                     raise serializers.ValidationError({"status": "checkout.errListingUnavailable"})
 
             order = serializer.save()
+
+            # If meetup_time was changed, clear previous reminder so a new one can be sent
+            if 'meetup_time' in serializer.validated_data and serializer.validated_data['meetup_time'] != old_meetup_time:
+                if order.meetup_reminder_sent_at is not None:
+                    order.meetup_reminder_sent_at = None
+                    order.save(update_fields=['meetup_reminder_sent_at'])
 
             # Handle listing status changes
             if new_status == 'cancelled':

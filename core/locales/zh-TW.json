@@ -26,5 +26,12 @@
   "email.waitlist.subject": "UniBooks 到貨通知：您的求書有新上架",
   "email.waitlist.intro": "您求書清單中的以下書籍已有新上架商品：",
   "email.waitlist.logIn": "登入 UniBooks 查看詳情。",
-  "email.waitlist.stop": "不想再收到某本書的到貨通知？到「我的求書」移除即可："
+  "email.waitlist.stop": "不想再收到某本書的到貨通知？到「我的求書」移除即可：",
+
+  "email.meetupReminder.subject": "UniBooks 面交提醒：{title}",
+  "email.meetupReminder.intro": "您有一筆面交即將在一小時內進行：",
+  "email.meetupReminder.book": "書籍：{title}",
+  "email.meetupReminder.time": "時間：{time}",
+  "email.meetupReminder.location": "地點：{location}",
+  "email.meetupReminder.viewOrder": "查看訂單：{link}"
 }

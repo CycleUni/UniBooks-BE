@@ -26,5 +26,12 @@
   "email.waitlist.subject": "UniBooks: new listings for your book requests",
   "email.waitlist.intro": "New listings are available for books on your UniBooks waitlist:",
   "email.waitlist.logIn": "Log in to UniBooks to view them.",
-  "email.waitlist.stop": "Don't want these emails about a book any more? Remove it from My book requests:"
+  "email.waitlist.stop": "Don't want these emails about a book any more? Remove it from My book requests:",
+
+  "email.meetupReminder.subject": "UniBooks Meetup Reminder: {title}",
+  "email.meetupReminder.intro": "You have an upcoming meetup within the next hour:",
+  "email.meetupReminder.book": "Book: {title}",
+  "email.meetupReminder.time": "Time: {time}",
+  "email.meetupReminder.location": "Location: {location}",
+  "email.meetupReminder.viewOrder": "View your orders: {link}"
 }

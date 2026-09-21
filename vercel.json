@@ -32,6 +32,10 @@
         {
             "path": "/api/cron/waitlist-notify/",
             "schedule": "0 0 * * *"
+        },
+        {
+            "path": "/api/cron/meetup-reminder/",
+            "schedule": "*/10 * * * *"
         }
     ]
 }

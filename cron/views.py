@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Recipients per run; see WaitlistNotifyView for why there is a cap at all.
 MAX_NOTIFY_USERS_PER_RUN = 50
+MAX_REMIND_ORDERS_PER_RUN = 50
 
 
 class HasCronSecret(BasePermission):
@@ -76,7 +77,7 @@ class WaitlistNotifyView(views.APIView):
                 )
             )
             .filter(latest_active_listing_at__gt=F('created_at'))
-            .filter(Q(notified_at__isnull=True) | Q(latest_active_listing_at__gt=F('notified_at')))
+            .filter(Q(notified_at__isnull=True) | Q(latest_active_listing_at__gt=F('notified_at')))\
         )
 
         # One email per user, even if several of their subscriptions are due —
@@ -151,6 +152,109 @@ class WaitlistNotifyView(views.APIView):
             "notified_users": notified_users,
             "notified_subscriptions": notified_subscriptions,
             "remaining_users": remaining_users,
+        }, status=status.HTTP_200_OK)
+
+
+class MeetupReminderView(views.APIView):
+    """Emails buyer and seller when their scheduled meetup is within the next hour,
+    then marks the order meetup_reminder_sent_at so re-running this does not double-send.
+
+    GET because Vercel Cron only ever issues GET requests to the configured
+    path; POST also accepted for manual/local triggering.
+    """
+    authentication_classes = []
+    permission_classes = [HasCronSecret]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'cron'
+
+    def get(self, request):
+        return self._run()
+
+    def post(self, request):
+        return self._run()
+
+    def _run(self):
+        from zoneinfo import ZoneInfo
+        from orders.models import Order
+
+        now = timezone.now()
+        window_end = now + timezone.timedelta(hours=1)
+
+        due = (
+            Order.objects
+            .select_related('buyer', 'seller', 'listing__book', 'region')
+            .filter(
+                status='accepted',
+                meetup_time__isnull=False,
+                meetup_time__gte=now,
+                meetup_time__lte=window_end,
+                meetup_reminder_sent_at__isnull=True,
+            )
+            .order_by('meetup_time')
+        )
+
+        batch = list(due[:MAX_REMIND_ORDERS_PER_RUN])
+        remaining_orders = due.count() - len(batch)
+
+        reminded_orders = 0
+        notified_users = 0
+
+        orders_page = f"{settings.FRONTEND_URL}/account/orders"
+
+        for order in batch:
+            try:
+                tz = ZoneInfo(order.region.timezone)
+                local_time = order.meetup_time.astimezone(tz)
+            except Exception:
+                local_time = order.meetup_time
+            formatted_time = local_time.strftime("%Y-%m-%d %H:%M")
+
+            recipients = []
+            for user in (order.buyer, order.seller):
+                if user and user.is_active and user.deleted_at is None and user.email:
+                    if user not in recipients:
+                        recipients.append(user)
+
+            for user in recipients:
+                lang = email_language_for(user, order.region)
+                subject = t(lang, "email.meetupReminder.subject", title=order.listing.book.title)
+                lines = [
+                    t(lang, "email.meetupReminder.intro"),
+                    "",
+                    t(lang, "email.meetupReminder.book", title=order.listing.book.title),
+                    t(lang, "email.meetupReminder.time", time=formatted_time),
+                ]
+                if order.meetup_location:
+                    lines.append(t(lang, "email.meetupReminder.location", location=order.meetup_location))
+                lines += [
+                    "",
+                    t(lang, "email.meetupReminder.viewOrder", link=orders_page),
+                ]
+                message = "\n".join(lines)
+
+                try:
+                    send_mail(
+                        subject=subject,
+                        message=message,
+                        from_email=settings.DEFAULT_FROM_EMAIL,
+                        recipient_list=[user.email],
+                        fail_silently=False,
+                    )
+                    notified_users += 1
+                except Exception:
+                    logger.exception(
+                        "Failed to send meetup reminder for order %s to user %s",
+                        order.id,
+                        user.id,
+                    )
+
+            Order.objects.filter(id=order.id).update(meetup_reminder_sent_at=now)
+            reminded_orders += 1
+
+        return Response({
+            "reminded_orders": reminded_orders,
+            "notified_users": notified_users,
+            "remaining_orders": max(0, remaining_orders),
         }, status=status.HTTP_200_OK)
 
 

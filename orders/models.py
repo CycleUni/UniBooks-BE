@@ -25,6 +25,7 @@ class Order(models.Model):
     
     meetup_time = models.DateTimeField(null=True, blank=True, help_text="Agreed meetup time")
     meetup_location = models.CharField(max_length=255, blank=True, help_text="Agreed meetup location")
+    meetup_reminder_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the meetup reminder was sent")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -36,6 +37,7 @@ class Order(models.Model):
         indexes = [
             # Admin statistics filter every query by region and a created_at window.
             models.Index(fields=['region', 'created_at'], name='order_region_created_idx'),
+            models.Index(fields=['status', 'meetup_time'], name='order_status_meetup_time_idx'),
         ]
 
     def __str__(self):
