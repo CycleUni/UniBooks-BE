@@ -2,6 +2,7 @@
 triggered by an external scheduler (e.g. Vercel Cron) via a Bearer secret."""
 
 import pytest
+from unittest import mock
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.test import Client
@@ -546,3 +547,133 @@ def test_meetup_rescheduling_clears_reminder_sent_at(api, db, seller):
     assert resp.status_code == 200
     order.refresh_from_db()
     assert order.meetup_reminder_sent_at is None
+    assert order.buyer_reminder_sent_at is None
+    assert order.seller_reminder_sent_at is None
+
+
+def test_meetup_reminder_send_mail_failure_does_not_mark_order(api, db, seller, mailoutbox):
+    buyer = User.objects.create_user(
+        email="buyer_fail@example.com", first_name="BuyFail", last_name="Er", password="x"
+    )
+    test_book = Book.objects.create(region_id='TW', title="Fail Email Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=200, status="reserved"
+    )
+    meetup_dt = timezone.now() + timezone.timedelta(minutes=30)
+    order = Order.objects.create(
+        region_id='TW',
+        currency_id='TWD',
+        buyer=buyer,
+        seller=seller,
+        listing=test_listing,
+        total_amount=200,
+        status='accepted',
+        meetup_time=meetup_dt,
+        meetup_location="Gate 1",
+    )
+
+    # When send_mail raises an exception, the reminder must NOT be marked as sent
+    with mock.patch('cron.views.send_mail', side_effect=Exception('Mail server unavailable')):
+        resp = api.get('/api/cron/meetup-reminder/', **cron_auth())
+        assert resp.status_code == 200
+        assert resp.json()['reminded_orders'] == 0
+        assert resp.json()['notified_users'] == 0
+
+    order.refresh_from_db()
+    assert order.meetup_reminder_sent_at is None
+
+    # Subsequent run when mail works: order is reminded and marked sent
+    resp2 = api.get('/api/cron/meetup-reminder/', **cron_auth())
+    assert resp2.status_code == 200
+    assert resp2.json()['reminded_orders'] == 1
+    assert resp2.json()['notified_users'] == 2
+
+    order.refresh_from_db()
+    assert order.meetup_reminder_sent_at is not None
+
+
+def test_waitlist_notify_send_mail_failure_does_not_mark_subscription(api, db, waitlister, seller, book, mailoutbox):
+    sub = Subscription.objects.create(region_id='TW', user=waitlister, book=book)
+    Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller,
+        price=100, condition='new', status='active'
+    )
+
+    # When send_mail raises an exception, the subscription must NOT be marked as notified
+    with mock.patch('cron.views.send_mail', side_effect=Exception('Mail server down')):
+        resp = api.get('/api/cron/waitlist-notify/', **cron_auth())
+        assert resp.status_code == 200
+        assert resp.json()['notified_users'] == 0
+        assert resp.json()['notified_subscriptions'] == 0
+
+    sub.refresh_from_db()
+    assert sub.notified_at is None
+
+    # Subsequent run when mail works: subscription is notified
+    resp2 = api.get('/api/cron/waitlist-notify/', **cron_auth())
+    assert resp2.status_code == 200
+    assert resp2.json()['notified_users'] == 1
+    assert resp2.json()['notified_subscriptions'] == 1
+
+    sub.refresh_from_db()
+    assert sub.notified_at is not None
+
+
+def test_meetup_reminder_partial_failure_does_not_double_send_to_succeeded_party(api, db, seller, mailoutbox):
+    buyer = User.objects.create_user(
+        email="buyer_partial@example.com", first_name="BuyPart", last_name="Er", password="x"
+    )
+    test_book = Book.objects.create(region_id='TW', title="Partial Fail Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller,
+        price=150, status="reserved"
+    )
+    meetup_dt = timezone.now() + timezone.timedelta(minutes=45)
+    order = Order.objects.create(
+        region_id='TW',
+        currency_id='TWD',
+        buyer=buyer,
+        seller=seller,
+        listing=test_listing,
+        total_amount=150,
+        status='accepted',
+        meetup_time=meetup_dt,
+        meetup_location="Station Exit A",
+    )
+
+    from django.core.mail import send_mail as real_send_mail
+    def mock_send_mail(*args, **kwargs):
+        if kwargs.get('recipient_list') == [seller.email]:
+            raise Exception("Seller SMTP error")
+        return real_send_mail(*args, **kwargs)
+
+    # First run: buyer succeeds, seller fails
+    with mock.patch('cron.views.send_mail', side_effect=mock_send_mail):
+        resp = api.get('/api/cron/meetup-reminder/', **cron_auth())
+        assert resp.status_code == 200
+        assert resp.json()['reminded_orders'] == 0
+        assert resp.json()['notified_users'] == 1
+
+    order.refresh_from_db()
+    assert order.buyer_reminder_sent_at is not None
+    assert order.seller_reminder_sent_at is None
+    assert order.meetup_reminder_sent_at is None
+    assert len(mailoutbox) == 1
+    assert mailoutbox[0].to == [buyer.email]
+
+    # Reset outbox to inspect second run
+    mailoutbox.clear()
+
+    # Second run: mail works now. Only seller should receive email; buyer must NOT be double-sent.
+    resp2 = api.get('/api/cron/meetup-reminder/', **cron_auth())
+    assert resp2.status_code == 200
+    assert resp2.json()['reminded_orders'] == 1
+    assert resp2.json()['notified_users'] == 1
+
+    order.refresh_from_db()
+    assert order.buyer_reminder_sent_at is not None
+    assert order.seller_reminder_sent_at is not None
+    assert order.meetup_reminder_sent_at is not None
+    assert len(mailoutbox) == 1
+    assert mailoutbox[0].to == [seller.email]

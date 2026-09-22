@@ -17,7 +17,17 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='order',
             name='meetup_reminder_sent_at',
-            field=models.DateTimeField(blank=True, help_text='Timestamp when the meetup reminder was sent', null=True),
+            field=models.DateTimeField(blank=True, help_text='Timestamp when the meetup reminder was fully sent', null=True),
+        ),
+        migrations.AddField(
+            model_name='order',
+            name='buyer_reminder_sent_at',
+            field=models.DateTimeField(blank=True, help_text='Timestamp when meetup reminder was sent to buyer', null=True),
+        ),
+        migrations.AddField(
+            model_name='order',
+            name='seller_reminder_sent_at',
+            field=models.DateTimeField(blank=True, help_text='Timestamp when meetup reminder was sent to seller', null=True),
         ),
         migrations.AddIndex(
             model_name='order',

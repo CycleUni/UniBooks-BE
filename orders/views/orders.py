@@ -304,9 +304,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
             # If meetup_time was changed, clear previous reminder so a new one can be sent
             if 'meetup_time' in serializer.validated_data and serializer.validated_data['meetup_time'] != old_meetup_time:
-                if order.meetup_reminder_sent_at is not None:
-                    order.meetup_reminder_sent_at = None
-                    order.save(update_fields=['meetup_reminder_sent_at'])
+                clear_fields = []
+                for field in ('buyer_reminder_sent_at', 'seller_reminder_sent_at', 'meetup_reminder_sent_at'):
+                    if getattr(order, field) is not None:
+                        setattr(order, field, None)
+                        clear_fields.append(field)
+                if clear_fields:
+                    order.save(update_fields=clear_fields)
 
             # Handle listing status changes
             if new_status == 'cancelled':

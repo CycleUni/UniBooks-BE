@@ -68,7 +68,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = '__all__'
-        read_only_fields = ('buyer', 'seller', 'region', 'currency', 'status', 'total_amount', 'created_at', 'updated_at', 'meetup_reminder_sent_at')
+        read_only_fields = ('buyer', 'seller', 'region', 'currency', 'status', 'total_amount', 'created_at', 'updated_at', 'meetup_reminder_sent_at', 'buyer_reminder_sent_at', 'seller_reminder_sent_at')
 
     def validate(self, attrs):
         listing = attrs.get('listing')

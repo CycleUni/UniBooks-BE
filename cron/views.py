@@ -1,6 +1,7 @@
 import hmac
 import logging
 from collections import defaultdict
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -8,6 +9,7 @@ from django.db.models import Count, F, Max, Q
 from django.utils import timezone
 
 from core.i18n import email_language_for, t
+from orders.models import Order
 from rest_framework import views, status
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
@@ -77,7 +79,7 @@ class WaitlistNotifyView(views.APIView):
                 )
             )
             .filter(latest_active_listing_at__gt=F('created_at'))
-            .filter(Q(notified_at__isnull=True) | Q(latest_active_listing_at__gt=F('notified_at')))\
+            .filter(Q(notified_at__isnull=True) | Q(latest_active_listing_at__gt=F('notified_at')))
         )
 
         # One email per user, even if several of their subscriptions are due —
@@ -156,8 +158,9 @@ class WaitlistNotifyView(views.APIView):
 
 
 class MeetupReminderView(views.APIView):
-    """Emails buyer and seller when their scheduled meetup is within the next hour,
-    then marks the order meetup_reminder_sent_at so re-running this does not double-send.
+    """Emails buyer and seller when their scheduled meetup is within the next hour.
+    Tracks individual notification status per party so retrying after a partial failure
+    does not double-send to the party whose email already succeeded.
 
     GET because Vercel Cron only ever issues GET requests to the configured
     path; POST also accepted for manual/local triggering.
@@ -174,9 +177,6 @@ class MeetupReminderView(views.APIView):
         return self._run()
 
     def _run(self):
-        from zoneinfo import ZoneInfo
-        from orders.models import Order
-
         now = timezone.now()
         window_end = now + timezone.timedelta(hours=1)
 
@@ -209,13 +209,44 @@ class MeetupReminderView(views.APIView):
                 local_time = order.meetup_time
             formatted_time = local_time.strftime("%Y-%m-%d %H:%M")
 
-            recipients = []
-            for user in (order.buyer, order.seller):
-                if user and user.is_active and user.deleted_at is None and user.email:
-                    if user not in recipients:
-                        recipients.append(user)
+            # Determine which party still needs to be reminded.
+            # Use seen_user_pks to deduplicate: if buyer == seller (edge case),
+            # only one email is sent but both sent_at fields are marked.
+            targets = []
+            seen_user_pks = set()
+            for role, user, field_name in [
+                ('buyer',  order.buyer,  'buyer_reminder_sent_at'),
+                ('seller', order.seller, 'seller_reminder_sent_at'),
+            ]:
+                if user is None or getattr(order, field_name) is not None:
+                    continue
+                if user.pk in seen_user_pks:
+                    # Same person already queued (buyer == seller): mark the
+                    # second field without sending a duplicate email.
+                    targets.append((None, user, field_name))
+                    continue
+                seen_user_pks.add(user.pk)
+                targets.append((role, user, field_name))
 
-            for user in recipients:
+            if not targets:
+                Order.objects.filter(id=order.id).update(meetup_reminder_sent_at=now)
+                reminded_orders += 1
+                continue
+
+            order_updates = {}
+            already_sent_pks = set()
+            for role, user, field_name in targets:
+                # Inactive/deleted accounts or accounts with no email are skipped
+                if not user.is_active or user.deleted_at is not None or not user.email:
+                    order_updates[field_name] = now
+                    continue
+
+                # role is None when this entry is the duplicate of an already-sent user
+                if role is None:
+                    if user.pk in already_sent_pks:
+                        order_updates[field_name] = now
+                    continue
+
                 lang = email_language_for(user, order.region)
                 subject = t(lang, "email.meetupReminder.subject", title=order.listing.book.title)
                 lines = [
@@ -240,16 +271,33 @@ class MeetupReminderView(views.APIView):
                         recipient_list=[user.email],
                         fail_silently=False,
                     )
+                    order_updates[field_name] = now
+                    already_sent_pks.add(user.pk)
                     notified_users += 1
                 except Exception:
                     logger.exception(
-                        "Failed to send meetup reminder for order %s to user %s",
+                        "Failed to send meetup reminder for order %s to %s %s",
                         order.id,
+                        role,
                         user.id,
                     )
 
-            Order.objects.filter(id=order.id).update(meetup_reminder_sent_at=now)
-            reminded_orders += 1
+            if order_updates:
+                buyer_done = (
+                    order_updates.get('buyer_reminder_sent_at') is not None
+                    or order.buyer_reminder_sent_at is not None
+                    or order.buyer is None
+                )
+                seller_done = (
+                    order_updates.get('seller_reminder_sent_at') is not None
+                    or order.seller_reminder_sent_at is not None
+                    or order.seller is None
+                )
+                if buyer_done and seller_done:
+                    order_updates['meetup_reminder_sent_at'] = now
+                    reminded_orders += 1
+
+                Order.objects.filter(id=order.id).update(**order_updates)
 
         return Response({
             "reminded_orders": reminded_orders,

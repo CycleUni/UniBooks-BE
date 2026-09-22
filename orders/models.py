@@ -25,7 +25,9 @@ class Order(models.Model):
     
     meetup_time = models.DateTimeField(null=True, blank=True, help_text="Agreed meetup time")
     meetup_location = models.CharField(max_length=255, blank=True, help_text="Agreed meetup location")
-    meetup_reminder_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the meetup reminder was sent")
+    meetup_reminder_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the meetup reminder was fully sent")
+    buyer_reminder_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when meetup reminder was sent to buyer")
+    seller_reminder_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when meetup reminder was sent to seller")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
