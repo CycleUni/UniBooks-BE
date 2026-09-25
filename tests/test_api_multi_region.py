@@ -572,7 +572,7 @@ def test_verify_region_anti_spoofing(setup_data, tw_region, hk_region):
     client.force_authenticate(user=user)
 
     verify_token = "fixed-token-spoof"
-    with mock.patch("accounts.views.auth.uuid.uuid4", return_value=verify_token):
+    with mock.patch("accounts.one_time_tokens.uuid.uuid4", return_value=verify_token):
         resp = client.post(
             '/api/v1/auth/verify/request/?region=HK',
             {'edu_email': 'student@ntu.edu.tw', 'region': 'HK'},
@@ -597,7 +597,7 @@ def test_verify_subdomain_stripping(setup_data, tw_region):
     client.force_authenticate(user=user)
 
     verify_token = "fixed-token-subdomain"
-    with mock.patch("accounts.views.auth.uuid.uuid4", return_value=verify_token):
+    with mock.patch("accounts.one_time_tokens.uuid.uuid4", return_value=verify_token):
         resp = client.post(
             '/api/v1/auth/verify/request/',
             {'edu_email': 'student@csie.ntu.edu.tw'},
@@ -623,7 +623,7 @@ def test_verify_duplicate_email_blocked(setup_data, tw_region):
     client.force_authenticate(user=user1)
     
     verify_token1 = "fixed-token-dup1"
-    with mock.patch("accounts.views.auth.uuid.uuid4", return_value=verify_token1):
+    with mock.patch("accounts.one_time_tokens.uuid.uuid4", return_value=verify_token1):
         client.post('/api/v1/auth/verify/request/', {'edu_email': 'shared@ntu.edu.tw'}, format='json')
     client.post('/api/v1/auth/verify/', {'token': verify_token1}, format='json')
     
@@ -643,13 +643,13 @@ def test_verify_multiple_regions_same_account(setup_data, tw_region, hk_region):
 
     # Verify TW
     verify_token_tw = "fixed-token-tw"
-    with mock.patch("accounts.views.auth.uuid.uuid4", return_value=verify_token_tw):
+    with mock.patch("accounts.one_time_tokens.uuid.uuid4", return_value=verify_token_tw):
         client.post('/api/v1/auth/verify/request/', {'edu_email': 'tw2@ntu.edu.tw'}, format='json')
     client.post('/api/v1/auth/verify/', {'token': verify_token_tw}, format='json')
 
     # Verify HK
     verify_token_hk = "fixed-token-hk"
-    with mock.patch("accounts.views.auth.uuid.uuid4", return_value=verify_token_hk):
+    with mock.patch("accounts.one_time_tokens.uuid.uuid4", return_value=verify_token_hk):
         client.post('/api/v1/auth/verify/request/', {'edu_email': 'hk2@hku.edu.hk'}, format='json')
     client.post('/api/v1/auth/verify/', {'token': verify_token_hk}, format='json')
 

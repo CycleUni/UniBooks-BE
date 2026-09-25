@@ -116,3 +116,19 @@ def invalidate_region_caches(sender, **kwargs):
         instance = kwargs.get('instance')
         if instance:
             safe_cache_delete(f"currency_dp_{instance.code}")
+
+
+class ThrottleCounter(models.Model):
+    """One fixed-window rate-limit counter, for core.throttling.PostgresThrottleStore.
+
+    window_start is a Unix timestamp aligned to the rate's period; the
+    cleanup cron drops rows a day old (ADR 0001).
+    """
+    key = models.CharField(max_length=255)
+    window_start = models.BigIntegerField(db_index=True)
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['key', 'window_start'], name='one_throttle_counter_per_window'),
+        ]

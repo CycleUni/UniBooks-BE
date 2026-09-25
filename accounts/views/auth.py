@@ -1,23 +1,22 @@
 import logging
 import threading
-import uuid
 
 from django.utils.translation import gettext_lazy as _
 
 from rest_framework import status, views
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
-from django.core.cache import cache
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.conf import settings
 from django.utils import timezone
 
+from accounts import one_time_tokens
 from accounts.serializers import RegisterSerializer, UserSerializer
 from accounts.services import (
     issue_tokens,
@@ -29,9 +28,6 @@ from accounts.services import (
     refresh_token_is_whitelisted,
     forget_rotated_jti,
     email_already_used,
-    email_change_token_key,
-    email_change_pending_key,
-    EMAIL_CHANGE_TTL,
 )
 from accounts.models import School
 from core.i18n import resolve_language, t
@@ -104,7 +100,7 @@ def _link_email(lang, kind, link):
 
 
 def _send_verification_email(subject, message, recipient_email, log_context):
-    """Best-effort send: the verification token is already cached by the
+    """Best-effort send: the verification token is already stored by the
     caller before this runs, so a transient Mailjet/SMTP failure shouldn't
     fail the whole request — log for ops visibility and degrade gracefully.
 
@@ -129,7 +125,7 @@ def _send_verification_email(subject, message, recipient_email, log_context):
 
 class RegisterView(views.APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'register'
 
     def post(self, request):
@@ -140,8 +136,9 @@ class RegisterView(views.APIView):
             # Account is created inactive (see RegisterSerializer.create) —
             # this link is what activates it. Login is blocked until then
             # (LoginView checks is_active).
-            verify_token = str(uuid.uuid4())
-            cache.set(f"register-verify:{verify_token}", {"user_id": user.id}, timeout=86400)
+            verify_token = one_time_tokens.issue(
+                one_time_tokens.REGISTER, user.id, one_time_tokens.REGISTER_TTL,
+            )
             verify_link = f"{settings.FRONTEND_URL}/verify?token={verify_token}&type=register"
 
             subject, message = _link_email(resolve_language(request), 'activation', verify_link)
@@ -156,7 +153,7 @@ class RegisterView(views.APIView):
 
 class RequestEduVerificationView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'verify-request'
 
     def post(self, request):
@@ -176,9 +173,10 @@ class RequestEduVerificationView(views.APIView):
         if email_already_used(edu_email, request.user.id):
             return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        verify_token = str(uuid.uuid4())
-        # Cache token with user_id and edu_email for 24 hours
-        cache.set(f"verify:{verify_token}", {"user_id": request.user.id, "edu_email": edu_email}, timeout=86400)
+        verify_token = one_time_tokens.issue(
+            one_time_tokens.EDU_VERIFY, request.user.id, one_time_tokens.EDU_VERIFY_TTL,
+            edu_email=edu_email,
+        )
 
         verify_link = f"{settings.FRONTEND_URL}/verify?token={verify_token}&type=edu"
 
@@ -193,7 +191,7 @@ class RequestEduVerificationView(views.APIView):
 
 class AutoVerifyEduEmailView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'verify-request'
 
     def post(self, request):
@@ -236,7 +234,7 @@ class VerifyEmailView(views.APIView):
         if not token:
             return Response({"error": {"code": "auth.errMissingToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        token_data = cache.get(f"verify:{token}")
+        token_data = one_time_tokens.read(one_time_tokens.EDU_VERIFY, token)
         if not token_data or not isinstance(token_data, dict):
             return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -258,7 +256,7 @@ class VerifyEmailView(views.APIView):
                         'is_active': True
                     }
                 )
-            cache.delete(f"verify:{token}")
+            one_time_tokens.consume(one_time_tokens.EDU_VERIFY, token)
             return Response({"code": "acct.verifySuccess"})
         except User.DoesNotExist:
             return Response({"error": {"code": "auth.errUserNotFound"}}, status=status.HTTP_404_NOT_FOUND)
@@ -277,7 +275,7 @@ class VerifyRegistrationView(views.APIView):
         if not token:
             return Response({"error": {"code": "auth.errMissingToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        token_data = cache.get(f"register-verify:{token}")
+        token_data = one_time_tokens.read(one_time_tokens.REGISTER, token)
         if not token_data or not isinstance(token_data, dict):
             return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -293,13 +291,13 @@ class VerifyRegistrationView(views.APIView):
         # Issue before consuming the link: if the token store is unavailable
         # this raises a 503, and the visitor can simply open the same link again.
         tokens = issue_tokens(user)
-        cache.delete(f"register-verify:{token}")
+        one_time_tokens.consume(one_time_tokens.REGISTER, token)
         return Response(tokens)
 
 
 class LoginView(views.APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'login'
 
     def post(self, request):
@@ -335,7 +333,7 @@ class LoginView(views.APIView):
 
 class RefreshTokenView(views.APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'refresh_token'
 
     def post(self, request):
@@ -367,7 +365,7 @@ class RefreshTokenView(views.APIView):
             # Whitelist check. A bare "not found" (cache miss, eviction,
             # dev-server restart) fails just this one refresh — it no longer
             # nukes every other session; see refresh_token_is_whitelisted.
-            # An unreachable cache is neither: it raises TokenStoreUnavailable,
+            # An unreachable store is neither: it raises TokenStoreUnavailable,
             # answered as 503 so the client keeps its tokens and retries.
             if not refresh_token_is_whitelisted(jti, user_id):
                 return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
@@ -391,7 +389,7 @@ class RefreshTokenView(views.APIView):
 
 class GoogleLoginView(views.APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'login'
 
     def post(self, request):
@@ -590,7 +588,7 @@ class AuthConfigView(views.APIView):
 
 class ChangePasswordView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'password_change'
 
     def post(self, request):
@@ -621,7 +619,7 @@ class ChangePasswordView(views.APIView):
 
 class RemovePasswordView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'password_change'
 
     def post(self, request):
@@ -662,7 +660,7 @@ class RequestPasswordResetView(views.APIView):
     regardless of whether the email exists, so this can't be used to probe
     which addresses are registered."""
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'password-reset-request'
 
     def post(self, request):
@@ -693,8 +691,9 @@ class RequestPasswordResetView(views.APIView):
         if not user.is_active:
             return Response({"code": "acct.passwordResetSent"})
 
-        reset_token = str(uuid.uuid4())
-        cache.set(f"password-reset:{reset_token}", {"user_id": user.id}, timeout=3600)
+        reset_token = one_time_tokens.issue(
+            one_time_tokens.PASSWORD_RESET, user.id, one_time_tokens.PASSWORD_RESET_TTL,
+        )
         # /forgot-password is the page that, given a token, asks for the new
         # password. There is no /reset-password route: the frontend took it
         # for a region code and sent the link to the homepage.
@@ -709,10 +708,7 @@ class RequestPasswordResetView(views.APIView):
 
 def pending_email_change(user):
     """The address this user has asked to move to but not yet confirmed."""
-    record = cache.get(email_change_pending_key(user.id))
-    if isinstance(record, dict):
-        return record.get('email')
-    return None
+    return one_time_tokens.pending_email_change(user.id)
 
 
 def send_email_change_verification(request, user, new_email):
@@ -723,22 +719,8 @@ def send_email_change_verification(request, user, new_email):
     account at a mailbox they did not own — and password-reset mail after
     that went to the new address.
     """
-    token = str(uuid.uuid4())
-    cache.set(
-        email_change_token_key(token),
-        {'user_id': user.id, 'email': new_email},
-        timeout=EMAIL_CHANGE_TTL,
-    )
-    # One outstanding request per user: re-requesting supersedes the previous
-    # link rather than leaving several live at once.
-    previous = cache.get(email_change_pending_key(user.id))
-    if isinstance(previous, dict) and previous.get('token'):
-        cache.delete(email_change_token_key(previous['token']))
-    cache.set(
-        email_change_pending_key(user.id),
-        {'email': new_email, 'token': token},
-        timeout=EMAIL_CHANGE_TTL,
-    )
+    # Re-requesting supersedes the previous link (see issue_email_change).
+    token = one_time_tokens.issue_email_change(user.id, new_email)
 
     link = f"{settings.FRONTEND_URL}/account/settings?email_change_token={token}"
     subject, message = _link_email(resolve_language(request), 'emailChange', link)
@@ -754,7 +736,7 @@ class ConfirmEmailChangeView(views.APIView):
     proof, and it is single-use.
     """
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'password_change'
 
     def post(self, request):
@@ -762,7 +744,7 @@ class ConfirmEmailChangeView(views.APIView):
         if not token:
             return Response({"error": {"code": "auth.errMissingToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        record = cache.get(email_change_token_key(token))
+        record = one_time_tokens.read(one_time_tokens.EMAIL_CHANGE, token)
         if not isinstance(record, dict):
             return Response({"error": {"code": "acct.errEmailChangeTokenInvalid"}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -772,7 +754,7 @@ class ConfirmEmailChangeView(views.APIView):
             return Response({"error": {"code": "auth.errUserNotFound"}}, status=status.HTTP_404_NOT_FOUND)
 
         if not user.is_active:
-            cache.delete(email_change_token_key(token))
+            one_time_tokens.consume(one_time_tokens.EMAIL_CHANGE, token)
             return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 
         new_email = (record.get('email') or '').strip().lower()
@@ -782,12 +764,10 @@ class ConfirmEmailChangeView(views.APIView):
         if not new_email:
             return Response({"error": {"code": "acct.errEmailChangeTokenInvalid"}}, status=status.HTTP_400_BAD_REQUEST)
         if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
-            cache.delete(email_change_token_key(token))
-            cache.delete(email_change_pending_key(user.id))
+            one_time_tokens.cancel_email_change(user.id)
             return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
         if _is_valid_edu_email(new_email):
-            cache.delete(email_change_token_key(token))
-            cache.delete(email_change_pending_key(user.id))
+            one_time_tokens.cancel_email_change(user.id)
             return Response({"error": {"code": "acct.errEduEmailChangeNotAllowed"}}, status=status.HTTP_400_BAD_REQUEST)
 
         user.email = new_email
@@ -800,11 +780,9 @@ class ConfirmEmailChangeView(views.APIView):
             # acct.errEmailTaken the non-racing caller gets.
             user.save(update_fields=['email'])
         except IntegrityError:
-            cache.delete(email_change_token_key(token))
-            cache.delete(email_change_pending_key(user.id))
+            one_time_tokens.cancel_email_change(user.id)
             return Response({"error": {"code": "acct.errEmailTaken"}}, status=status.HTTP_400_BAD_REQUEST)
-        cache.delete(email_change_token_key(token))
-        cache.delete(email_change_pending_key(user.id))
+        one_time_tokens.cancel_email_change(user.id)
         return Response({"code": "acct.emailChanged"})
 
 
@@ -813,10 +791,7 @@ class CancelEmailChangeView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        record = cache.get(email_change_pending_key(request.user.id))
-        if isinstance(record, dict) and record.get('token'):
-            cache.delete(email_change_token_key(record['token']))
-        cache.delete(email_change_pending_key(request.user.id))
+        one_time_tokens.cancel_email_change(request.user.id)
         return Response({"code": "acct.emailChangeCancelled"})
 
 
@@ -831,7 +806,7 @@ class ConfirmPasswordResetView(views.APIView):
         if not new_password:
             return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
 
-        token_data = cache.get(f"password-reset:{token}")
+        token_data = one_time_tokens.read(one_time_tokens.PASSWORD_RESET, token)
         if not token_data or not isinstance(token_data, dict):
             return Response({"error": {"code": "auth.errInvalidToken"}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -846,7 +821,7 @@ class ConfirmPasswordResetView(views.APIView):
         # so exempting them here only let a locked-out account keep the API.
         # Recovery is `manage.py` on the server, as it is for the admin site.
         if not user.is_active:
-            cache.delete(f"password-reset:{token}")
+            one_time_tokens.consume(one_time_tokens.PASSWORD_RESET, token)
             return Response({"error": {"code": "auth.errAccountDisabled"}}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -856,7 +831,7 @@ class ConfirmPasswordResetView(views.APIView):
 
         user.set_password(new_password)
         user.save(update_fields=['password'])
-        cache.delete(f"password-reset:{token}")
+        one_time_tokens.consume(one_time_tokens.PASSWORD_RESET, token)
 
         # A password reset is exactly the moment any existing session might
         # be the compromised credential this reset is meant to fix — don't

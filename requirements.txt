@@ -1,6 +1,6 @@
 # 執行期依賴（版本固定；升級須經 security-manager 檢視）
 Django==6.1.1
-psycopg2-binary==2.9.13
+psycopg[binary]==3.3.6
 djangorestframework==3.18.1
 djangorestframework-simplejwt==5.5.1
 django-cors-headers==4.9.0

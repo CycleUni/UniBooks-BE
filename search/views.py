@@ -1,7 +1,7 @@
 from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 from django.core.cache import cache
 from core.authentication import OptionalJWTAuthentication
 from core.cache import LISTING_CACHE_TTL, region_versioned_key
@@ -67,7 +67,7 @@ def _keyword_engine(engine):
 class BookSearchView(views.APIView):
     authentication_classes = [OptionalJWTAuthentication]
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'search'
 
     def get(self, request):
@@ -485,7 +485,7 @@ class BookSearchView(views.APIView):
 
 class CourseListView(views.APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'search'
 
     def get(self, request):

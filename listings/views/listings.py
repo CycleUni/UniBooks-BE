@@ -6,7 +6,7 @@ from django.core.cache import cache
 from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
 
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 
 from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, region_versioned_key
 from core.permissions import IsVerifiedInRegion
@@ -26,7 +26,7 @@ class ListingListCreateView(views.APIView):
             self.throttle_scope = 'listing_create'
         else:
             self.throttle_scope = 'search'
-        return [ScopedRateThrottle()]
+        return [ScopedThrottle()]
 
     def get(self, request):
         from core.i18n import resolve_language

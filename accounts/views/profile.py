@@ -4,7 +4,7 @@ from django.db.models import Count, Q, prefetch_related_objects
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import status, views
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -152,7 +152,7 @@ class MyProfileView(views.APIView):
                 # they did not own — after which password-reset mail went
                 # there too. Any other fields in this request still save —
                 # but save them *first*: send_email_change_verification writes
-                # a cache record and sends mail with no rollback of its own,
+                # a token row and sends mail with no rollback of its own,
                 # so if the other fields failed to save that would leave a
                 # working confirmation link for a request that otherwise
                 # errored.
@@ -230,7 +230,7 @@ class PublicUserProfileView(views.APIView):
     # Sequential integer ids, a name and a join date per hit: unthrottled this
     # is a directory of every account on the site, walkable in one pass.
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'public_profile'
 
     def get(self, request, pk):

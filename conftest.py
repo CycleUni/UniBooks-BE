@@ -30,3 +30,19 @@ for _key, _value in _TEST_ENV_DEFAULTS.items():
 import django  # noqa: E402
 
 django.setup()
+
+
+from unittest import mock
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _pinned_throttle_clock():
+    """Rate-limit counters use fixed windows (core/throttling.py), so a test
+    straddling a minute or hour boundary would see its count reset halfway
+    and miss an expected 429. Pin the throttle clock to the start of an
+    hour, which also starts every shorter window. Tests that need to move it
+    patch core.throttling._now themselves."""
+    with mock.patch("core.throttling._now", return_value=1_699_999_200.0):
+        yield

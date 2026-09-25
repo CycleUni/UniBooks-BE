@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.core.files.storage import default_storage
 from listings.models import Listing
 
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 
 # Extension is derived from this allowlist, never from the client-supplied
 # filename or Content-Type header alone (both are trivially spoofable). The
@@ -44,7 +44,7 @@ class ListingUploadURLView(views.APIView):
     endpoint to presign against in that case.
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'upload'
 
     def post(self, request):
@@ -94,7 +94,7 @@ class ListingUploadDirectView(views.APIView):
     FileSystemStorage when R2 isn't configured. The frontend only calls this
     when ListingUploadURLView responded with `mode: "direct"`."""
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'upload'
 
     def post(self, request):
@@ -134,7 +134,7 @@ class ListingUploadDeleteView(views.APIView):
     swapping the hostname while keeping the path.
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'upload'
 
     def delete(self, request):

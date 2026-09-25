@@ -2,7 +2,7 @@ from django.db import IntegrityError, transaction
 from rest_framework import status, views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 
 from accounts.models import SchoolRequest
 from accounts.serializers import SchoolRequestCreateSerializer
@@ -24,7 +24,7 @@ class SchoolRequestCreateView(views.APIView):
     after the success. 201 means a new row, 200 means it was already there.
     """
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'school-request'
 
     def post(self, request):

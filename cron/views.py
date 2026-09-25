@@ -7,14 +7,13 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.db.models import Count, F, Max, Q
 from django.utils import timezone
-
-from core.i18n import email_language_for, t
-from orders.models import Order
-from rest_framework import views, status
+from rest_framework import status, views
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 
+from core.i18n import email_language_for, t
+from core.throttling import ScopedThrottle
+from orders.models import Order
 from subscriptions.models import Subscription
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,13 @@ logger = logging.getLogger(__name__)
 # Recipients per run; see WaitlistNotifyView for why there is a cap at all.
 MAX_NOTIFY_USERS_PER_RUN = 50
 MAX_REMIND_ORDERS_PER_RUN = 50
+# The reminder cron fires hourly, and each run takes the meetups inside its
+# lookahead. An exact hour would leave a gap whenever a run fires later than
+# the one before (schedulers drift by seconds to minutes): meetups falling
+# between the previous window's end and this run's start would already be in
+# the past and never reminded. Five minutes of overlap covers the drift; the
+# meetup_reminder_sent_at check keeps the overlap from sending twice.
+MEETUP_REMINDER_LOOKAHEAD = timezone.timedelta(minutes=65)
 
 
 class HasCronSecret(BasePermission):
@@ -54,7 +60,7 @@ class WaitlistNotifyView(views.APIView):
     # reject it as an invalid token with 401 before HasCronSecret ever runs).
     authentication_classes = []
     permission_classes = [HasCronSecret]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'cron'
 
     def get(self, request):
@@ -167,7 +173,7 @@ class MeetupReminderView(views.APIView):
     """
     authentication_classes = []
     permission_classes = [HasCronSecret]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'cron'
 
     def get(self, request):
@@ -178,7 +184,7 @@ class MeetupReminderView(views.APIView):
 
     def _run(self):
         now = timezone.now()
-        window_end = now + timezone.timedelta(hours=1)
+        window_end = now + MEETUP_REMINDER_LOOKAHEAD
 
         due = (
             Order.objects
@@ -307,14 +313,15 @@ class MeetupReminderView(views.APIView):
 
 
 class CleanupView(views.APIView):
-    """Deletes books that have no listings and no subscriptions.
+    """Deletes books that have no listings and no subscriptions, and expired
+    refresh-token, mailed-link and rate-limit rows (ADR 0001).
 
     Called periodically by an external scheduler (Vercel Cron via GET).
     Uses the same HasCronSecret authentication as WaitlistNotifyView.
     """
     authentication_classes = []
     permission_classes = [HasCronSecret]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'cron'
 
     def get(self, request):
@@ -342,7 +349,17 @@ class CleanupView(views.APIView):
 
         logger.info("Cleanup: deleted %d orphan books out of %d total", to_delete, total_scanned)
 
+        from accounts import one_time_tokens
+        from accounts.services import purge_token_store
+        from core.throttling import purge_throttle_counters
+        tokens_purged = purge_token_store()
+        links_purged = one_time_tokens.purge()
+        throttle_counters_purged = purge_throttle_counters()
+
         return Response({
             "orphan_books_deleted": to_delete,
             "scanned_books": total_scanned,
+            "refresh_tokens_purged": tokens_purged,
+            "one_time_tokens_purged": links_purged,
+            "throttle_counters_purged": throttle_counters_purged,
         }, status=status.HTTP_200_OK)

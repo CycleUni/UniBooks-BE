@@ -238,6 +238,23 @@ def test_cleanup_noop_when_no_orphan_books(api, db):
     assert data["scanned_books"] == 0
 
 
+def test_cleanup_purges_expired_refresh_tokens(api, db, seller):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from accounts.models import RefreshTokenRecord
+    from accounts.services import issue_tokens
+
+    issue_tokens(seller)
+    RefreshTokenRecord.objects.update(expires_at=timezone.now() - timedelta(seconds=1))
+
+    resp = api.get("/api/cron/cleanup/", **cron_auth())
+    assert resp.status_code == 200
+    assert resp.json()["refresh_tokens_purged"] == 1
+    assert not RefreshTokenRecord.objects.exists()
+
+
 def test_cleanup_deletes_orphan_books(api, db, seller):
     b1 = Book.objects.create(region_id='TW', isbn13="9780000000001", title="Orphan 1", source="manual")
     b2 = Book.objects.create(region_id='TW', isbn13="9780000000002", title="Orphan 2", source="manual")
@@ -478,6 +495,29 @@ def test_meetup_reminder_ignores_past_and_distant_meetups(api, db, seller, mailo
     assert resp.status_code == 200
     assert resp.json()["reminded_orders"] == 0
     assert len(mailoutbox) == 0
+
+
+def test_meetup_reminder_overlaps_hourly_runs_so_a_late_run_misses_nothing(api, db, seller, mailoutbox):
+    """Hourly runs with an exact one-hour lookahead leave a gap whenever a run
+    fires later than the previous one: a meetup 62 minutes out is past the
+    window of a run at :00 and already past by a run at :02+60. The 65-minute
+    lookahead catches it on the earlier run, and only once."""
+    buyer = User.objects.create_user(email="edge@example.com", first_name="Ed", last_name="Ge", password="x")
+    book = Book.objects.create(region_id='TW', title="Edge Book", source="manual")
+    listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="good", status="reserved"
+    )
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller, listing=listing,
+        total_amount=100, status='accepted', meetup_time=timezone.now() + timezone.timedelta(minutes=62),
+    )
+
+    first = api.get("/api/cron/meetup-reminder/", **cron_auth())
+    second = api.get("/api/cron/meetup-reminder/", **cron_auth())
+
+    assert first.json()["reminded_orders"] == 1
+    assert second.json()["reminded_orders"] == 0
+    assert len(mailoutbox) == 2
 
 
 def test_meetup_reminder_ignores_non_accepted_statuses(api, db, seller, mailoutbox):

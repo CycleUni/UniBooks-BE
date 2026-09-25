@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # Matches the version developed against; psycopg2-binary ships
+          # Matches the version developed against; psycopg[binary] ships
           # wheels, so no libpq or build toolchain is needed here.
           python-version: '3.14'
           cache: pip

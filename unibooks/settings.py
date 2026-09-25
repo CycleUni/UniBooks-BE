@@ -153,6 +153,11 @@ DATABASES = {
 CACHES = {
     "default": conf.resolve_cache_config(env, debug=DEBUG),
 }
+# Refresh tokens, mailed links and rate-limit counters live in Postgres, never
+# in CACHES (docs/adr/0001-cache-and-token-storage.md). While this is on,
+# refresh tokens and links issued before that switch are still read from the
+# cache. Turn it off 14 days after deploying, then delete the fallback code.
+AUTH_LEGACY_CACHE_FALLBACK = env.bool("AUTH_LEGACY_CACHE_FALLBACK", default=True)
 # Cloudflare R2 (S3-compatible) for listing photos / avatars; falls back to
 # local FileSystemStorage under DEBUG=True only (see core/conf.py).
 STORAGES = {
@@ -350,7 +355,8 @@ REST_FRAMEWORK = {
     ),
     # Scoped throttles applied per-view via throttle_scope (accounts.views:
     # login/register/verification-request are brute-force / abuse targets).
-    # Backed by CACHES["default"] (Upstash Redis in prod, LocMemCache in dev).
+    # Counters live in Postgres (core/throttling.py; views use
+    # core.throttling.ScopedThrottle).
     'DEFAULT_THROTTLE_RATES': {
         'login': _throttle('5/min', '60/min'),
         'register': _throttle('10/hour', '100/hour'),

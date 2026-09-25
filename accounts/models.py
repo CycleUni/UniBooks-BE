@@ -1,7 +1,6 @@
 import uuid
 
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
-from django.core.cache import cache
 from django.db import models
 from django.db.models.functions import Lower
 from django.contrib.postgres.indexes import GinIndex
@@ -197,7 +196,8 @@ class User(AbstractBaseUser, PermissionsMixin):
         action through instances one at a time so it does not bypass this.
         """
         from django.db import transaction
-        from accounts.services import revoke_all_tokens_for_user, email_change_pending_key
+        from accounts.one_time_tokens import cancel_email_change
+        from accounts.services import revoke_all_tokens_for_user
 
         with transaction.atomic(using=using):
             # One save each rather than a bulk update: post_save is what
@@ -228,7 +228,7 @@ class User(AbstractBaseUser, PermissionsMixin):
                 "is_active", "deleted_at", "password",
             ])
 
-        cache.delete(email_change_pending_key(self.id))
+        cancel_email_change(self.id)
         revoke_all_tokens_for_user(str(self.id))
 
     @property
@@ -350,3 +350,56 @@ class SchoolRequest(models.Model):
 
     def __str__(self):
         return f"{self.school_name} ({self.region_id}, {self.status})"
+
+
+class RefreshTokenRecord(models.Model):
+    """One whitelisted refresh token, for accounts.token_store.PostgresTokenStore.
+
+    A live token has rotated_at NULL. Rotation keeps the row, so a replay of
+    the old token reads as "already exchanged" rather than "never issued";
+    rotated_tokens holds the pair it became and is blanked by the cleanup
+    cron once the grace window has passed (ADR 0001).
+    """
+    jti = models.CharField(max_length=64, primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refresh_tokens')
+    expires_at = models.DateTimeField(db_index=True)
+    rotated_at = models.DateTimeField(null=True, blank=True)
+    rotated_tokens = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            # revoke_all: the user's live tokens.
+            models.Index(
+                fields=['user'],
+                name='refresh_token_live_by_user',
+                condition=models.Q(rotated_at__isnull=True),
+            ),
+        ]
+
+
+class OneTimeToken(models.Model):
+    """A single-use link mailed to a user, for accounts.one_time_tokens.
+
+    Deleted when followed; expired rows are dropped by the cleanup cron
+    (ADR 0001).
+    """
+    PURPOSE_CHOICES = (
+        ('register', 'Registration'),
+        ('edu_verify', 'Campus email verification'),
+        ('password_reset', 'Password reset'),
+        ('email_change', 'Email change'),
+    )
+
+    token = models.CharField(max_length=64, primary_key=True)
+    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='one_time_tokens')
+    payload = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            # pending_email_change / cancel_email_change.
+            models.Index(fields=['user', 'purpose'], name='one_time_token_user_purpose'),
+        ]

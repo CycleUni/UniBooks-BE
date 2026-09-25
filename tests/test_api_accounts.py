@@ -6,15 +6,16 @@ import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import OperationalError
 from django.test import Client
 
+from accounts.models import RefreshTokenRecord
 from accounts.services import (
     REFRESH_ROTATION_GRACE,
-    REFRESH_TOKEN_LIFETIME,
     issue_tokens,
     revoke_all_tokens_for_user,
-    verify_and_revoke_refresh_token,
 )
+from accounts.token_store import PostgresTokenStore
 from catalog.models import Book
 from listings.models import Listing
 from subscriptions.models import Subscription
@@ -298,7 +299,7 @@ def test_cache_miss_on_refresh_does_not_revoke_other_sessions(api, user):
 
     from rest_framework_simplejwt.tokens import RefreshToken
     jti_a = RefreshToken(tokens_a["refresh"])["jti"]
-    cache.delete(f"jwt:rt:{jti_a}")  # simulate an operational cache miss for device A only
+    RefreshTokenRecord.objects.filter(jti=jti_a).delete()  # an unknown token, for device A only
 
     resp_a = api.post(
         "/api/v1/auth/refresh/",
@@ -328,41 +329,6 @@ def test_refresh_rotates_tokens(api, user):
     assert new_pair["refresh"] != tokens["refresh"]
 
 
-def test_rotation_keeps_user_token_set_alive_for_full_lifetime(user):
-    # Regression test: verify_and_revoke_refresh_token used to rewrite
-    # jwt:user:{id} via cache.set() with no explicit timeout, silently
-    # falling back to Django's cache default (300s) instead of the 14-day
-    # refresh-token lifetime. That let the tracking set expire long before
-    # the individual jwt:rt:{jti} entries it's meant to enumerate, so
-    # revoke_all_tokens_for_user() (log out all devices / password reset)
-    # would see an empty list and revoke nothing still-active elsewhere.
-    from rest_framework_simplejwt.tokens import RefreshToken
-
-    tokens_a = issue_tokens(user)
-    issue_tokens(user)  # a second device/session for the same user
-
-    jti_a = RefreshToken(tokens_a["refresh"])["jti"]
-
-    with mock.patch("accounts.services.cache.set", wraps=cache.set) as set_spy:
-        # user_id is compared against the whitelist as a string, matching
-        # simplejwt's own str(user.id) claim (see issue_tokens) — not the
-        # raw int PK.
-        assert verify_and_revoke_refresh_token(jti_a, str(user.id)) is True
-
-    user_set_calls = [
-        call for call in set_spy.call_args_list
-        if call.args[0] == f"jwt:user:{user.id}"
-    ]
-    assert user_set_calls, "expected jwt:user:{id} to be rewritten on rotation"
-    for call in user_set_calls:
-        timeout = call.kwargs.get("timeout") if "timeout" in call.kwargs else (
-            call.args[2] if len(call.args) > 2 else None
-        )
-        assert timeout is not None
-        assert timeout > 300  # must outlive Django's cache default
-        assert timeout <= int(REFRESH_TOKEN_LIFETIME.total_seconds())
-
-
 def test_refresh_concurrent_reuse_within_grace_returns_same_pair(api, user):
     tokens = issue_tokens(user)
     first = api.post(
@@ -389,11 +355,11 @@ def test_refresh_after_grace_expiry_is_revoked(api, user):
         ).status_code
         == 200
     )
-    # Simulate grace expiry by clearing the grace entry
+    # Simulate the rotation record having gone (expired and purged)
     from rest_framework_simplejwt.tokens import RefreshToken
 
     jti = RefreshToken(tokens["refresh"])["jti"]
-    cache.delete(f"jwt:rt:{jti}")
+    RefreshTokenRecord.objects.filter(jti=jti).delete()
 
     resp = api.post(
         "/api/v1/auth/refresh/",
@@ -439,27 +405,10 @@ def test_grace_period_constant_is_short():
 # ---------------------------------------------------------------------
 
 
-class _FlakyTokenStore:
-    """Stands in for the cache inside accounts.services only — DRF's throttling
-    keeps the real one — and fails the operations a test names, the way an
-    Upstash timeout on a cold function does."""
-
-    def __init__(self, fail_get=None, fail_set=None):
-        self._fail_get = fail_get or (lambda key: False)
-        self._fail_set = fail_set or (lambda key: False)
-
-    def get(self, key, default=None):
-        if self._fail_get(key):
-            raise ConnectionError("redis timeout")
-        return cache.get(key, default)
-
-    def set(self, key, value, timeout=None):
-        if self._fail_set(key):
-            raise ConnectionError("redis timeout")
-        return cache.set(key, value, timeout=timeout)
-
-    def delete(self, key):
-        return cache.delete(key)
+def _db_down(method):
+    """Fail one PostgresTokenStore operation the way a dropped database
+    connection does."""
+    return mock.patch.object(PostgresTokenStore, method, side_effect=OperationalError("db gone"))
 
 
 def _refresh(api, refresh_token):
@@ -475,9 +424,8 @@ def test_refresh_answers_503_not_401_when_the_token_store_is_unreachable(api, us
     # The production sign-outs: the whitelist read timed out, was folded into
     # "not found", and the client was told its session was over.
     tokens = issue_tokens(user)
-    flaky = _FlakyTokenStore(fail_get=lambda key: key.startswith("jwt:rt:"))
 
-    with mock.patch("accounts.services.cache", flaky):
+    with _db_down("lookup"):
         resp = _refresh(api, tokens["refresh"])
 
     assert resp.status_code == 503
@@ -493,10 +441,8 @@ def test_a_rotation_that_cannot_record_the_new_pair_leaves_the_old_token_working
     # after that left the client holding a token the server had forgotten, so
     # the retry was a 401 and the visitor was signed out anyway.
     tokens = issue_tokens(user)
-    old_key = f"jwt:rt:{_jti(tokens['refresh'])}"
-    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:") and key != old_key)
 
-    with mock.patch("accounts.services.cache", flaky):
+    with _db_down("record"):
         assert _refresh(api, tokens["refresh"]).status_code == 503
 
     retried = _refresh(api, tokens["refresh"])
@@ -506,19 +452,17 @@ def test_a_rotation_that_cannot_record_the_new_pair_leaves_the_old_token_working
 
 def test_a_rotation_that_cannot_record_the_rotation_leaves_the_old_token_working(api, user):
     tokens = issue_tokens(user)
-    old_key = f"jwt:rt:{_jti(tokens['refresh'])}"
-    flaky = _FlakyTokenStore(fail_set=lambda key: key == old_key)
 
-    with mock.patch("accounts.services.cache", flaky):
+    with _db_down("mark_rotated"):
         assert _refresh(api, tokens["refresh"]).status_code == 503
 
     assert _refresh(api, tokens["refresh"]).status_code == 200
 
 
 def test_a_genuinely_unknown_token_is_still_401(api, user):
-    # The 503 path must not swallow the real answer: evicted or never issued.
+    # The 503 path must not swallow the real answer: expired or never issued.
     tokens = issue_tokens(user)
-    cache.delete(f"jwt:rt:{_jti(tokens['refresh'])}")
+    RefreshTokenRecord.objects.filter(jti=_jti(tokens["refresh"])).delete()
 
     resp = _refresh(api, tokens["refresh"])
     assert resp.status_code == 401
@@ -526,9 +470,7 @@ def test_a_genuinely_unknown_token_is_still_401(api, user):
 
 
 def test_login_answers_503_rather_than_issue_a_pair_that_cannot_refresh(api, user):
-    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:"))
-
-    with mock.patch("accounts.services.cache", flaky):
+    with _db_down("record"):
         resp = api.post(
             "/api/v1/auth/token/",
             {"email": user.email, "password": PASSWORD},
@@ -539,36 +481,20 @@ def test_login_answers_503_rather_than_issue_a_pair_that_cannot_refresh(api, use
     assert "refresh" not in resp.json()
 
 
-def test_issuing_tokens_never_drops_other_devices_from_the_revocation_list(user):
-    # A failed read of jwt:user:{id} used to degrade to [] and be written back,
-    # silently removing every other device from what "log out all devices"
-    # and password reset revoke.
-    from accounts.services import TokenStoreUnavailable
-
-    first = issue_tokens(user)
-    user_key = f"jwt:user:{user.id}"
-    flaky = _FlakyTokenStore(fail_get=lambda key: key == user_key)
-
-    with mock.patch("accounts.services.cache", flaky):
-        with pytest.raises(TokenStoreUnavailable):
-            issue_tokens(user)
-
-    assert cache.get(user_key) == [_jti(first["refresh"])]
-
-
 def test_a_registration_link_survives_a_token_store_outage(api, db):
+    from accounts import one_time_tokens
+
     new_user = User.objects.create_user(
         email="fresh@example.com", first_name="Fresh", last_name="User", password=PASSWORD, is_active=False
     )
-    cache.set("register-verify:link-token", {"user_id": new_user.id}, 3600)
-    flaky = _FlakyTokenStore(fail_set=lambda key: key.startswith("jwt:rt:"))
+    token = one_time_tokens.issue(one_time_tokens.REGISTER, new_user.id, one_time_tokens.REGISTER_TTL)
 
-    with mock.patch("accounts.services.cache", flaky):
-        first = api.post("/api/v1/auth/verify-registration/", {"token": "link-token"}, content_type="application/json")
+    with _db_down("record"):
+        first = api.post("/api/v1/auth/verify-registration/", {"token": token}, content_type="application/json")
     assert first.status_code == 503
 
     # Same link, store back: it still works.
-    again = api.post("/api/v1/auth/verify-registration/", {"token": "link-token"}, content_type="application/json")
+    again = api.post("/api/v1/auth/verify-registration/", {"token": token}, content_type="application/json")
     assert again.status_code == 200
     assert "refresh" in again.json()
 
@@ -633,7 +559,7 @@ def test_revoke_all_tokens_service(user):
     from rest_framework_simplejwt.tokens import RefreshToken
 
     jti = RefreshToken(tokens["refresh"])["jti"]
-    assert cache.get(f"jwt:rt:{jti}") is None
+    assert not RefreshTokenRecord.objects.filter(jti=jti).exists()
 
 
 # ---------------------------------------------------------------------
@@ -843,8 +769,7 @@ def test_my_profile_requires_auth(api, db):
 
 
 def test_my_profile_localizes_school_name(api, user, auth_header):
-    from accounts.models import School
-    from accounts.models import School, RegionVerification
+    from accounts.models import RegionVerification, School
 
     school = School.objects.create(region_id='TW', 
         email_domain="i18n.edu.tw",
@@ -1009,7 +934,7 @@ def test_confirm_password_reset_rejects_weak_password(api, user):
     assert resp.json()["error"]["code"] == "auth.errValidation"
 
 def test_auto_verify_edu_email_different_region(api, user, db, setup_regions):
-    from accounts.models import School, RegionVerification
+    from accounts.models import RegionVerification, School
     tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
     hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
     
@@ -1029,7 +954,7 @@ def test_auto_verify_edu_email_different_region(api, user, db, setup_regions):
     assert user.region_verifications.filter(region_id="TW", is_active=True).exists()
 
 def test_unbind_edu_email_specific_region(api, user, db, setup_regions):
-    from accounts.models import School, RegionVerification
+    from accounts.models import RegionVerification, School
     tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
     hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
     
@@ -1046,8 +971,9 @@ def test_unbind_edu_email_specific_region(api, user, db, setup_regions):
     assert user.region_verifications.filter(region_id="TW", is_active=True).exists()
 
 def test_user_serializer_region_specific(api, user, db, setup_regions):
-    from accounts.models import School, RegionVerification
     from django.utils import timezone
+
+    from accounts.models import RegionVerification, School
     tw_school = School.objects.create(name="NTU", email_domain="ntu.edu.tw", region_id="TW")
     hk_school = School.objects.create(name="HKU", email_domain="hku.edu.hk", region_id="HK")
     

@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from rest_framework import views, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 
 from messaging.models import Conversation
 
@@ -21,7 +21,7 @@ from core.uploads import (
 
 class ChatUploadURLView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'upload'
 
     def post(self, request):
@@ -78,7 +78,7 @@ class ChatUploadURLView(views.APIView):
 
 class ChatUploadDirectView(views.APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'upload'
 
     def post(self, request):

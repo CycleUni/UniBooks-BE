@@ -2,12 +2,14 @@ import logging
 import time
 import uuid
 from datetime import timedelta
-from django.core.cache import cache
+
 from django.conf import settings
-from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.exceptions import APIException
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from accounts.token_store import get_token_store
 
 logger = logging.getLogger(__name__)
 
@@ -51,61 +53,49 @@ class TokenStoreUnavailable(APIException):
     wait = 2
 
 
-def _strict_cache_get(key, default=None):
-    """cache.get() for the token whitelist: a backend error is raised as
-    TokenStoreUnavailable instead of being folded into "not found"."""
+_LIFETIME_SECONDS = int(REFRESH_TOKEN_LIFETIME.total_seconds())
+
+
+def _name(operation):
+    # Only for the log line, which must never be what fails.
+    return getattr(operation, "__name__", repr(operation))
+
+
+def _strict(operation, *args):
+    """A TokenStore call whose failure must not be folded into "not found".
+
+    A failed read answered as "unknown token" signs the visitor out for what
+    was our outage; a write that silently fails hands the client a token that
+    is not on the whitelist, which works for fifteen minutes and then refuses
+    to refresh — a sign-out on a timer. Either way, better to fail the request
+    now with a 503, while the client still holds something that works."""
     try:
-        return cache.get(key, default)
+        return operation(*args)
     except Exception as exc:
-        logger.exception("Token store unavailable on get(%s)", key)
+        logger.exception("Token store unavailable on %s", _name(operation))
         raise TokenStoreUnavailable() from exc
 
 
-def _strict_cache_set(key, value, timeout):
-    """cache.set() for the token whitelist. A write that silently fails hands
-    the client a token that is not on the whitelist, which works for fifteen
-    minutes and then refuses to refresh — a sign-out on a timer. Better to
-    fail the request now, while the client still holds something that works."""
+def _safe(operation, *args, default=None):
+    """A TokenStore call that degrades to `default` on a backend hiccup
+    (timeout, connection reset) instead of crashing the request. For
+    revocation paths an unreachable store is treated as "this token isn't
+    known" — see verify_and_revoke_refresh_token for why that no longer
+    escalates to revoking every other session."""
     try:
-        cache.set(key, value, timeout=timeout)
-    except Exception as exc:
-        logger.exception("Token store unavailable on set(%s)", key)
-        raise TokenStoreUnavailable() from exc
-
-
-def _safe_cache_get(key, default=None):
-    """cache.get() that degrades to `default` on a Redis hiccup (timeout,
-    connection reset) instead of raising and crashing the request. For the
-    JWT whitelist, an unreachable cache is treated the same as "this token
-    isn't known" — see verify_and_revoke_refresh_token for why that no
-    longer escalates to revoking every other session."""
-    try:
-        return cache.get(key, default)
+        return operation(*args)
     except Exception:
-        logger.exception("Cache backend error on get(%s)", key)
+        logger.exception("Token store error on %s", _name(operation))
         return default
 
 
-def _safe_cache_set(key, value, timeout):
-    try:
-        cache.set(key, value, timeout=timeout)
-    except Exception:
-        logger.exception("Cache backend error on set(%s)", key)
-
-
-def _safe_cache_delete(key):
-    try:
-        cache.delete(key)
-    except Exception:
-        logger.exception("Cache backend error on delete(%s)", key)
-
 def issue_tokens(user):
     """
-    Issue a token pair and record the refresh token JTI in the cache
-    (Redis in production, LocMemCache in development) as a whitelist.
+    Issue a token pair and record the refresh token JTI in the whitelist
+    (Postgres, see accounts/token_store.py).
 
     Raises TokenStoreUnavailable (503) if the whitelist cannot be written —
-    see _strict_cache_set for why that beats handing out the pair anyway.
+    see _strict for why that beats handing out the pair anyway.
     """
     refresh = RefreshToken.for_user(user)
     refresh.set_exp(lifetime=REFRESH_TOKEN_LIFETIME)
@@ -115,25 +105,15 @@ def issue_tokens(user):
     # str(user.id) (see rest_framework_simplejwt.tokens.RefreshToken.for_user),
     # regardless of the field's real type. RefreshTokenView later reads that
     # claim back with `token['user_id']` and compares it against whatever we
-    # cache here — store the same string form, or every single refresh
+    # store here — store the same string form, or every single refresh
     # mismatches `int != str` and gets treated as token reuse/theft. That
     # mismatch was the actual bug behind users being logged out constantly.
     user_id = str(user.id)
 
-    # jwt:rt:{jti} = user_id, expiring with the token
-    cache_key = f"jwt:rt:{jti}"
-    timeout = int(REFRESH_TOKEN_LIFETIME.total_seconds())
-    _strict_cache_set(cache_key, user_id, timeout)
-
-    # Maintain the per-user JTI collection (a list, since LocMemCache has no set type).
-    # Strict read too: a failed read degrading to [] would be written straight
-    # back, dropping every other device from the list that "log out all
-    # devices" and password reset rely on.
-    user_set_key = f"jwt:user:{user_id}"
-    current_tokens = _strict_cache_get(user_set_key, [])
-    if jti not in current_tokens:
-        current_tokens.append(jti)
-    _strict_cache_set(user_set_key, current_tokens, timeout)
+    # Strict throughout, including the store's own bookkeeping: a failed read
+    # of the user's token collection degrading to "empty" would drop every
+    # other device from what "log out all devices" and password reset revoke.
+    _strict(get_token_store().record, jti, user_id, _LIFETIME_SECONDS)
 
     return {
         'access': str(refresh.access_token),
@@ -142,11 +122,10 @@ def issue_tokens(user):
 
 def _rotation_record(jti, user_id):
     """The rotation record for this jti, or None if there isn't one for this
-    user. A dict value means "already rotated"; a plain string is a live,
-    un-rotated whitelist entry."""
-    stored = _strict_cache_get(f"jwt:rt:{jti}")
-    if isinstance(stored, dict) and stored.get('user_id') == user_id:
-        return stored
+    user."""
+    record = _strict(get_token_store().lookup, jti)
+    if record is not None and record.rotated and record.user_id == user_id:
+        return record
     return None
 
 
@@ -162,23 +141,21 @@ def get_grace_tokens(jti, user_id):
     record = _rotation_record(jti, user_id)
     if record is None:
         return None
-    rotated_at = record.get('rotated_at')
-    if not isinstance(rotated_at, (int, float)):
+    if not isinstance(record.rotated_at, (int, float)):
         # Written before rotated_at was recorded. Honour it once, as the old
         # code did, rather than logging out every session mid-deploy.
-        return record.get('tokens')
-    if time.time() - rotated_at > REFRESH_ROTATION_GRACE.total_seconds():
+        return record.tokens
+    if time.time() - record.rotated_at > REFRESH_ROTATION_GRACE.total_seconds():
         return None
-    return record.get('tokens')
+    return record.tokens
 
 
 def was_rotated(jti, user_id):
     """True when this jti has been rotated at all, whenever that was.
 
     Lets the caller tell a stale replay ("rotated, but too long ago to hand
-    the pair back") from an unknown jti, which matters because
-    verify_and_revoke_refresh_token would read the rotation record's dict as a
-    user_id mismatch and revoke every session the user has.
+    the pair back") from an unknown jti, so the replay is refused without
+    going through verify_and_revoke_refresh_token.
     """
     return _rotation_record(jti, user_id) is not None
 
@@ -190,7 +167,7 @@ def store_grace_tokens(jti, user_id, tokens):
     concurrently (the original, near-term motivation for this) or a stale
     session replaying it much later — resolves as "already rotated, here's
     what it became" rather than "never heard of this token." The latter is
-    indistinguishable from an operational cache miss (a restarted dev server
+    indistinguishable from an operational miss (a restarted dev server
     wiping LocMemCache, a Redis eviction) and used to make
     verify_and_revoke_refresh_token treat routine cache hiccups as proof of
     theft, revoking every session for the user. Kept for the token's full
@@ -199,12 +176,7 @@ def store_grace_tokens(jti, user_id, tokens):
     but only handed back within REFRESH_ROTATION_GRACE (see
     get_grace_tokens); a later replay is recognized here and refused.
     """
-    timeout = int(REFRESH_TOKEN_LIFETIME.total_seconds())
-    _strict_cache_set(
-        f"jwt:rt:{jti}",
-        {'user_id': user_id, 'tokens': tokens, 'rotated_at': time.time()},
-        timeout,
-    )
+    _strict(get_token_store().mark_rotated, jti, user_id, tokens, time.time(), _LIFETIME_SECONDS)
 
 
 def refresh_token_is_whitelisted(jti, user_id):
@@ -214,109 +186,83 @@ def refresh_token_is_whitelisted(jti, user_id):
     entry.
 
     Checking and revoking used to be one step, deleting the entry before the
-    new pair had been issued. If the cache then failed on the next write, the
+    new pair had been issued. If the store then failed on the next write, the
     client was left holding a token the server had already forgotten, so its
     retry got a 401 and it was signed out after all. Now nothing about the old
     token changes until the new pair is safely recorded, and a failure at any
     point before that leaves the old token working.
 
-    A missing entry (evicted, or never issued) is False; an unreachable cache
+    A missing entry (evicted, or never issued) is False; an unreachable store
     raises TokenStoreUnavailable. A record claiming a different owner is the one
     unambiguous theft signal, and still revokes every session that owner has.
     """
-    stored_user_id = _strict_cache_get(f"jwt:rt:{jti}")
+    record = _strict(get_token_store().lookup, jti)
 
-    if stored_user_id is None:
+    if record is None:
         return False
 
-    if stored_user_id != user_id:
-        logger.warning("Refresh token jti=%s user mismatch (claimed=%s, stored=%s)", jti, user_id, stored_user_id)
-        revoke_all_tokens_for_user(stored_user_id)
+    if record.user_id != user_id:
+        logger.warning("Refresh token jti=%s user mismatch (claimed=%s, stored=%s)", jti, user_id, record.user_id)
+        revoke_all_tokens_for_user(record.user_id)
         return False
 
-    return True
+    return not record.rotated
 
 
 def forget_rotated_jti(jti, user_id):
     """
-    Drop a rotated jti from the user's token collection. Best effort: if this
+    Drop a rotated jti from the user's live sessions. Best effort: if this
     write is lost the collection only carries one stale jti, whose entry now
     holds a rotation record rather than a live token.
     """
-    user_set_key = f"jwt:user:{user_id}"
-    current_tokens = _safe_cache_get(user_set_key, [])
-    if jti in current_tokens:
-        current_tokens.remove(jti)
-        _safe_cache_set(user_set_key, current_tokens, int(REFRESH_TOKEN_LIFETIME.total_seconds()))
+    _safe(get_token_store().forget, jti, user_id, _LIFETIME_SECONDS)
 
 
 def verify_and_revoke_refresh_token(jti, user_id):
     """
-    Check that the refresh token is whitelisted; if so, revoke it so a new
-    pair can be issued.
+    Check that the refresh token is whitelisted; if so, revoke it.
 
     Returns False both when the token is genuinely unknown/expired AND when
-    the cache backend simply has no record of it right now (evicted, or —
-    locally — wiped by a dev-server autoreload restarting LocMemCache). That
-    ambiguity is deliberate: only a *mismatched* user_id on a record that
-    does exist is unambiguous evidence of a forged/reused token, and only
-    that case escalates to revoking every other session. A bare "not found"
-    just fails this one refresh (caller logs in again normally) — treating
-    it as proof of theft was the actual bug behind users getting logged out
-    everywhere from routine cache hiccups.
+    the store simply has no record of it right now (evicted, or — locally —
+    wiped by a dev-server autoreload restarting LocMemCache). That ambiguity
+    is deliberate: only a *mismatched* user_id on a record that does exist is
+    unambiguous evidence of a forged/reused token, and only that case
+    escalates to revoking every other session. A bare "not found" just fails
+    this one refresh (caller logs in again normally) — treating it as proof of
+    theft was the actual bug behind users getting logged out everywhere from
+    routine cache hiccups.
     """
-    cache_key = f"jwt:rt:{jti}"
-    stored_user_id = _safe_cache_get(cache_key)
+    store = get_token_store()
+    record = _safe(store.lookup, jti)
 
-    if stored_user_id is None:
+    if record is None:
         return False
 
-    if stored_user_id != user_id:
+    if record.user_id != user_id:
         # The record exists but claims a different owner — not something a
-        # cache miss/eviction/restart can produce, so it's worth treating as
-        # a real forgery/reuse signal.
-        logger.warning("Refresh token jti=%s user mismatch (claimed=%s, stored=%s)", jti, user_id, stored_user_id)
-        revoke_all_tokens_for_user(stored_user_id)
+        # miss/eviction/restart can produce, so it's worth treating as a real
+        # forgery/reuse signal.
+        logger.warning("Refresh token jti=%s user mismatch (claimed=%s, stored=%s)", jti, user_id, record.user_id)
+        revoke_all_tokens_for_user(record.user_id)
         return False
 
-    # Revoke the old token
-    _safe_cache_delete(cache_key)
+    if record.rotated:
+        # Already exchanged; there is no live token left to revoke.
+        return False
 
-    # Remove the JTI from the user's token collection. Re-extend the set's
-    # own TTL to the full refresh-token lifetime on every write — omitting
-    # `timeout` here would fall back to Django's cache default (300s),
-    # silently expiring this tracking key long before the individual
-    # `jwt:rt:{jti}` entries it's meant to enumerate, which would make
-    # revoke_all_tokens_for_user() (log out all devices / password reset)
-    # see an empty list and revoke nothing.
-    user_set_key = f"jwt:user:{user_id}"
-    current_tokens = _safe_cache_get(user_set_key, [])
-    if jti in current_tokens:
-        current_tokens.remove(jti)
-        _safe_cache_set(user_set_key, current_tokens, int(REFRESH_TOKEN_LIFETIME.total_seconds()))
-
+    _safe(store.revoke, jti, user_id, _LIFETIME_SECONDS)
     return True
 
 def revoke_all_tokens_for_user(user_id):
     """
     Revoke every refresh token for the user across all devices.
     """
-    user_set_key = f"jwt:user:{user_id}"
-    current_tokens = _safe_cache_get(user_set_key, [])
-    for jti in current_tokens:
-        _safe_cache_delete(f"jwt:rt:{jti}")
-    _safe_cache_delete(user_set_key)
-
-EMAIL_CHANGE_TTL = 3600
+    _safe(get_token_store().revoke_all, str(user_id))
 
 
-def email_change_token_key(token):
-    return f"email-change:{token}"
-
-
-def email_change_pending_key(user_id):
-    return f"email-change-pending:{user_id}"
-
+def purge_token_store():
+    """Housekeeping for the cleanup cron: see TokenStore.purge."""
+    return get_token_store().purge(REFRESH_ROTATION_GRACE)
 
 def email_already_used(email, excluding_user_id):
     """

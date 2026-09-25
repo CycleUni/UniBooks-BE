@@ -2,7 +2,7 @@ from django.utils import timezone
 from rest_framework import generics, views, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from rest_framework.throttling import ScopedRateThrottle
+from core.throttling import ScopedThrottle
 from django.db.models import F, Q
 from django.shortcuts import get_object_or_404
 
@@ -75,7 +75,7 @@ class ActiveAdsListView(generics.ListAPIView):
 class AdRecordViewView(views.APIView):
     """POST /api/v1/ads/<id>/view/"""
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'ad_stats'
 
     def post(self, request, pk):
@@ -88,7 +88,7 @@ class AdRecordViewView(views.APIView):
 class AdRecordClickView(views.APIView):
     """POST /api/v1/ads/<id>/click/"""
     permission_classes = [AllowAny]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ScopedThrottle]
     throttle_scope = 'ad_stats'
 
     def post(self, request, pk):

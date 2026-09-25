@@ -4,7 +4,7 @@ that needed a decision rather than a patch.
 Red line: every credential below is a fictitious test fake.
 """
 
-import time
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest import mock
 
@@ -18,7 +18,7 @@ from django.db.utils import OperationalError
 from django.test import Client
 from django.utils import timezone
 
-from accounts.models import RegionVerification, School
+from accounts.models import OneTimeToken, RefreshTokenRecord, RegionVerification, School
 from accounts.services import issue_tokens
 from catalog.models import Book
 from listings.models import Listing
@@ -59,7 +59,7 @@ def bearer(user):
 
 
 def _token_from_pending(user):
-    return cache.get(f"email-change-pending:{user.id}")['token']
+    return OneTimeToken.objects.get(user=user, purpose='email_change').token
 
 
 # ---------------------------------------------------------------------
@@ -250,9 +250,7 @@ def test_a_refresh_token_replayed_long_after_rotation_is_refused(api):
                     content_type="application/json").status_code == 200
 
     # Age the rotation record past the grace window.
-    record = cache.get(f"jwt:rt:{jti}")
-    record['rotated_at'] = time.time() - 3600
-    cache.set(f"jwt:rt:{jti}", record, timeout=3600)
+    RefreshTokenRecord.objects.filter(jti=jti).update(rotated_at=timezone.now() - timedelta(hours=1))
 
     resp = api.post("/api/v1/auth/refresh/", {"refresh": tokens['refresh']},
                     content_type="application/json")
@@ -274,9 +272,7 @@ def test_a_stale_replay_does_not_log_the_user_out_everywhere(api):
     jti = RefreshToken(phone['refresh'])['jti']
 
     api.post("/api/v1/auth/refresh/", {"refresh": phone['refresh']}, content_type="application/json")
-    record = cache.get(f"jwt:rt:{jti}")
-    record['rotated_at'] = time.time() - 3600
-    cache.set(f"jwt:rt:{jti}", record, timeout=3600)
+    RefreshTokenRecord.objects.filter(jti=jti).update(rotated_at=timezone.now() - timedelta(hours=1))
     api.post("/api/v1/auth/refresh/", {"refresh": phone['refresh']}, content_type="application/json")
 
     still_good = api.post("/api/v1/auth/refresh/", {"refresh": laptop['refresh']},
@@ -332,9 +328,9 @@ def test_a_suffix_saved_as_a_bare_string_is_not_read_letter_by_letter():
     """Region.edu_email_suffix is a list, but a single suffix saved as a
     plain string used to be iterated one character at a time, so
     `endswith('e')` made most of the internet look like a campus address."""
+    from accounts.views.auth import _is_valid_edu_email
     from core.models import Region
     from core.region import edu_suffixes
-    from accounts.views.auth import _is_valid_edu_email
 
     region = Region(code='XX', edu_email_suffix='.edu.tw')
     assert edu_suffixes(region) == ['.edu.tw']
@@ -455,9 +451,10 @@ def test_admin_chat_token_is_read_only(api, settings):
     in the conversation. Without a role the worker defaulted it to "user" and
     opening a report handed them a live seat in someone else's chat."""
     from rest_framework_simplejwt.backends import TokenBackend
+
+    from core.models import Region
     from messaging.models import Conversation
     from moderation.models import ChatReport
-    from core.models import Region
 
     settings.EDGE_CHAT_JWT_SECRET = "test-only-edge-chat-secret"
 
@@ -496,7 +493,7 @@ def test_confirming_into_an_address_taken_in_the_same_instant_is_refused(api):
 
     Reproduced without threads: get a second pending change to genuinely
     exist (so its uniqueness check has already legitimately passed once),
-    then repoint its cached token at an address someone else took a moment
+    then repoint its stored token at an address someone else took a moment
     later — the same "valid when checked, gone by the time we write" gap a
     real race would hit, forcing the save() to be what catches it.
     """
@@ -513,9 +510,7 @@ def test_confirming_into_an_address_taken_in_the_same_instant_is_refused(api):
     assert api.post("/api/v1/auth/email/change/confirm/", {"token": winner_token},
                     content_type="application/json").status_code == 200
 
-    record = cache.get(f"email-change:{loser_token}")
-    record['email'] = "prize@example.com"
-    cache.set(f"email-change:{loser_token}", record, timeout=3600)
+    OneTimeToken.objects.filter(token=loser_token).update(payload={'email': "prize@example.com"})
 
     resp = api.post("/api/v1/auth/email/change/confirm/", {"token": loser_token},
                     content_type="application/json")
@@ -536,8 +531,9 @@ def test_admin_bulk_delete_still_anonymizes():
     UserAdmin.delete_queryset, selecting a user in /admin/ and choosing
     "Delete selected" would do the real CASCADE delete the model override
     exists to prevent."""
-    from accounts.admin import UserAdmin
     from django.contrib.admin.sites import AdminSite
+
+    from accounts.admin import UserAdmin
 
     seller = _verified("bulk-seller@example.com")
     buyer = _verified("bulk-buyer@example.com")

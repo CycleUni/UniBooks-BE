@@ -153,7 +153,7 @@ def resolve_cache_config(env, *, debug):
     _guard_dev_fallback(
         "REDIS_URL (or REDIS_PRIVATE_URL)",
         "LocMemCache",
-        "Rate limiting and the JWT whitelist are only valid within a single process; local development only.",
+        "Cached content is only shared within a single process; local development only.",
         debug=debug,
     )
     return {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
