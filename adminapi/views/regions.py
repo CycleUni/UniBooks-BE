@@ -39,6 +39,12 @@ class AdminRegionListView(LocalizedSerializerContext, generics.ListCreateAPIView
     queryset = Region.objects.all()
     serializer_class = AdminRegionSerializer
 
+    def perform_create(self, serializer):
+        # A new region starts with the default colleges rather than an empty
+        # category rail on its home page.
+        from core.default_categories import seed_default_categories
+        seed_default_categories(serializer.save())
+
 class AdminRegionDetailView(LocalizedSerializerContext, generics.RetrieveUpdateAPIView):
     permission_classes = [IsSuperuser]
     queryset = Region.objects.all()

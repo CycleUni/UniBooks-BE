@@ -119,3 +119,52 @@ def test_admin_currency_decimal_places_locked(superuser_client, base_data):
     assert resp.status_code == status.HTTP_200_OK
     c.refresh_from_db()
     assert c.symbol == 'HK$$'  
+
+
+@pytest.mark.django_db
+def test_admin_region_create_seeds_default_categories(superuser_client, base_data):
+    from core.default_categories import DEFAULT_CATEGORIES
+    from core.models import Category
+    c, l1, _ = base_data
+    data = {
+        'code': 'JP',
+        'name': 'Japan',
+        'currency': c.code,
+        'default_language': l1.code,
+        'languages': [l1.code],
+        'translations': {'en': {'name': 'Japan'}},
+        'timezone': 'Asia/Tokyo',
+    }
+    resp = superuser_client.post(reverse('admin-region-list'), data, format='json')
+    assert resp.status_code == status.HTTP_201_CREATED
+
+    cats = list(Category.objects.filter(region__code='JP').order_by('sort_order'))
+    assert [cat.slug for cat in cats] == [item['slug'] for item in DEFAULT_CATEGORIES]
+    assert cats[0].title == 'College of Management'
+    assert cats[0].translations['zh-HK']['title'] == '商管學院'
+    assert cats[0].localized('zh-HK')['title'] == '商管學院'
+    assert cats[0].localized('en')['title'] == 'College of Management'
+
+
+@pytest.mark.django_db
+def test_seed_default_categories_leaves_configured_region_alone(base_data):
+    from core.default_categories import seed_default_categories
+    from core.models import Category
+    c, l1, _ = base_data
+    region = Region.objects.create(code='SG', name='Singapore', currency=c, default_language=l1)
+    Category.objects.create(region=region, slug='custom', title='Custom')
+
+    assert seed_default_categories(region) == 0
+    assert list(Category.objects.filter(region=region).values_list('slug', flat=True)) == ['custom']
+
+
+@pytest.mark.django_db
+def test_seed_default_categories_is_idempotent(base_data):
+    from core.default_categories import DEFAULT_CATEGORIES, seed_default_categories
+    from core.models import Category
+    c, l1, _ = base_data
+    region = Region.objects.create(code='SG', name='Singapore', currency=c, default_language=l1)
+
+    assert seed_default_categories(region) == len(DEFAULT_CATEGORIES)
+    assert seed_default_categories(region) == 0
+    assert Category.objects.filter(region=region).count() == len(DEFAULT_CATEGORIES)

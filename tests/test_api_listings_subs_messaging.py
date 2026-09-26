@@ -9,6 +9,7 @@ from django.utils import timezone
 from accounts.models import School
 from accounts.services import issue_tokens
 from catalog.models import Book
+from core.models import Category
 from listings.models import Listing
 from messaging.models import Conversation
 from subscriptions.models import Subscription
@@ -700,23 +701,27 @@ def test_home_metadata_localizes_to_zh_tw(api, school):
     # Canonical name is kept for filtering; display_name is localized
     assert body["schools"][0]["name"] == "Test University"
     assert body["schools"][0]["display_name"] == "測試大學"
-    # zh-TW has no dedicated translation entry (only "en" does), so it falls
-    # back to the canonical fields, which are already Chinese
+    # Default categories store English as canonical and the Chinese wording
+    # under translations["zh-TW"] (see core/default_categories.py)
     assert body["categories"][0] == {"title": "商管學院", "desc": "經濟、會計、企管", "slug": "management"}
 
 
 def test_home_metadata_accept_language_and_fallbacks(api, school):
+    # `ja` below stands in for any language with no translation. It resolves to
+    # the region's default, zh-TW, so the category's zh-TW entry is removed:
+    # both models must then fall back to their canonical (English) fields.
+    # Done before the first request, which caches the zh-TW metadata.
+    Category.objects.filter(region_id='TW', slug='management').update(
+        translations={'en': {'title': 'College of Management'}}
+    )
     # Any Chinese variant maps to zh-TW
     resp = api.get("/api/v1/core/metadata/", HTTP_ACCEPT_LANGUAGE="zh-Hant-TW,zh;q=0.9")
     assert resp.json()["lang"] == "zh-TW"
-    # A language without translations falls back to canonical fields.
-    # School's canonical `name` is English (see the `school` fixture); Category's
-    # canonical `title` is Chinese (see core/migrations/0002_seed_categories.py) —
-    # each model's fallback reflects whatever it stores as canonical.
+    # `ja` stands in for any language with no translation; see above.
     resp = api.get("/api/v1/core/metadata/?lang=ja")
     body = resp.json()
     assert body["schools"][0]["display_name"] == "Test University"
-    assert body["categories"][0]["title"] == "商管學院"
+    assert body["categories"][0]["title"] == "College of Management"
 
 
 def test_deleting_a_conversation_does_not_move_it_in_the_other_partys_inbox(api, listing, seller, buyer):

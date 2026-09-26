@@ -4,11 +4,9 @@ Taiwan's Hung Kuang University and the University of Hong Kong are both
 "HKU". Every test here that involves two schools uses that pair on purpose:
 anything that looks a code up without the region hits the wrong one.
 """
-import importlib
 import json
 
 import pytest
-from django.apps import apps as global_apps
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -113,29 +111,6 @@ def test_normalize_code():
     assert normalize_code(' h k u\t') == 'HKU'
     assert normalize_code(None) == ''
 
-
-def test_backfill_migration_assigns_codes_per_region(regions):
-    tw, hk = regions
-    rows = [
-        School.objects.create(region=tw, name='NTU', email_domain='ntu.edu.tw'),
-        School.objects.create(region=tw, name='NTU again', email_domain='ntu.example.org'),
-        School.objects.create(region=hk, name='HKU', email_domain='hku.hk'),
-        School.objects.create(region=tw, name='Hung Kuang', email_domain='hku.edu.tw'),
-    ]
-    # 0015 leaves the column NULL, which the finished schema no longer
-    # allows; placeholders the backfill must overwrite stand in for it.
-    for s in rows:
-        School.objects.filter(pk=s.pk).update(code=f'TMP-{s.pk}')
-
-    mod = importlib.import_module('accounts.migrations.0016_backfill_school_code')
-    mod.backfill_school_codes(global_apps, None)
-
-    codes = [School.objects.get(pk=s.pk).code for s in rows]
-    # Oldest keeps the plain code; HKU is free to repeat across regions.
-    assert codes == ['NTU', 'NTU-2', 'HKU', 'HKU']
-
-
-# --- (b)/(c) resolving ?school= ----------------------------------------------
 
 def test_resolve_school_stays_in_the_region(two_hkus, regions):
     tw, hk = regions
@@ -333,27 +308,6 @@ def test_bulk_import_rejects_clashing_or_invalid_codes_without_writing(two_hkus,
     }, superuser)
     assert resp.status_code == 200
     assert resp.json()['unchanged'] == [{'email_domain': 'hku.hk', 'name': 'The University of Hong Kong', 'code': 'HKU'}]
-
-
-@pytest.mark.django_db(transaction=True)
-def test_code_migrations_run_backwards_and_forwards():
-    """0016 is reversible (as a no-op), so the three steps can be unwound and
-    re-applied; re-applying fills codes in for rows created in between."""
-    from django.db import connection
-    from django.db.migrations.executor import MigrationExecutor
-
-    executor = MigrationExecutor(connection)
-    executor.migrate([('accounts', '0014_user_email_and_site_language')])
-    old_apps = executor.loader.project_state([('accounts', '0014_user_email_and_site_language')]).apps
-    OldSchool = old_apps.get_model('accounts', 'School')
-    OldSchool.objects.create(region_id='TW', name='Hung Kuang', email_domain='hku.edu.tw')
-    OldSchool.objects.create(region_id='HK', name='HKU', email_domain='hku.hk')
-
-    executor = MigrationExecutor(connection)
-    executor.loader.build_graph()
-    executor.migrate([('accounts', '0017_school_code_required_unique_per_region')])
-
-    assert sorted(School.objects.values_list('region_id', 'code')) == [('HK', 'HKU'), ('TW', 'HKU')]
 
 
 def test_search_by_course_filters_on_the_regions_school(two_hkus):

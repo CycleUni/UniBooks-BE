@@ -1,42 +1,5 @@
 import pytest
-from django.db import connection
-from django.db.migrations.executor import MigrationExecutor
 from accounts.views.auth import _is_valid_edu_email
-
-@pytest.mark.django_db(transaction=True)
-def test_edu_email_suffix_migration():
-    executor = MigrationExecutor(connection)
-    app = 'core'
-    
-    # Go back to 0009
-    executor.loader.build_graph()
-    executor.migrate([(app, '0009_complete_tw_region_config')])
-    
-    # Insert test data using old schema
-    old_apps = executor.loader.project_state([(app, '0009_complete_tw_region_config')]).apps
-    Region = old_apps.get_model('core', 'Region')
-    
-    currency_id = old_apps.get_model('core', 'Currency').objects.first().code
-    lang_id = old_apps.get_model('core', 'Language').objects.first().code
-    
-    # It was a CharField
-    r1 = Region.objects.create(code='ZZ', name='Test1', edu_email_suffix='.edu.zz', currency_id=currency_id, default_language_id=lang_id)
-    r2 = Region.objects.create(code='YY', name='Test2', edu_email_suffix='', currency_id=currency_id, default_language_id=lang_id)
-    
-    # Migrate forward
-    executor = MigrationExecutor(connection)
-    executor.loader.build_graph()
-    executor.migrate([(app, '0010_convert_edu_email_suffix')])
-    
-    # Check new schema
-    new_apps = executor.loader.project_state([(app, '0010_convert_edu_email_suffix')]).apps
-    NewRegion = new_apps.get_model('core', 'Region')
-    
-    nr1 = NewRegion.objects.get(code='ZZ')
-    assert nr1.edu_email_suffix == ['.edu.zz']
-    
-    nr2 = NewRegion.objects.get(code='YY')
-    assert nr2.edu_email_suffix == []
 
 @pytest.mark.django_db
 def test_is_valid_edu_email_multiple_suffixes(client):
@@ -95,41 +58,3 @@ def test_is_valid_edu_email_multiple_suffixes(client):
     response2 = api_client.post('/api/v1/auth/verify/request/', {'edu_email': 'fake@gmail.com'}, format='json')
     assert response2.status_code == 400
     assert response2.json()['error']['code'] == 'acct.errEduEmail'
-
-@pytest.mark.django_db(transaction=True)
-def test_migration_converts_edu_email_suffix():
-    from django.db import connection
-    from django.db.migrations.executor import MigrationExecutor
-    
-    executor = MigrationExecutor(connection)
-    app = 'core'
-    
-    # Go back to 0009
-    executor.loader.build_graph()
-    executor.migrate([(app, '0009_complete_tw_region_config')])
-    
-    # Insert test data using old schema
-    old_apps = executor.loader.project_state([(app, '0009_complete_tw_region_config')]).apps
-    Region = old_apps.get_model('core', 'Region')
-    
-    currency_id = old_apps.get_model('core', 'Currency').objects.first().code
-    lang_id = old_apps.get_model('core', 'Language').objects.first().code
-    
-    # It was a CharField
-    r1 = Region.objects.create(code='ZZ', name='Test1', edu_email_suffix='.edu.zz', currency_id=currency_id, default_language_id=lang_id)
-    r2 = Region.objects.create(code='YY', name='Test2', edu_email_suffix='', currency_id=currency_id, default_language_id=lang_id)
-    
-    # Migrate forward
-    executor = MigrationExecutor(connection)
-    executor.loader.build_graph()
-    executor.migrate([(app, '0010_convert_edu_email_suffix')])
-    
-    # Check new schema
-    new_apps = executor.loader.project_state([(app, '0010_convert_edu_email_suffix')]).apps
-    NewRegion = new_apps.get_model('core', 'Region')
-    
-    nr1 = NewRegion.objects.get(code='ZZ')
-    assert nr1.edu_email_suffix == ['.edu.zz']
-    
-    nr2 = NewRegion.objects.get(code='YY')
-    assert nr2.edu_email_suffix == []

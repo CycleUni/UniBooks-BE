@@ -128,10 +128,10 @@ def test_schools_fixture_apply_creates_all_rows_and_is_idempotent(api, staff_hea
 
 @pytest.mark.skipif(not CATEGORIES_FIXTURE.exists(), reason=CATEGORIES_SKIP_REASON)
 def test_categories_fixture_matches_seed_migration_for_overlapping_slugs(api, staff_header, db):
-    """core/migrations/0002_seed_categories.py already seeds 8 of this fixture's
-    12 slugs on a fresh database. The fixture intentionally mirrors that
-    migration's exact wording, so importing it should report those 8 as
-    'unchanged' and only the 4 genuinely-new slugs as 'new'."""
+    """The test database starts with the 8 default categories (tests/conftest.py
+    seeds them from core/default_categories.py), which overlap 8 of this
+    fixture's 12 slugs. Importing it should report only the 4 genuinely-new
+    slugs as 'new'."""
     items = _load(CATEGORIES_FIXTURE)
     seeded_slugs = {
         "management", "engineering", "science", "liberal-arts",
