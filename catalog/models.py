@@ -12,7 +12,11 @@ class Book(models.Model):
         ('isbnnet_api', 'ISBNnet API'),
     ]
 
-    isbn13 = models.CharField(max_length=13, unique=True, null=True, blank=True)
+    # Unique per region, not globally: every catalogue read, listing and
+    # subscription is scoped to a region's own Book rows, so a global
+    # constraint let the first region to see an ISBN lock every other region
+    # out of listing or subscribing to it.
+    isbn13 = models.CharField(max_length=13, null=True, blank=True)
     title = models.CharField(max_length=255)
     authors = models.CharField(max_length=512, blank=True)
     publisher = models.CharField(max_length=255, blank=True)
@@ -22,6 +26,9 @@ class Book(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['region', 'isbn13'], name='book_region_isbn13_uniq'),
+        ]
         indexes = [
             GinIndex(
                 name='book_trgm_idx',

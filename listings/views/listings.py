@@ -276,9 +276,9 @@ class ListingDetailView(views.APIView):
                     valid_isbn = clean_and_validate_isbn(isbn)
                     if not valid_isbn:
                         return Response({"error": {"code": "listing.errInvalidIsbn"}}, status=status.HTTP_400_BAD_REQUEST)
-                    # isbn13 is unique: answer 400 instead of letting the
-                    # IntegrityError surface as a 500.
-                    if Book.objects.filter(isbn13=valid_isbn).exclude(pk=book.pk).exists():
+                    # isbn13 is unique within a region: answer 400 instead of
+                    # letting the IntegrityError surface as a 500.
+                    if Book.objects.filter(region_id=book.region_id, isbn13=valid_isbn).exclude(pk=book.pk).exists():
                         return Response({"error": {"code": "listing.errIsbnTaken"}}, status=status.HTTP_400_BAD_REQUEST)
                     book.isbn13 = valid_isbn
                 update_fields.append('isbn13')

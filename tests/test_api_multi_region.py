@@ -819,3 +819,70 @@ def test_metadata_with_school_filter_returns_that_school_waitlist(client, django
     titles = [w['title'] for w in resp.json()['waitlist']]
     assert 'Wanted At NTU' in titles
     assert 'Wanted Elsewhere' not in titles
+
+
+# ── An ISBN one region already has stays open to the others ─────────────────
+# isbn13 used to be unique across regions while every catalogue read was
+# region-scoped, so the second region to see an ISBN could neither list it
+# (the manual-create endpoint handed back the other region's Book, which the
+# listing then refused as a region mismatch) nor subscribe to it (a new Book
+# for the region collided with the unique ISBN: 500).
+
+SHARED_ISBN = '9780262033848'
+
+
+def test_isbn_known_in_one_region_can_be_listed_in_another(setup_data):
+    tw_clrs = Book.objects.create(region_id='TW', isbn13=SHARED_ISBN, title='CLRS', source='manual')
+    client = APIClient()
+    client.force_authenticate(user=setup_data['hk_user'])
+
+    resp = client.post('/api/v1/books/manual/', {'isbn13': SHARED_ISBN, 'title': 'CLRS'}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 201
+    hk_clrs = Book.objects.get(id=resp.json()['id'])
+    assert hk_clrs.region_id == 'HK'
+    assert hk_clrs.pk != tw_clrs.pk
+
+    resp = client.post('/api/v1/listings/', {'book': hk_clrs.id, 'price': 100, 'condition': 'new'}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 201
+
+
+def test_manual_create_still_reuses_the_regions_own_book(setup_data):
+    tw_clrs = Book.objects.create(region_id='TW', isbn13=SHARED_ISBN, title='CLRS', source='manual')
+    client = APIClient()
+    client.force_authenticate(user=setup_data['tw_user'])
+
+    resp = client.post('/api/v1/books/manual/', {'isbn13': SHARED_ISBN, 'title': 'CLRS'}, format='json', HTTP_X_REGION='TW')
+    assert resp.status_code == 200
+    assert resp.json()['id'] == tw_clrs.id
+    assert Book.objects.filter(isbn13=SHARED_ISBN).count() == 1
+
+
+def test_isbn_known_in_one_region_can_be_subscribed_to_in_another(setup_data):
+    from unittest import mock
+    Book.objects.create(region_id='TW', isbn13=SHARED_ISBN, title='CLRS', source='manual')
+    client = APIClient()
+    client.force_authenticate(user=setup_data['hk_user'])
+
+    with mock.patch('catalog.services.get_google_books_by_isbn', return_value={'title': 'CLRS', 'authors': ''}):
+        resp = client.post('/api/v1/subscriptions/', {'book_id': SHARED_ISBN}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 201
+    sub = Subscription.objects.get(id=resp.json()['id'])
+    assert sub.region_id == 'HK'
+    assert sub.book.region_id == 'HK'
+
+
+def test_isbn_edit_only_conflicts_within_the_listings_region(setup_data):
+    Book.objects.create(region_id='TW', isbn13=SHARED_ISBN, title='CLRS', source='manual')
+    client = APIClient()
+    client.force_authenticate(user=setup_data['hk_user'])
+    listing = setup_data['hk_listing']
+
+    resp = client.patch(f'/api/v1/listings/{listing.id}/', {'isbn': SHARED_ISBN}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 200
+    listing.book.refresh_from_db()
+    assert listing.book.isbn13 == SHARED_ISBN
+
+    Book.objects.create(region_id='HK', isbn13='9780131103627', title='K&R', source='manual')
+    resp = client.patch(f'/api/v1/listings/{listing.id}/', {'isbn': '9780131103627'}, format='json', HTTP_X_REGION='HK')
+    assert resp.status_code == 400
+    assert resp.json()['error']['code'] == 'listing.errIsbnTaken'

@@ -196,10 +196,12 @@ class ManualBookCreateView(views.APIView):
     def post(self, request):
         data = request.data.copy()
         isbn13 = data.get('isbn13')
+        from core.region import get_region
+        region = get_region(request)
         if isbn13 == '':
             data['isbn13'] = None
         elif isbn13:
-            existing_book = Book.objects.filter(isbn13=isbn13).first()
+            existing_book = Book.objects.filter(region=region, isbn13=isbn13).first()
             if existing_book:
                 updated = False
                 if not existing_book.cover_url and data.get('cover_url'):
@@ -224,8 +226,6 @@ class ManualBookCreateView(views.APIView):
             valid_sources = dict(Book.SOURCE_CHOICES).keys()
             if source not in valid_sources:
                 source = 'manual'
-            from core.region import get_region
-            region = get_region(request)
             serializer.save(source=source, region=region)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
