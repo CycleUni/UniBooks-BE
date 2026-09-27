@@ -57,6 +57,9 @@ def normalize_language(lang, region=None):
     - `zh-HK` / `zh-Hant-HK` / `yue` / `zh-yue` → `zh-HK`
     - `zh-TW` / `zh-Hant-TW` / `zh-hant` / `zh` → if region defaults to zh, use it, else `zh-TW`
     - `zh-CN` / `zh-Hans` → fallback to region default, else `zh-TW`
+    - `en-HK` / `en-US` / any `en-*` → `en`: only bare `en` is a site
+      language, so `en-HK` used to miss every region's list and fall back to
+      its default — Chinese, for English speakers in Hong Kong
     - others pass through unchanged.
     """
     if not lang:
@@ -79,7 +82,10 @@ def normalize_language(lang, region=None):
         if region and region.default_language_id and region.default_language_id.startswith('zh'):
             return region.default_language_id
         return 'zh-TW'
-        
+
+    if lang_lower == 'en' or lang_lower.startswith('en-'):
+        return 'en'
+
     return lang
 
 

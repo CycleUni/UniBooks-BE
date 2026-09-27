@@ -64,6 +64,11 @@ def test_language_resolution(setup_regions):
     assert normalize_language('zh-CN', hk) == 'zh-HK'
     assert normalize_language('unknown-lang', hk) == 'unknown-lang'
 
+    # Regional English collapses to the one English the site has.
+    assert normalize_language('en-HK', hk) == 'en'
+    assert normalize_language('en-US', tw) == 'en'
+    assert normalize_language('EN_gb', hk) == 'en'
+
 @pytest.mark.django_db
 def test_resolve_language_request(setup_regions, rf):
     tw, hk = setup_regions
@@ -91,6 +96,12 @@ def test_resolve_language_request(setup_regions, rf):
     req = rf.get('/?lang=zh-HK')
     req._cached_region = hk
     assert resolve_language(req) == 'zh-HK'
+
+    # English speakers in Hong Kong typically send en-HK; it used to fall
+    # back to the region default, zh-HK.
+    req = rf.get('/', HTTP_ACCEPT_LANGUAGE='en-HK,en;q=0.9,zh-HK;q=0.8')
+    req._cached_region = hk
+    assert resolve_language(req) == 'en'
     
     req = rf.get('/?lang=zh-TW')
     req._cached_region = tw
