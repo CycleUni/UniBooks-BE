@@ -15,11 +15,12 @@ from subscriptions.models import Subscription
 
 logger = logging.getLogger(__name__)
 
-# The only two languages the frontend ever requests (see
-# UniBooks-FE/src/app/core/i18n.service.ts) — kept in sync manually since
+# The languages the frontend requests (SUPPORTED_LANGS in
+# UniBooks-FE/src/app/core/i18n/index.ts) — kept in sync manually since
 # `translations` fields accept arbitrary language tags, but the UI itself
-# only ever renders these two, so only these two cache entries can exist.
-HOME_STATIC_CACHE_LANGUAGES = ('en', 'zh-TW')
+# only ever renders these, so only these cache entries can exist. zh-HK was
+# missing, so Hong Kong's home page kept admin edits out for up to 24 hours.
+HOME_STATIC_CACHE_LANGUAGES = ('en', 'zh-TW', 'zh-HK')
 
 
 def invalidate_home_static_cache():

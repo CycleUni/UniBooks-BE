@@ -15,6 +15,18 @@ def forwards(apps, schema_editor):
     Category = apps.get_model('core', 'Category')
     for region in Region.objects.all():
         seed_default_categories(region, category_model=Category)
+    _invalidate_home_cache()
+
+
+def _invalidate_home_cache():
+    # The home page caches categories for 24h and only admin edits clear it;
+    # this migration's historical models fire no signals. Best effort: a
+    # cache outage must not fail the migration.
+    try:
+        from accounts.views.home import invalidate_home_static_cache
+        invalidate_home_static_cache()
+    except Exception:
+        pass
 
 
 class Migration(migrations.Migration):

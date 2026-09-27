@@ -169,12 +169,13 @@ def test_categories_fixture_apply_creates_new_rows_and_is_idempotent(api, staff_
     assert Category.objects.count() == len(items)
 
     dentistry = Category.objects.get(slug="dentistry")
-    assert dentistry.title == "牙醫學院"
-    assert dentistry.translations["en"]["title"] == "College of Dentistry"
+    assert dentistry.title == "College of Dentistry"
+    assert dentistry.translations["zh-TW"]["title"] == "牙醫學院"
 
     eecs = Category.objects.get(slug="eecs")
-    assert eecs.title == "電資學院"
-    assert eecs.translations["en"]["title"] == "College of EECS"
+    assert eecs.title == "College of EECS"
+    assert eecs.translations["zh-TW"]["title"] == "電資學院"
+    assert eecs.translations["zh-HK"]["title"] == "電機及計算機學院"
 
     # Re-running the exact same import must not create duplicates or errors
     resp2 = api.post(

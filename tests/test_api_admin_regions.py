@@ -141,8 +141,8 @@ def test_admin_region_create_seeds_default_categories(superuser_client, base_dat
     cats = list(Category.objects.filter(region__code='JP').order_by('sort_order'))
     assert [cat.slug for cat in cats] == [item['slug'] for item in DEFAULT_CATEGORIES]
     assert cats[0].title == 'College of Management'
-    assert cats[0].translations['zh-HK']['title'] == '商管學院'
-    assert cats[0].localized('zh-HK')['title'] == '商管學院'
+    assert cats[0].localized('zh-TW')['title'] == '商管學院'
+    assert cats[0].localized('zh-HK')['title'] == '工商管理學院'
     assert cats[0].localized('en')['title'] == 'College of Management'
 
 
@@ -168,3 +168,48 @@ def test_seed_default_categories_is_idempotent(base_data):
     assert seed_default_categories(region) == len(DEFAULT_CATEGORIES)
     assert seed_default_categories(region) == 0
     assert Category.objects.filter(region=region).count() == len(DEFAULT_CATEGORIES)
+
+
+@pytest.mark.django_db
+def test_hong_kong_home_metadata_uses_hong_kong_wording_and_is_invalidated(api_client):
+    from accounts.views.home import invalidate_home_static_cache
+    from core.default_categories import seed_default_categories
+    from core.models import Category
+    hk = Region.objects.get(code='HK')
+    hk.languages.add(hk.default_language)
+    seed_default_categories(hk)
+
+    resp = api_client.get('/api/v1/core/metadata/?lang=zh-HK', HTTP_X_REGION='HK')
+    assert resp.json()['categories'][0]['title'] == '工商管理學院'
+
+    # An admin edit clears the cache; zh-HK used to be left out of it.
+    Category.objects.filter(region=hk, slug='management').update(
+        translations={'zh-HK': {'title': '改過的名稱', 'description': ''}}
+    )
+    invalidate_home_static_cache()
+    resp = api_client.get('/api/v1/core/metadata/?lang=zh-HK', HTTP_X_REGION='HK')
+    assert resp.json()['categories'][0]['title'] == '改過的名稱'
+
+
+@pytest.mark.django_db
+def test_hong_kong_wording_migration_updates_only_untouched_rows():
+    import importlib
+    from django.apps import apps as global_apps
+    from core.models import Category
+    migration = importlib.import_module('core.migrations.0003_hong_kong_category_wording')
+    hk = Region.objects.get(code='HK')
+    old_wording = Category.objects.create(region=hk, slug='management', title='College of Management', translations={
+        'zh-HK': {'title': '商管學院', 'description': '經濟、會計、企管'},
+        'en': {'title': 'Management'},
+    })
+    edited = Category.objects.create(region=hk, slug='eecs', title='College of EECS', translations={
+        'zh-HK': {'title': '自訂名稱', 'description': ''},
+    })
+
+    migration.forwards(global_apps, None)
+
+    old_wording.refresh_from_db()
+    edited.refresh_from_db()
+    assert old_wording.translations['zh-HK'] == {'title': '工商管理學院', 'description': '會計、金融、經濟'}
+    assert old_wording.translations['en'] == {'title': 'Management'}
+    assert edited.translations['zh-HK'] == {'title': '自訂名稱', 'description': ''}
