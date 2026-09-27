@@ -213,3 +213,46 @@ def test_hong_kong_wording_migration_updates_only_untouched_rows():
     assert old_wording.translations['zh-HK'] == {'title': '工商管理學院', 'description': '會計、金融、經濟'}
     assert old_wording.translations['en'] == {'title': 'Management'}
     assert edited.translations['zh-HK'] == {'title': '自訂名稱', 'description': ''}
+
+
+@pytest.mark.django_db
+def test_hong_kong_default_categories_use_hong_kong_english(api_client):
+    from core.default_categories import seed_default_categories
+    from core.models import Category
+    hk = Region.objects.get(code='HK')
+    hk.languages.add(hk.default_language)
+    hk.languages.add(Language.objects.get_or_create(code='en', defaults={'name': 'English'})[0])
+    seed_default_categories(hk)
+
+    management = Category.objects.get(region=hk, slug='management')
+    assert (management.title, management.description) == ('Faculty of Business Administration', 'Accounting, Finance, Economics')
+    # Taiwan's rows keep Taiwan's English.
+    assert Category.objects.get(region_id='TW', slug='management').title == 'College of Management'
+
+    resp = api_client.get('/api/v1/core/metadata/?lang=en', HTTP_X_REGION='HK')
+    assert resp.json()['categories'][0] == {
+        'slug': 'management', 'title': 'Faculty of Business Administration', 'desc': 'Accounting, Finance, Economics',
+    }
+
+
+@pytest.mark.django_db
+def test_hong_kong_english_migration_replaces_only_untouched_fields():
+    import importlib
+    from django.apps import apps as global_apps
+    from core.models import Category
+    migration = importlib.import_module('core.migrations.0004_hong_kong_category_english')
+    hk = Region.objects.get(code='HK')
+    untouched = Category.objects.create(region=hk, slug='management', title='College of Management',
+                                        description='Economics, Accounting, Business Administration')
+    edited_title = Category.objects.create(region=hk, slug='law', title='School of Law',
+                                           description='Department of Law')
+    taiwan = Category.objects.get(region_id='TW', slug='management')
+
+    migration.forwards(global_apps, None)
+
+    untouched.refresh_from_db()
+    edited_title.refresh_from_db()
+    taiwan.refresh_from_db()
+    assert (untouched.title, untouched.description) == ('Faculty of Business Administration', 'Accounting, Finance, Economics')
+    assert (edited_title.title, edited_title.description) == ('School of Law', 'Law')
+    assert taiwan.title == 'College of Management'

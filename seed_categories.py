@@ -25,7 +25,7 @@ for region in Region.objects.all():
         Category.objects.update_or_create(
             slug=item['slug'],
             region=region,
-            defaults=category_defaults(item, order),
+            defaults=category_defaults(item, order, region.code),
         )
 
 print("Categories seeded!")
