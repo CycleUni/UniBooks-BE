@@ -130,6 +130,27 @@ def test_pages_split_at_page_size_in_id_order(api, seller, monkeypatch):
     assert api.get("/api/v1/sitemap/books-tw-4.xml").status_code == 404
 
 
+def test_listings_added_after_the_bounds_land_on_exactly_one_page(api, seller, monkeypatch):
+    """Pages are cut by id range, not LIMIT/OFFSET: a listing created after
+    the index was built joins whichever page its (random, UUID) id falls in,
+    and never shows up twice or pushes another listing off a page."""
+    monkeypatch.setattr(sitemap, 'PAGE_SIZE', 2)
+    book = _book("9780000000001")
+    for _ in range(5):
+        _list(book, seller)
+    pages = [loc for loc in _index(api) if "/listings-" in loc]
+    assert len(pages) == 3
+
+    for _ in range(4):
+        _list(book, seller)
+
+    seen = []
+    for page in (1, 2, 3):
+        seen += _locs(api, f"/api/v1/sitemap/listings-tw-{page}.xml")
+    expected = sorted(f"https://unibooks.app/tw/listing/{pk}" for pk in Listing.objects.values_list('id', flat=True))
+    assert sorted(seen) == expected
+
+
 @pytest.mark.parametrize('path', [
     "/api/v1/sitemap/books-xx-1.xml",     # no such region
     "/api/v1/sitemap/sellers-tw-1.xml",   # not a kind the sitemap has

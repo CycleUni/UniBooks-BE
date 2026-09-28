@@ -74,6 +74,9 @@ class Listing(models.Model):
             # (search.views.BookSearchView / CourseListView).
             models.Index(fields=['region', 'status', 'category'], name='listing_region_status_cat_idx'),
             models.Index(fields=['region', 'status', 'course_name'], name='listing_region_status_crs_idx'),
+            # The sitemap pages through a region's active listings in id
+            # order (listings/sitemap.py).
+            models.Index(fields=['region', 'status', 'id'], name='listing_region_status_id_idx'),
             GinIndex(
                 name='listing_course_trgm_idx',
                 fields=['course_name'],

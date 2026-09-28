@@ -13,6 +13,12 @@ each carries a lastmod that lets a crawler skip the ones that have not changed.
 Pages are cut in id order rather than by date, so a URL stays on the same page
 when its listing is edited instead of shifting every page after it.
 
+Pages are keyset-paginated. One pass over a kind and region (ids and dates
+only) records the id each page starts at, and a page then reads just the rows
+between its own start and the next page's, so its cost stays at one page's
+worth however large the catalogue grows. An OFFSET would have re-read every
+earlier page, and for books re-grouped the whole region, on each request.
+
 Only what is for sale goes in: a book page is listed while at least one of its
 region's listings is active, and a listing page while it is itself active. A
 sold or removed listing drops out on the next rebuild instead of sending a
@@ -55,6 +61,7 @@ def _books(region_code):
 
 
 def _listings(region_code):
+    # Walks listing_region_status_id_idx in order.
     return (
         Listing.objects
         .filter(region_id=region_code, status='active')
@@ -91,28 +98,32 @@ def _xml_response(xml):
 
 
 def _cached(key, build):
-    xml = cache.get(key)
-    if xml is None:
-        xml = build()
-        cache.set(key, xml, SITEMAP_TTL)
-    return xml
+    value = cache.get(key)
+    if value is None:
+        value = build()
+        cache.set(key, value, SITEMAP_TTL)
+    return value
 
 
-def _page_lastmods(kind, region_code):
-    """The newest lastmod on each page of one kind and region, in page order.
+def _build_pages(kind, region_code):
+    """[(first id, newest lastmod)] for each page of one kind and region.
 
-    Reads only two columns of every row, which is what the index needs to
-    date each page without building the pages themselves.
+    The single pass over every row; it reads two columns, which is all the
+    index needs to date each page and each page needs to find its rows.
     """
     queryset, _, _ = KINDS[kind]
-    stamps = queryset(region_code).values_list('lastmod', flat=True)
-    lastmods = []
-    for i, stamp in enumerate(stamps.iterator()):
+    pages = []
+    rows = queryset(region_code).values_list('id', 'lastmod')
+    for i, (pk, stamp) in enumerate(rows.iterator()):
         if i % PAGE_SIZE == 0:
-            lastmods.append(stamp)
-        elif stamp > lastmods[-1]:
-            lastmods[-1] = stamp
-    return lastmods
+            pages.append([pk, stamp])
+        elif stamp > pages[-1][1]:
+            pages[-1][1] = stamp
+    return [tuple(page) for page in pages]
+
+
+def _pages(kind, region_code):
+    return _cached(f'sitemap_pages:{kind}:{region_code}', lambda: _build_pages(kind, region_code))
 
 
 def build_index(request):
@@ -120,7 +131,7 @@ def build_index(request):
     for region_code in _region_codes():
         region = region_code.lower()
         for kind in KINDS:
-            for page, lastmod in enumerate(_page_lastmods(kind, region_code), start=1):
+            for page, (_, lastmod) in enumerate(_pages(kind, region_code), start=1):
                 loc = request.build_absolute_uri(
                     reverse('sitemap-section', kwargs={'kind': kind, 'region': region, 'page': page})
                 )
@@ -136,18 +147,27 @@ def build_index(request):
     )
 
 
-def build_section(kind, region, page):
+def build_section(kind, region, start, end):
+    """The page holding ids from `start` up to, not including, `end`.
+
+    Bounded on both sides rather than LIMITed, so two pages never share a
+    row: a listing added since the bounds were taken joins the page its id
+    falls in, and the page is at most a TTL's worth of additions over size.
+    The first page has no `start` and the last no `end`, so an id below or
+    above every bound still lands somewhere.
+    """
     queryset, fields, loc = KINDS[kind]
     origin = settings.FRONTEND_URL.rstrip('/')
-    start = (page - 1) * PAGE_SIZE
-    rows = queryset(region.upper()).values(*fields)[start:start + PAGE_SIZE]
+    rows = queryset(region.upper())
+    if start is not None:
+        rows = rows.filter(id__gte=start)
+    if end is not None:
+        rows = rows.filter(id__lt=end)
     entries = [
         f'<url><loc>{escape(loc(origin, region, row))}</loc>'
         f'<lastmod>{row["lastmod"].date().isoformat()}</lastmod></url>\n'
-        for row in rows
+        for row in rows.values(*fields)
     ]
-    if not entries:
-        return None
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<urlset xmlns="{XMLNS}">\n'
@@ -168,11 +188,17 @@ def sitemap_index_view(request):
 @gzip_page
 def sitemap_section_view(request, kind, region, page):
     page = int(page)
-    if kind not in KINDS or region.upper() not in _region_codes() or page < 1:
+    if kind not in KINDS or region.upper() not in _region_codes():
         raise Http404
-    # An empty page is cached as '' so a crawler asking past the end does not
-    # run the query every time.
-    xml = _cached(f'sitemap:{kind}:{region}:{page}', lambda: build_section(kind, region, page) or '')
-    if not xml:
+    pages = _pages(kind, region.upper())
+    if not 1 <= page <= len(pages):
         raise Http404
+    start = pages[page - 1][0] if page > 1 else None
+    end = pages[page][0] if page < len(pages) else None
+    # Keyed by the bounds too: once they are re-taken, a page built from the
+    # old ones is not served against the new index.
+    xml = _cached(
+        f'sitemap:{kind}:{region}:{page}:{start}:{end}',
+        lambda: build_section(kind, region, start, end),
+    )
     return _xml_response(xml)
