@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
 from accounts.views import HomeMetadataView
+from listings.sitemap import sitemap_view
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -21,6 +22,9 @@ urlpatterns = [
     # The path remains /api/v1/core/metadata/ for frontend compatibility.
     path('api/v1/core/metadata/', HomeMetadataView.as_view(), name='home-metadata'),
     path('api/v1/core/', include('core.urls')),
+    # Book and listing pages for search engines; the frontend's robots.txt
+    # points here. See listings/sitemap.py.
+    path('api/v1/sitemap.xml', sitemap_view, name='sitemap'),
 ]
 
 from django.conf import settings
