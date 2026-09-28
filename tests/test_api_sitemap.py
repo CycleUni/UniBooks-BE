@@ -1,5 +1,7 @@
-"""The dynamic sitemap (GET /api/v1/sitemap.xml, listings/sitemap.py)."""
+"""The dynamic sitemap (listings/sitemap.py): an index at
+/api/v1/sitemap.xml naming one sitemap per kind, region and page."""
 
+import gzip
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -8,9 +10,18 @@ from django.contrib.auth import get_user_model
 from django.test import Client, override_settings
 
 from catalog.models import Book
+from listings import sitemap
 from listings.models import Listing
 
 NS = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+
+pytestmark = pytest.mark.usefixtures('frontend_url')
+
+
+@pytest.fixture
+def frontend_url():
+    with override_settings(FRONTEND_URL='https://unibooks.app/'):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -32,6 +43,10 @@ def seller(db):
     )
 
 
+def _book(isbn, region='TW'):
+    return Book.objects.create(region_id=region, isbn13=isbn, title=f"Book {isbn}", source="manual")
+
+
 def _list(book, seller, status='active', region='TW', currency='TWD'):
     return Listing.objects.create(
         region_id=region, currency_id=currency, book=book, seller=seller,
@@ -39,54 +54,99 @@ def _list(book, seller, status='active', region='TW', currency='TWD'):
     )
 
 
-def _locs(resp):
-    root = ET.fromstring(resp.content)
-    return [el.text for el in root.findall('sm:url/sm:loc', NS)]
-
-
-@override_settings(FRONTEND_URL='https://unibooks.app/')
-def test_lists_books_and_listings_that_are_for_sale(api, seller):
-    book = Book.objects.create(region_id='TW', isbn13="9780000000001", title="On Sale", source="manual")
-    listing = _list(book, seller)
-
+def _index(api):
     resp = api.get("/api/v1/sitemap.xml")
+    assert resp.status_code == 200
+    root = ET.fromstring(resp.content)
+    assert root.tag == f"{{{NS['sm']}}}sitemapindex"
+    return [el.text for el in root.findall('sm:sitemap/sm:loc', NS)]
 
+
+def _locs(api, path):
+    resp = api.get(path)
     assert resp.status_code == 200
     assert resp["Content-Type"].startswith("application/xml")
-    assert _locs(resp) == [
-        "https://unibooks.app/tw/book?isbn=9780000000001",
-        f"https://unibooks.app/tw/listing/{listing.id}",
+    return [el.text for el in ET.fromstring(resp.content).findall('sm:url/sm:loc', NS)]
+
+
+def test_index_names_one_sitemap_per_kind_and_region_that_has_pages(api, seller):
+    _list(_book("9780000000001"), seller)
+    _list(_book("9780000000002", region='HK'), seller, region='HK', currency='HKD')
+
+    assert sorted(_index(api)) == [
+        "http://testserver/api/v1/sitemap/books-hk-1.xml",
+        "http://testserver/api/v1/sitemap/books-tw-1.xml",
+        "http://testserver/api/v1/sitemap/listings-hk-1.xml",
+        "http://testserver/api/v1/sitemap/listings-tw-1.xml",
     ]
 
 
-@override_settings(FRONTEND_URL='https://unibooks.app')
+def test_sections_list_the_pages_for_sale(api, seller):
+    book = _book("9780000000001")
+    listing = _list(book, seller)
+
+    assert _locs(api, "/api/v1/sitemap/books-tw-1.xml") == ["https://unibooks.app/tw/book?isbn=9780000000001"]
+    assert _locs(api, "/api/v1/sitemap/listings-tw-1.xml") == [f"https://unibooks.app/tw/listing/{listing.id}"]
+
+
 def test_leaves_out_what_is_no_longer_for_sale(api, seller):
-    sold = Book.objects.create(region_id='TW', isbn13="9780000000002", title="Sold", source="manual")
+    sold = _book("9780000000002")
     for status in ('reserved', 'sold', 'removed'):
         _list(sold, seller, status=status)
-    Book.objects.create(region_id='TW', isbn13="9780000000003", title="Never Listed", source="manual")
+    _book("9780000000003")  # never listed
 
-    assert _locs(api.get("/api/v1/sitemap.xml")) == []
+    assert _index(api) == []
+    assert api.get("/api/v1/sitemap/books-tw-1.xml").status_code == 404
 
 
-@override_settings(FRONTEND_URL='https://unibooks.app')
-def test_book_without_isbn_uses_its_id_and_each_region_its_own_prefix(api, seller):
-    no_isbn = Book.objects.create(region_id='TW', isbn13=None, title="No ISBN", source="manual")
-    hk_book = Book.objects.create(region_id='HK', isbn13="9780000000004", title="HK", source="manual")
+def test_book_without_isbn_uses_its_id(api, seller):
+    no_isbn = _book(None)
     _list(no_isbn, seller)
-    _list(hk_book, seller, region='HK', currency='HKD')
 
-    locs = _locs(api.get("/api/v1/sitemap.xml"))
-
-    assert f"https://unibooks.app/tw/book?id={no_isbn.id}" in locs
-    assert "https://unibooks.app/hk/book?isbn=9780000000004" in locs
+    assert _locs(api, "/api/v1/sitemap/books-tw-1.xml") == [f"https://unibooks.app/tw/book?id={no_isbn.id}"]
 
 
-@override_settings(FRONTEND_URL='https://unibooks.app')
 def test_a_book_with_several_listings_appears_once(api, seller):
-    book = Book.objects.create(region_id='TW', isbn13="9780000000005", title="Popular", source="manual")
+    book = _book("9780000000005")
     _list(book, seller)
     _list(book, seller)
 
-    book_locs = [loc for loc in _locs(api.get("/api/v1/sitemap.xml")) if "/book?" in loc]
-    assert book_locs == ["https://unibooks.app/tw/book?isbn=9780000000005"]
+    assert _locs(api, "/api/v1/sitemap/books-tw-1.xml") == ["https://unibooks.app/tw/book?isbn=9780000000005"]
+
+
+def test_pages_split_at_page_size_in_id_order(api, seller, monkeypatch):
+    monkeypatch.setattr(sitemap, 'PAGE_SIZE', 2)
+    books = [_book(f"978000000001{i}") for i in range(5)]
+    for book in reversed(books):  # listing order must not decide the pages
+        _list(book, seller)
+
+    books_pages = [loc for loc in _index(api) if "/books-" in loc]
+    assert books_pages == [f"http://testserver/api/v1/sitemap/books-tw-{p}.xml" for p in (1, 2, 3)]
+
+    seen = []
+    for page in (1, 2, 3):
+        seen += _locs(api, f"/api/v1/sitemap/books-tw-{page}.xml")
+    assert seen == [f"https://unibooks.app/tw/book?isbn={b.isbn13}" for b in books]
+    assert api.get("/api/v1/sitemap/books-tw-4.xml").status_code == 404
+
+
+@pytest.mark.parametrize('path', [
+    "/api/v1/sitemap/books-xx-1.xml",     # no such region
+    "/api/v1/sitemap/sellers-tw-1.xml",   # not a kind the sitemap has
+    "/api/v1/sitemap/books-tw-0.xml",
+    "/api/v1/sitemap/books-TW-1.xml",
+])
+def test_unknown_sections_are_not_found(api, seller, path):
+    _list(_book("9780000000001"), seller)
+    assert api.get(path).status_code == 404
+
+
+def test_served_gzipped_to_crawlers_that_accept_it(api, seller):
+    # Django leaves bodies under 200 bytes uncompressed; a few URLs clear that.
+    for i in range(5):
+        _list(_book(f"978000000000{i}"), seller)
+
+    resp = api.get("/api/v1/sitemap/books-tw-1.xml", HTTP_ACCEPT_ENCODING="gzip")
+
+    assert resp["Content-Encoding"] == "gzip"
+    assert b"9780000000004" in gzip.decompress(resp.content)

@@ -1,7 +1,7 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, re_path, include
 from accounts.views import HomeMetadataView
-from listings.sitemap import sitemap_view
+from listings.sitemap import sitemap_index_view, sitemap_section_view
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -24,7 +24,12 @@ urlpatterns = [
     path('api/v1/core/', include('core.urls')),
     # Book and listing pages for search engines; the frontend's robots.txt
     # points here. See listings/sitemap.py.
-    path('api/v1/sitemap.xml', sitemap_view, name='sitemap'),
+    path('api/v1/sitemap.xml', sitemap_index_view, name='sitemap'),
+    re_path(
+        r'^api/v1/sitemap/(?P<kind>books|listings)-(?P<region>[a-z]{2})-(?P<page>[1-9][0-9]*)\.xml$',
+        sitemap_section_view,
+        name='sitemap-section',
+    ),
 ]
 
 from django.conf import settings
