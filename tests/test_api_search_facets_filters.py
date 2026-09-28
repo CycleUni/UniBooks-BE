@@ -110,3 +110,46 @@ def test_category_browse_is_not_flagged_when_everything_fits(api, region, test_u
     resp = api.get(f"/api/v1/search/books/?category={cat.slug}")
     assert resp.status_code == 200
     assert resp.json()["results_truncated"] is False
+
+
+@pytest.mark.django_db
+def test_listing_filters_browse_without_a_keyword(api, region, test_user):
+    # The search screen with only a condition picked: no keyword, category or
+    # course, yet the filter should still find the books on sale that match.
+    book1, _ = Book.objects.get_or_create(title="Book 1", isbn13="9780001", region=region)
+    book2, _ = Book.objects.get_or_create(title="Book 2", isbn13="9780002", region=region)
+    Listing.objects.create(seller=test_user, book=book1, condition="damaged", price=100, status="active", region=region, currency=region.currency)
+    Listing.objects.create(seller=test_user, book=book2, condition="new", price=300, status="active", region=region, currency=region.currency)
+
+    resp = api.get("/api/v1/search/books/?q=&condition=damaged")
+    assert [r["title"] for r in resp.json()["results"]] == ["Book 1"]
+
+    resp = api.get("/api/v1/search/books/?q=&price_min=200")
+    assert [r["title"] for r in resp.json()["results"]] == ["Book 2"]
+
+    resp = api.get("/api/v1/search/books/?q=&in_stock=1")
+    assert len(resp.json()["results"]) == 2
+
+    # Nothing chosen at all is still no search.
+    assert api.get("/api/v1/search/books/?q=").json() == []
+
+
+@pytest.mark.django_db
+def test_local_count_covers_every_page(api, region, test_user):
+    # "Found N at this school" is read from local_count. The client sees one
+    # page, and counting that page said 20 for any search longer than one.
+    from accounts.models import School
+    here = School.objects.create(region=region, code='HERE', name='Here University', email_domain='here.edu.tw')
+    there = School.objects.create(region=region, code='THERE', name='There University', email_domain='there.edu.tw')
+    for i in range(25):
+        book = Book.objects.create(title=f"Zyxqv {i}", isbn13=f"97800001{i:05d}", region=region)
+        Listing.objects.create(
+            seller=test_user, book=book, condition="new", price=100, status="active",
+            school=here if i < 22 else there, region=region, currency=region.currency,
+        )
+
+    with mock.patch("search.views.search_google_books", return_value=[]):
+        data = api.get("/api/v1/search/books/?q=Zyxqv&school=HERE").json()
+    assert data["count"] == 25
+    assert len(data["results"]) == 20
+    assert data["local_count"] == 22

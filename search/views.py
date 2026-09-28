@@ -111,7 +111,12 @@ class BookSearchView(views.APIView):
         explicit_engine = request.GET.get('engine')
         engine = explicit_engine if explicit_engine in allowed_engines else None
 
-        if not query and not category and not course:
+        # Condition, price and stock narrow the local listings, so with no
+        # keyword they browse every book on sale that passes them — as a
+        # category does. Without this, choosing only a condition on the
+        # search screen answered with nothing to filter.
+        listing_filtered = allowed_conditions is not None or filter_price or in_stock_required
+        if not query and not category and not course and not listing_filtered:
             return Response([])
 
         google_unavailable = False
@@ -121,7 +126,7 @@ class BookSearchView(views.APIView):
         # a page early with no explanation.
         results_truncated = False
 
-        if category or (course and not query):
+        if category or (not query and (course or listing_filtered)):
             base_filter = Q(listings__status='active')
             if category:
                 base_filter &= Q(listings__category__slug=category)
@@ -129,14 +134,26 @@ class BookSearchView(views.APIView):
                 base_filter &= Q(listings__course_name=course)
             if school_id is not None:
                 base_filter &= Q(listings__school_id=school_id)
+            # In the query, not only in the pass below: the cap counts books
+            # that can pass it, so a rare condition isn't cut off among the
+            # newest books of every condition and reported as truncated.
+            if allowed_conditions is not None:
+                base_filter &= Q(listings__condition__in=allowed_conditions)
             # Bounded and ordered: this used to pull every matching Book into
             # Python before paginating, in whatever order the database felt
             # like, so page 2 could repeat page 1.
-            books = list(
-                Book.objects.filter(base_filter, region=region)
-                .distinct()
-                .order_by('-created_at')[:LOCAL_BROWSE_LIMIT]
-            )
+            browse = Book.objects.filter(base_filter, region=region).distinct()
+            # Likewise the price, which the pass below reads as the book's
+            # lowest active price anywhere, so it is worked out the same way.
+            if filter_price:
+                browse = browse.annotate(
+                    browse_min_price=Min('listings__price', filter=Q(listings__status='active'))
+                )
+                if p_min is not None:
+                    browse = browse.filter(browse_min_price__gte=p_min)
+                if p_max is not None:
+                    browse = browse.filter(browse_min_price__lte=p_max)
+            books = list(browse.order_by('-created_at')[:LOCAL_BROWSE_LIMIT])
             results_truncated = len(books) == LOCAL_BROWSE_LIMIT
             results = []
             for book in books:
@@ -378,7 +395,7 @@ class BookSearchView(views.APIView):
         if school_id is not None:
             facet_base_q &= Q(school_id=school_id)
             
-        if category or (course and not query):
+        if category or (not query and (course or listing_filtered)):
             if category:
                 facet_base_q &= Q(category__slug=category)
             if course:
@@ -406,7 +423,7 @@ class BookSearchView(views.APIView):
         if school_id is not None:
             base_facet_no_cat_no_course &= Q(school_id=school_id)
             
-        if category or (course and not query):
+        if category or (not query and (course or listing_filtered)):
             # In this branch, query is ignored by the main search.
             pass
         else:
@@ -465,6 +482,10 @@ class BookSearchView(views.APIView):
             'course': course_facets,
         }
 
+        # Books with a copy at the chosen school across every page, for the
+        # "found N at this school" line; the client sees only one page.
+        local_count = sum(1 for item in filtered_results if item['localActiveListings'] > 0)
+
         from rest_framework.pagination import PageNumberPagination
         paginator = PageNumberPagination()
         paginated_results = paginator.paginate_queryset(filtered_results, request)
@@ -474,12 +495,14 @@ class BookSearchView(views.APIView):
             response.data['google_unavailable'] = google_unavailable
             response.data['results_truncated'] = results_truncated
             response.data['facets'] = facets
+            response.data['local_count'] = local_count
             return response
             
         return Response({
             'google_unavailable': google_unavailable,
             'results_truncated': results_truncated,
             'facets': facets,
+            'local_count': local_count,
             'results': filtered_results
         })
 
