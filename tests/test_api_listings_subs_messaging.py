@@ -651,6 +651,18 @@ def test_conversation_list_shows_other_party_and_latest_message(api, listing, se
         assert body["results"][0]["listing_title"] == "Listing Book"
 
 
+def test_seller_does_not_see_a_conversation_nobody_wrote_in(api, listing, seller, buyer):
+    conv = Conversation.objects.create(listing=listing, buyer=buyer)
+
+    assert api.get("/api/v1/messaging/conversations/", **bearer(seller)).json()["results"] == []
+    # The buyer, who opened it, still does.
+    assert len(api.get("/api/v1/messaging/conversations/", **bearer(buyer)).json()["results"]) == 1
+
+    conv.latest_message_body = "Is this still available?"
+    conv.save(update_fields=["latest_message_body"])
+    assert len(api.get("/api/v1/messaging/conversations/", **bearer(seller)).json()["results"]) == 1
+
+
 # NOTE: per-conversation message history (list/send) is no longer exposed by
 # Django — it moved to CFEdgeChat (see messaging/views.py's ChatTokenView and
 # EdgeChatWebhookView docstrings). The equivalent access-control coverage

@@ -41,7 +41,13 @@ class ConversationListView(generics.ListAPIView):
             listing__region=region
         ).exclude(
             Q(buyer=user, buyer_deleted_at__isnull=False) |
-            Q(listing__seller=user, seller_deleted_at__isnull=False)
+            Q(listing__seller=user, seller_deleted_at__isnull=False) |
+            # A buyer who opened a chat and never wrote in it left the seller
+            # nothing to read. The app now creates a conversation only with
+            # its first message, but rows from before that (and from older
+            # clients) are still empty; the seller doesn't see them.
+            Q(listing__seller=user, latest_message_body__isnull=True) |
+            Q(listing__seller=user, latest_message_body='')
         ).select_related('listing__book', 'listing__seller', 'buyer').prefetch_related(
             # ConversationSerializer resolves each row's latest order; without
             # this it ran up to four queries per conversation in the inbox.

@@ -174,7 +174,7 @@ def test_inbox_row_carries_other_party_school(api, book, schools):
     seller = make_user(first="Se", last="Ller", school=north)
     buyer = make_user(school=south)
     listing = make_listing(book, seller)
-    Conversation.objects.create(listing=listing, buyer=buyer)
+    Conversation.objects.create(listing=listing, buyer=buyer, latest_message_body="hi")
 
     def rows(user):
         resp = api.get("/api/v1/messaging/conversations/", HTTP_X_REGION='TW', HTTP_ACCEPT_LANGUAGE='en', **bearer(user))

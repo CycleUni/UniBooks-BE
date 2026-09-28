@@ -381,8 +381,8 @@ def region_conversations(setup_data):
     tw_buyer = User.objects.create_user(email='twbuyer_msg@ntu.edu.tw', first_name='T', last_name='W', password='pw')
     hk_buyer = User.objects.create_user(email='hkbuyer_msg@hku.edu.hk', first_name='H', last_name='K', password='pw')
     
-    tw_conv = Conversation.objects.create(listing=setup_data['tw_listing'], buyer=tw_buyer)
-    hk_conv = Conversation.objects.create(listing=setup_data['hk_listing'], buyer=hk_buyer)
+    tw_conv = Conversation.objects.create(listing=setup_data['tw_listing'], buyer=tw_buyer, latest_message_body='hi')
+    hk_conv = Conversation.objects.create(listing=setup_data['hk_listing'], buyer=hk_buyer, latest_message_body='hi')
     return {'TW': tw_conv, 'HK': hk_conv, 'tw_buyer': tw_buyer, 'hk_buyer': hk_buyer}
 
 @pytest.fixture
