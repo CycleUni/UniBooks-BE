@@ -536,3 +536,124 @@ def test_admin_schools_list_pagination(api, superuser):
     assert data["count"] >= 30
     assert len(data["results"]) == data["count"], "The page_size parameter should allow fetching all items in one page"
 
+
+
+# ---------------------------------------------------------------------
+# Listings: admin lock
+# ---------------------------------------------------------------------
+
+
+def _seller_patch(api, listing, data):
+    return api.patch(
+        f"/api/v1/listings/{listing.id}/",
+        data,
+        content_type="application/json",
+        **_auth_header(listing.seller),
+    )
+
+
+def test_admin_removal_locks_listing_against_seller(api, staff_header, staff, listing):
+    resp = api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"status": "removed"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["admin_locked"] is True
+    listing.refresh_from_db()
+    assert listing.admin_locked is True
+    assert listing.locked_by == staff
+
+    resp = _seller_patch(api, listing, {"status": "active"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "listing.errAdminLocked"
+    resp = api.delete(f"/api/v1/listings/{listing.id}/", **_auth_header(listing.seller))
+    assert resp.status_code == 403
+    listing.refresh_from_db()
+    assert listing.status == "removed"
+
+
+def test_admin_unlock_lets_seller_edit_again(api, staff_header, listing):
+    api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"status": "removed", "admin_lock_reason": "spam"},
+        content_type="application/json",
+        **staff_header,
+    )
+    resp = api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"admin_locked": False},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.admin_locked is False
+    assert listing.locked_by is None
+    assert AuditEvent.objects.filter(kind="admin.listing_unlocked").exists()
+
+    resp = _seller_patch(api, listing, {"status": "active"})
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.status == "active"
+
+
+def test_admin_can_remove_without_locking(api, staff_header, listing):
+    resp = api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"status": "removed", "admin_locked": False},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.admin_locked is False
+
+
+def test_admin_lock_rejects_non_boolean(api, staff_header, listing):
+    resp = api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"admin_locked": "false"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 400
+    listing.refresh_from_db()
+    assert listing.admin_locked is False
+
+
+def test_seller_cannot_set_lock_fields(api, listing):
+    resp = _seller_patch(api, listing, {"admin_locked": True, "admin_lock_reason": "x"})
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.admin_locked is False
+    assert listing.admin_lock_reason == ""
+
+
+def test_admin_can_delete_locked_listing(api, staff_header, listing):
+    api.patch(
+        f"/api/v1/admin/listings/{listing.id}/",
+        {"status": "removed"},
+        content_type="application/json",
+        **staff_header,
+    )
+    resp = api.delete(f"/api/v1/admin/listings/{listing.id}/", **staff_header)
+    assert resp.status_code == 204
+    assert not Listing.objects.filter(id=listing.id).exists()
+    event = AuditEvent.objects.get(kind="admin.listing_deleted")
+    assert event.meta["listing_id"] == str(listing.id)
+    assert event.meta["admin_locked"] is True
+
+
+def test_admin_delete_refuses_listing_with_orders(api, staff_header, order):
+    resp = api.delete(f"/api/v1/admin/listings/{order.listing_id}/", **staff_header)
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "admin.errListingHasOrders"
+    assert Listing.objects.filter(id=order.listing_id).exists()
+
+
+def test_non_staff_cannot_delete_listing_via_admin(api, normal_header, listing):
+    resp = api.delete(f"/api/v1/admin/listings/{listing.id}/", **normal_header)
+    assert resp.status_code == 403
+    assert Listing.objects.filter(id=listing.id).exists()

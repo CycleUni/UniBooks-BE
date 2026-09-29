@@ -5,6 +5,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from django.core.cache import cache
 from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
+from listings.utils import delete_listing
 
 from core.throttling import ScopedThrottle
 
@@ -241,6 +242,9 @@ class ListingDetailView(views.APIView):
         listing = self.get_object(request, pk, require_seller=True)
         if not listing:
              return Response(status=status.HTTP_404_NOT_FOUND)
+        
+        if listing.admin_locked:
+            return Response({"error": {"code": "listing.errAdminLocked", "message": "This listing has been locked by an administrator and cannot be modified."}}, status=status.HTTP_403_FORBIDDEN)
 
         # Handle manual book updates
         book_fields_sent = any(k in request.data for k in ('book_title', 'book_authors', 'isbn'))
@@ -298,26 +302,7 @@ class ListingDetailView(views.APIView):
         listing = self.get_object(request, pk, require_seller=True)
         if not listing:
             return Response(status=status.HTTP_404_NOT_FOUND)
-        book = listing.book
-        listing.delete()  # post_delete signal invalidates the caches
-
-        # If the book now has zero listings and zero subscriptions,
-        # it’s an orphan — delete it immediately so the catalog
-        # doesn’t accumulate dead entries.
-        from django.db.models import Count
-        from catalog.models import Book
-        orphan = (
-            Book.objects
-            .filter(id=book.id)
-            .annotate(
-                listing_count=Count('listings'),
-                subscription_count=Count('subscriptions'),
-            )
-            .filter(
-                listing_count=0,
-                subscription_count=0,
-            )
-        )
-        orphan.delete()
-
+        if listing.admin_locked:
+            return Response({"error": {"code": "listing.errAdminLocked"}}, status=status.HTTP_403_FORBIDDEN)
+        delete_listing(listing)
         return Response(status=status.HTTP_204_NO_CONTENT)

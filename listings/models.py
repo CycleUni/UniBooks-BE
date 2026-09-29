@@ -56,6 +56,10 @@ class Listing(models.Model):
     photos = models.JSONField(default=list, help_text="Array of full photo URLs (public URLs after R2 storage, see ListingUploadURLView)")
     category = models.ForeignKey('core.Category', on_delete=models.SET_NULL, null=True, blank=True, related_name='listings')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    admin_locked = models.BooleanField(default=False)
+    admin_lock_reason = models.CharField(max_length=255, blank=True, default='')
+    locked_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='locked_listings')
+    locked_at = models.DateTimeField(null=True, blank=True)
 
     course_name = models.CharField(max_length=255, blank=True, default='')
     professor_name = models.CharField(max_length=255, blank=True, default='')

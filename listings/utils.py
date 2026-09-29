@@ -92,3 +92,24 @@ def promote_tmp_photos(photo_urls, user_id, request=None):
         updated_urls.append(url.replace(key, new_key, 1))
 
     return updated_urls
+
+
+def delete_listing(listing):
+    """Delete a listing, then its book if nothing else references it.
+
+    The post_delete signal invalidates the caches. A book left with zero
+    listings and zero subscriptions is an orphan and goes too, so the catalog
+    doesn't accumulate dead entries.
+    """
+    from django.db.models import Count
+    from catalog.models import Book
+
+    book_id = listing.book_id
+    listing.delete()
+    (
+        Book.objects
+        .filter(id=book_id)
+        .annotate(listing_count=Count('listings'), subscription_count=Count('subscriptions'))
+        .filter(listing_count=0, subscription_count=0)
+        .delete()
+    )

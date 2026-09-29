@@ -232,7 +232,7 @@ class AdminListingSerializer(serializers.ModelSerializer):
         # `region` on the row itself: a superuser sees both regions merged in
         # one list, and without it the only way to tell a TW listing from an HK
         # one was to filter — the unfiltered view was ambiguous.
-        fields = ('id', 'book', 'seller', 'school', 'region', 'price', 'currency', 'condition', 'status', 'created_at')
+        fields = ('id', 'book', 'seller', 'school', 'region', 'price', 'currency', 'condition', 'status', 'created_at', 'admin_locked', 'admin_lock_reason', 'locked_by', 'locked_at')
         read_only_fields = fields
 
 

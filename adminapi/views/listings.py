@@ -1,6 +1,7 @@
 import logging
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
@@ -8,6 +9,7 @@ from rest_framework.response import Response
 
 from core.models import AuditEvent
 from listings.models import Listing
+from listings.utils import delete_listing
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
@@ -58,11 +60,11 @@ class AdminListingListView(generics.ListAPIView):
 
 
 class AdminListingDetailView(generics.RetrieveUpdateAPIView):
-    """GET / PATCH /api/v1/admin/listings/<id>/"""
+    """GET / PATCH / DELETE /api/v1/admin/listings/<id>/"""
     permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminListingSerializer
     lookup_field = 'pk'
-    http_method_names = ['get', 'patch']
+    http_method_names = ['get', 'patch', 'delete']
 
     def get_queryset(self):
         qs = Listing.objects.select_related('book', 'seller', 'school').all()
@@ -71,36 +73,102 @@ class AdminListingDetailView(generics.RetrieveUpdateAPIView):
         return qs
 
     def patch(self, request, *args, **kwargs):
-        allowed_fields = {'status'}
+        allowed_fields = {'status', 'admin_locked', 'admin_lock_reason'}
         extra = set(request.data.keys()) - allowed_fields
         if extra:
             return Response(
                 {"error": {"code": "admin.errForbiddenField"}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if 'status' not in request.data:
+        if 'status' not in request.data and 'admin_locked' not in request.data:
             return Response(
                 {"error": {"code": "admin.errInvalidField"}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        new_status = request.data['status']
-        valid_statuses = dict(Listing.STATUS_CHOICES)
-        if new_status not in valid_statuses:
-            return Response(
-                {"error": {"code": "admin.errInvalidStatus"}},
-                status=status.HTTP_400_BAD_REQUEST,
+        instance = self.get_object()
+        user = request.user
+        updates = []
+
+        if 'status' in request.data:
+            new_status = request.data['status']
+            valid_statuses = dict(Listing.STATUS_CHOICES)
+            if new_status not in valid_statuses:
+                return Response(
+                    {"error": {"code": "admin.errInvalidStatus"}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if new_status != instance.status:
+                old_status = instance.status
+                instance.status = new_status
+                updates.append('status')
+                AuditEvent.objects.create(
+                    user=user,
+                    kind='admin.listing_status_changed',
+                    meta={'listing_id': str(instance.id), 'old_status': old_status, 'new_status': new_status},
+                )
+
+        # Taking a listing down is what the lock exists for: without it the
+        # seller could simply set it back to active. An explicit admin_locked
+        # in the same request still wins.
+        if 'admin_locked' in request.data:
+            new_locked = request.data['admin_locked']
+            if not isinstance(new_locked, bool):
+                return Response(
+                    {"error": {"code": "admin.errInvalidField"}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        elif 'status' in updates and instance.status == 'removed':
+            new_locked = True
+        else:
+            new_locked = instance.admin_locked
+
+        if new_locked != instance.admin_locked:
+            instance.admin_locked = new_locked
+            updates.append('admin_locked')
+            if new_locked:
+                instance.admin_lock_reason = str(request.data.get('admin_lock_reason', ''))[:255]
+                instance.locked_by = user
+                instance.locked_at = timezone.now()
+            else:
+                instance.admin_lock_reason = ''
+                instance.locked_by = None
+                instance.locked_at = None
+            AuditEvent.objects.create(
+                user=user,
+                kind='admin.listing_locked' if new_locked else 'admin.listing_unlocked',
+                meta={'listing_id': str(instance.id)},
             )
 
-        instance = self.get_object()
-        old_status = instance.status
-        instance.status = new_status
-        instance.save(update_fields=['status'])
-
-        AuditEvent.objects.create(
-            user=request.user,
-            kind='admin.listing_status_changed',
-            meta={'listing_id': str(instance.id), 'old_status': old_status, 'new_status': new_status},
-        )
+        if updates:
+            update_fields = ['status'] if 'status' in updates else []
+            if 'admin_locked' in updates:
+                update_fields.extend(['admin_locked', 'admin_lock_reason', 'locked_by', 'locked_at'])
+            instance.save(update_fields=update_fields)
 
         return Response(AdminListingSerializer(instance).data)
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Orders cascade from their listing, so deleting one that was ever
+        # ordered would erase the buyer's and seller's order history with it.
+        # Take such a listing down (which locks it) instead.
+        if instance.orders.exists():
+            return Response(
+                {"error": {"code": "admin.errListingHasOrders"}},
+                status=status.HTTP_409_CONFLICT,
+            )
+        AuditEvent.objects.create(
+            user=request.user,
+            kind='admin.listing_deleted',
+            meta={
+                'listing_id': str(instance.id),
+                'seller_id': str(instance.seller_id),
+                'book_title': instance.book.title,
+                'status': instance.status,
+                'admin_locked': instance.admin_locked,
+                'admin_lock_reason': instance.admin_lock_reason,
+            },
+        )
+        delete_listing(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -86,7 +86,12 @@ class ListingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Listing
         fields = '__all__'
-        read_only_fields = ('seller', 'school', 'region', 'currency', 'created_at', 'updated_at')
+        # The admin lock is set only through the admin API; a seller must not
+        # be able to lock, unlock or forge who locked their own listing.
+        read_only_fields = (
+            'seller', 'school', 'region', 'currency', 'created_at', 'updated_at',
+            'admin_locked', 'admin_lock_reason', 'locked_by', 'locked_at',
+        )
 
     def get_fields(self):
         fields = super().get_fields()
