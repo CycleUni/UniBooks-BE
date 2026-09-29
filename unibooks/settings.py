@@ -248,29 +248,19 @@ SOCIALACCOUNT_PROVIDERS = {
 
 WSGI_APPLICATION = "unibooks.wsgi.application"
 
-# Lambda + Neon pooled connection:
-# CONN_MAX_AGE=0 closes the connection after every request so the Lambda
-# function doesn't hold a leaked socket past the cold-execution lifetime.
-# However, a PrematureClose from Neon under load can still fail a request
-# before Django has a chance to benefit from the pooled connection. The real
-# fix is retry logic in lower levels:
-# 1) Neon itself replays these at the pool level (no client-side code needed)
-# 2) The frontend retry interceptor catches 5xx from Lambda timeouts
-# 3) DATABASES['default']['OPTIONS'] below adds a statement_timeout so no
-#    query blocks the Lambda function beyond Vercel's maxDuration
-#
-# For a busy production deployment, also consider CONN_MAX_AGE = 30 (seconds)
-# — but only if the Lambda execution container visibly outlives a single
-# request (e.g. when running under an always-warm provisioned instance).
-# For standard Vercel Pro, keep 0. Configurable so that call can be made from
-# the environment, on the deployment where it can actually be observed,
-# rather than needing a code change and a redeploy to try.
+# Persistent connections. Production runs gunicorn on Railway: long-lived
+# worker processes (2 workers x 4 threads, see railway.json), so a connection
+# can outlive a single request. The default CONN_MAX_AGE=0 still closes it
+# after every request; raise it from the environment (e.g. 30-60 seconds) on
+# the deployment where the effect can actually be observed, rather than
+# needing a code change and a redeploy to try. Every thread holds its own
+# connection, so the database's connection limit caps how high this can go.
 #
 # Django reads this per database, not as a top-level setting: a bare
 # `CONN_MAX_AGE = ...` here was silently ignored, so setting the variable on
 # the deployment changed nothing. Health checks make a reused connection that
-# Neon closed while the instance sat idle get replaced instead of failing the
-# next request.
+# the database server closed while the worker sat idle get replaced instead of
+# failing the next request.
 DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=0)
 DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 
