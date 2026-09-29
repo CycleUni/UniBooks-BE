@@ -171,3 +171,47 @@ def test_served_gzipped_to_crawlers_that_accept_it(api, seller):
 
     assert resp["Content-Encoding"] == "gzip"
     assert b"9780000000004" in gzip.decompress(resp.content)
+
+
+XHTML = '{http://www.w3.org/1999/xhtml}link'
+
+
+def _alternates(api, path):
+    root = ET.fromstring(api.get(path).content)
+    return {
+        url.find('sm:loc', NS).text: sorted((a.get('hreflang'), a.get('href')) for a in url.iter(XHTML))
+        for url in root.findall('sm:url', NS)
+    }
+
+
+def test_a_book_sold_in_several_regions_names_each_by_its_language(api, seller):
+    _list(_book("9780000000010"), seller)
+    _list(_book("9780000000010", region='HK'), seller, region='HK', currency='HKD')
+    _list(_book("9780000000011"), seller)  # TW only
+
+    expected = sorted([
+        ('zh-TW', 'https://unibooks.app/tw/book?isbn=9780000000010'),
+        ('zh-HK', 'https://unibooks.app/hk/book?isbn=9780000000010'),
+        ('x-default', 'https://unibooks.app/book?isbn=9780000000010'),
+    ])
+    tw = _alternates(api, "/api/v1/sitemap/books-tw-1.xml")
+    assert tw["https://unibooks.app/tw/book?isbn=9780000000010"] == expected
+    assert tw["https://unibooks.app/tw/book?isbn=9780000000011"] == []
+    assert _alternates(api, "/api/v1/sitemap/books-hk-1.xml")["https://unibooks.app/hk/book?isbn=9780000000010"] == expected
+
+
+def test_listing_pages_carry_no_alternates(api, seller):
+    _list(_book("9780000000012"), seller)
+    assert all(links == [] for links in _alternates(api, "/api/v1/sitemap/listings-tw-1.xml").values())
+
+
+def test_a_book_page_costs_two_queries_whatever_its_alternates(seller, django_assert_num_queries):
+    for n in range(5):
+        isbn = f"97800000001{n:02d}"
+        _list(_book(isbn), seller)
+        _list(_book(isbn, region='HK'), seller, region='HK', currency='HKD')
+    sitemap._get_active_regions()  # warm, as every request after the first finds it
+
+    # The page's rows, then one lookup of its ISBNs in the other regions.
+    with django_assert_num_queries(2):
+        sitemap.build_section('books', 'tw', None, None)
