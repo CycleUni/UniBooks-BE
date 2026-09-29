@@ -23,10 +23,6 @@ Only what is for sale goes in: a book page is listed while at least one of its
 region's listings is active, and a listing page while it is itself active. A
 sold or removed listing drops out on the next rebuild instead of sending a
 crawler to a page that has nothing left to buy.
-
-A book for sale in more than one region names each region's page as an
-hreflang alternate, in that region's default language, so a search engine
-can send each visitor to the copy in their language.
 """
 
 from urllib.parse import urlencode
@@ -53,10 +49,6 @@ PAGE_SIZE = 5000
 SITEMAP_TTL = 3600
 
 XMLNS = 'http://www.sitemaps.org/schemas/sitemap/0.9'
-XHTML_NS = 'http://www.w3.org/1999/xhtml'
-
-# escape() leaves double quotes alone; an attribute value needs them escaped.
-_ATTR = {'"': '&quot;'}
 
 
 def _books(region_code):
@@ -93,46 +85,6 @@ KINDS = {
     'books': (_books, ('id', 'isbn13', 'lastmod'), _book_loc),
     'listings': (_listings, ('id', 'lastmod'), _listing_loc),
 }
-
-
-def _book_alternates(rows):
-    """{isbn13: [region codes]} for the books on this page for sale in more
-    than one active region.
-
-    Book rows are per region, so the same title in TW and HK is two rows
-    sharing an ISBN; one query over the page's ISBNs finds the others. A
-    book without an ISBN has no counterpart to find. The language of each
-    region comes from the cached active-region map, so it costs no query.
-    """
-    isbns = [row['isbn13'] for row in rows if row['isbn13']]
-    if not isbns:
-        return {}
-    regions = {}
-    for isbn, region_code in (
-        Book.objects
-        .filter(isbn13__in=isbns, region_id__in=_region_codes(), listings__status='active')
-        .values_list('isbn13', 'region_id')
-        .distinct()
-    ):
-        regions.setdefault(isbn, []).append(region_code)
-    # A book sold in one region only has no other language to point to.
-    return {isbn: sorted(codes) for isbn, codes in regions.items() if len(codes) > 1}
-
-
-def _alternate_links(origin, row, region_codes):
-    """(hreflang, href) for each region's copy of a book page, then the
-    bare path as x-default: the frontend forwards it to the visitor's
-    region. The same set the book-page Function puts in its <head>."""
-    if not region_codes:
-        return []
-    active = _get_active_regions()
-    links = [
-        (active[code].default_language_id, _book_loc(origin, code.lower(), row))
-        for code in region_codes
-    ]
-    query = urlencode({'isbn': row['isbn13']})
-    links.append(('x-default', f'{origin}/book?{query}'))
-    return links
 
 
 def _region_codes():
@@ -211,24 +163,14 @@ def build_section(kind, region, start, end):
         rows = rows.filter(id__gte=start)
     if end is not None:
         rows = rows.filter(id__lt=end)
-    rows = list(rows.values(*fields))
-    alternates = _book_alternates(rows) if kind == 'books' else {}
-
-    entries = []
-    for row in rows:
-        links = ''.join(
-            f'<xhtml:link rel="alternate" hreflang="{lang}" href="{escape(href, _ATTR)}"/>'
-            for lang, href in _alternate_links(origin, row, alternates.get(row.get('isbn13')))
-        )
-        entries.append(
-            f'<url><loc>{escape(loc(origin, region, row))}</loc>'
-            f'<lastmod>{row["lastmod"].date().isoformat()}</lastmod>'
-            f'{links}</url>\n'
-        )
-
+    entries = [
+        f'<url><loc>{escape(loc(origin, region, row))}</loc>'
+        f'<lastmod>{row["lastmod"].date().isoformat()}</lastmod></url>\n'
+        for row in rows.values(*fields)
+    ]
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<urlset xmlns="{XMLNS}" xmlns:xhtml="{XHTML_NS}">\n'
+        f'<urlset xmlns="{XMLNS}">\n'
         + ''.join(entries)
         + '</urlset>\n'
     )
