@@ -163,14 +163,42 @@ def build_section(kind, region, start, end):
         rows = rows.filter(id__gte=start)
     if end is not None:
         rows = rows.filter(id__lt=end)
-    entries = [
-        f'<url><loc>{escape(loc(origin, region, row))}</loc>'
-        f'<lastmod>{row["lastmod"].date().isoformat()}</lastmod></url>\n'
-        for row in rows.values(*fields)
-    ]
+    rows_val = list(rows.values(*fields))
+    
+    # For books with ISBN, find regions where they exist to add hreflang alternates
+    alternates_dict = {}
+    if kind == 'books':
+        isbns = [row['isbn13'] for row in rows_val if row.get('isbn13')]
+        if isbns:
+            # Find regions for these ISBNs
+            from collections import defaultdict
+            region_map = defaultdict(list)
+            active_books = Book.objects.filter(
+                isbn13__in=isbns, listings__status='active'
+            ).values('isbn13', 'region_id').distinct()
+            for ab in active_books:
+                region_map[ab['isbn13']].append(ab['region_id'].lower())
+            alternates_dict = region_map
+
+    entries = []
+    REGION_TO_LANG = {'tw': 'zh-TW', 'hk': 'zh-HK'}
+    for row in rows_val:
+        url_loc = escape(loc(origin, region, row))
+        alts = ""
+        if kind == 'books' and row.get('isbn13') and row['isbn13'] in alternates_dict:
+            for alt_region in alternates_dict[row['isbn13']]:
+                alt_loc = escape(loc(origin, alt_region, row))
+                alt_lang = REGION_TO_LANG.get(alt_region, 'en')
+                alts += f'<xhtml:link rel="alternate" hreflang="{alt_lang}" href="{alt_loc}"/>'
+        entries.append(
+            f'<url><loc>{url_loc}</loc>'
+            f'<lastmod>{row["lastmod"].date().isoformat()}</lastmod>'
+            f'{alts}</url>\n'
+        )
+
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<urlset xmlns="{XMLNS}">\n'
+        f'<urlset xmlns="{XMLNS}" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n'
         + ''.join(entries)
         + '</urlset>\n'
     )
