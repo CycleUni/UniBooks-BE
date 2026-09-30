@@ -21,10 +21,13 @@ class ConversationSerializer(serializers.ModelSerializer):
     latest_message = serializers.SerializerMethodField()
     order_id = serializers.SerializerMethodField()
     order_status = serializers.SerializerMethodField()
+    # The agreed meetup, shown on the chat's meetup card.
+    order_meetup_time = serializers.SerializerMethodField()
+    order_meetup_location = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
-        fields = ['id', 'listing_id', 'listing_title', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'other_party_school_name', 'other_party_avatar_url', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status']
+        fields = ['id', 'listing_id', 'listing_title', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'other_party_school_name', 'other_party_avatar_url', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status', 'order_meetup_time', 'order_meetup_location']
 
     # A conversation can accumulate more than one Order over time (declined,
     # then the buyer requests again) — always resolve to the most recently
@@ -56,6 +59,15 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_order_status(self, obj):
         order = self._latest_order(obj)
         return order.status if order else None
+
+    def get_order_meetup_time(self, obj):
+        order = self._latest_order(obj)
+        # Formatted as the order endpoints format it (in the server's zone).
+        return serializers.DateTimeField().to_representation(order.meetup_time) if order and order.meetup_time else None
+
+    def get_order_meetup_location(self, obj):
+        order = self._latest_order(obj)
+        return order.meetup_location if order else ''
 
     def _other_party_user(self, obj):
         request = self.context.get('request')

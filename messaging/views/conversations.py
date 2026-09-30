@@ -69,10 +69,20 @@ class ConversationListView(generics.ListAPIView):
             if listing.seller_id == request.user.id:
                 return Response({"error": "Cannot message yourself"}, status=status.HTTP_400_BAD_REQUEST)
 
-            conv, created = Conversation.objects.get_or_create(
-                listing=listing,
-                buyer=request.user
-            )
+            conv = Conversation.objects.filter(listing=listing, buyer=request.user).first()
+            created = False
+            if conv is None:
+                # A new conversation is started by its first message. Once the
+                # seller has taken the listing down or sold it there is nothing
+                # left to ask about, and the chat would open on a listing whose
+                # photos are already gone. A reserved listing may still fall
+                # through, so asking about it stays allowed.
+                if listing.status in ('removed', 'sold'):
+                    return Response({"error": {"code": "msg.errListingUnavailable"}}, status=status.HTTP_409_CONFLICT)
+                conv, created = Conversation.objects.get_or_create(
+                    listing=listing,
+                    buyer=request.user
+                )
             serializer = ConversationSerializer(conv, context={'request': request})
             return Response(serializer.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
         except (Listing.DoesNotExist, ValidationError, ValueError):

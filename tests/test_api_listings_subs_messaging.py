@@ -634,6 +634,35 @@ def test_conversation_create_rules(api, listing, seller, buyer, db):
     assert resp.json()["id"] == conv_id
 
 
+@pytest.mark.parametrize("listing_status", ["removed", "sold"])
+def test_first_message_cannot_open_a_conversation_on_a_listing_taken_down(api, listing, buyer, listing_status):
+    listing.status = listing_status
+    listing.save(update_fields=["status"])
+    resp = api.post(
+        "/api/v1/messaging/conversations/",
+        {"listing_id": listing.id},
+        content_type="application/json",
+        **bearer(buyer),
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "msg.errListingUnavailable"
+    assert not Conversation.objects.filter(listing=listing, buyer=buyer).exists()
+
+
+def test_existing_conversation_still_opens_after_the_listing_is_taken_down(api, listing, buyer):
+    conv = Conversation.objects.create(listing=listing, buyer=buyer)
+    listing.status = "removed"
+    listing.save(update_fields=["status"])
+    resp = api.post(
+        "/api/v1/messaging/conversations/",
+        {"listing_id": listing.id},
+        content_type="application/json",
+        **bearer(buyer),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["id"] == str(conv.id)
+
+
 def test_conversation_list_shows_other_party_and_latest_message(api, listing, seller, buyer):
     # Message bodies are no longer stored in Django (CFEdgeChat owns message
     # history); the CFEdgeChat webhook mirrors only the latest message body

@@ -246,6 +246,11 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"error": {"code": "order.errNotParticipant"}}, status=status.HTTP_403_FORBIDDEN)
         return None
 
+    # Statuses in which the seller may still change the agreed time/place.
+    # Before 'accepted' there is nothing agreed yet (the details are set by
+    # the accept itself); after handover the meetup has already happened.
+    MEETUP_EDITABLE_STATUSES = ('accepted',)
+
     def update(self, request, *args, **kwargs):
         new_status = request.data.get('status')
         if new_status:
@@ -253,6 +258,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             denied = self._check_transition_permission(instance, new_status, request.user)
             if denied is not None:
                 return denied
+        elif 'meetup_time' in request.data or 'meetup_location' in request.data:
+            # Editing the meetup on its own, with no status change. This PATCH
+            # used to pass unchecked: the buyer could rewrite the seller's
+            # time and place, on an order in any status.
+            instance = self.get_object()
+            if request.user != instance.seller:
+                return Response({"error": {"code": "order.errSellerOnly"}}, status=status.HTTP_403_FORBIDDEN)
+            if instance.status not in self.MEETUP_EDITABLE_STATUSES:
+                return Response({"error": {"code": "order.errMeetupNotEditable"}}, status=status.HTTP_400_BAD_REQUEST)
         return super().update(request, *args, **kwargs)
 
     def perform_create(self, serializer):
@@ -288,6 +302,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         old_status = serializer.instance.status if serializer.instance else None
         old_meetup_time = serializer.instance.meetup_time if serializer.instance else None
+        old_meetup_location = serializer.instance.meetup_location if serializer.instance else ''
         new_status = serializer.validated_data.get('status', old_status)
 
         with transaction.atomic():
@@ -337,6 +352,11 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         if old_status != new_status:
             self._send_meetup_notification(order, old_status, new_status)
+        elif order.meetup_time != old_meetup_time or order.meetup_location != old_meetup_location:
+            # The seller edited the agreed time/place. The chat's meetup card
+            # shows the order's current details; this tells the buyer they
+            # changed and makes an open conversation refetch them.
+            send_order_notification(order, 'order.notify.meetup_updated', sender=order.seller)
 
     def _send_meetup_notification(self, order, old_status, new_status):
         """Send appropriate notification based on status transition."""

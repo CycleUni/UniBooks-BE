@@ -232,3 +232,78 @@ def test_edge_chat_post_failure_before_the_request_is_logged_not_raised(order, s
     conv = Conversation.objects.get(listing=order.listing, buyer=order.buyer)
 
     assert order_views._post_edge_chat_message(conv, order.buyer, "[SYSTEM:x]", log_prefix="Test") is False
+
+
+# ---------------------------------------------------------------------
+# Editing the agreed meetup after the accept
+# ---------------------------------------------------------------------
+
+
+def _patch_meetup(api, order, header, **fields):
+    return api.patch(f"/api/v1/orders/{order.id}/", fields, content_type="application/json", **header)
+
+
+def test_seller_edits_meetup_details_and_the_chat_is_told(api, order, seller_header, monkeypatch):
+    import orders.views.orders as order_views
+    sent = []
+    monkeypatch.setattr(order_views, "send_order_notification", lambda o, key, **kw: sent.append(key))
+    order.status = "accepted"
+    order.save(update_fields=["status"])
+
+    resp = _patch_meetup(api, order, seller_header, meetup_time="2030-01-02T18:30", meetup_location="Library")
+
+    assert resp.status_code == 200
+    order.refresh_from_db()
+    assert order.meetup_location == "Library"
+    assert order.meetup_time is not None
+    assert sent == ["order.notify.meetup_updated"]
+
+
+def test_unchanged_meetup_details_send_no_notification(api, order, seller_header, monkeypatch):
+    import orders.views.orders as order_views
+    sent = []
+    monkeypatch.setattr(order_views, "send_order_notification", lambda o, key, **kw: sent.append(key))
+    order.status = "accepted"
+    order.meetup_location = "Library"
+    order.save(update_fields=["status", "meetup_location"])
+
+    resp = _patch_meetup(api, order, seller_header, meetup_location="Library")
+
+    assert resp.status_code == 200
+    assert sent == []
+
+
+def test_buyer_cannot_edit_meetup_details(api, order, buyer_header):
+    order.status = "accepted"
+    order.save(update_fields=["status"])
+    resp = _patch_meetup(api, order, buyer_header, meetup_location="Somewhere else")
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "order.errSellerOnly"
+    order.refresh_from_db()
+    assert order.meetup_location == ""
+
+
+@pytest.mark.parametrize("order_status", ["pending", "handed_over", "completed", "cancelled"])
+def test_meetup_details_are_editable_only_while_accepted(api, order, seller_header, order_status):
+    order.status = order_status
+    order.save(update_fields=["status"])
+    resp = _patch_meetup(api, order, seller_header, meetup_location="Library")
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "order.errMeetupNotEditable"
+
+
+def test_conversation_carries_the_orders_meetup_details(api, order, buyer_header):
+    import datetime
+    order.status = "accepted"
+    order.meetup_time = timezone.make_aware(datetime.datetime(2030, 1, 2, 18, 30))
+    order.meetup_location = "Library"
+    order.save(update_fields=["status", "meetup_time", "meetup_location"])
+    conv = Conversation.objects.get(listing=order.listing, buyer=order.buyer)
+    conv.latest_message_body = "hi"
+    conv.save(update_fields=["latest_message_body"])
+
+    rows = api.get("/api/v1/messaging/conversations/", **buyer_header).json()["results"]
+
+    row = next(r for r in rows if r["id"] == str(conv.id))
+    assert row["order_meetup_location"] == "Library"
+    assert datetime.datetime.fromisoformat(row["order_meetup_time"]) == order.meetup_time
