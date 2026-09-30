@@ -25,6 +25,8 @@ from accounts.services import (
     get_grace_tokens,
     store_grace_tokens,
     was_rotated,
+    revoke_token_family,
+    token_family,
     refresh_token_is_whitelisted,
     forget_rotated_jti,
     email_already_used,
@@ -357,9 +359,11 @@ class RefreshTokenView(views.APIView):
             # race. Refuse it here rather than falling through: the rotation
             # record is a dict, which verify_and_revoke_refresh_token would
             # read as a user_id mismatch and answer by revoking every session
-            # the user has.
+            # the user has. A copy of the token is out there, so this sign-in's
+            # chain is revoked — its other devices are untouched.
             if was_rotated(jti, user_id):
-                logger.warning("Refresh token jti=%s replayed after the rotation grace window", jti)
+                logger.warning("Refresh token jti=%s replayed after the rotation grace window; revoking its family", jti)
+                revoke_token_family(jti, user_id)
                 return Response({"error": {"code": "auth.errTokenRevoked"}}, status=status.HTTP_401_UNAUTHORIZED)
 
             # Whitelist check. A bare "not found" (cache miss, eviction,
@@ -379,7 +383,7 @@ class RefreshTokenView(views.APIView):
             # token by overwriting its entry with the rotation record. Each
             # step either succeeds or raises before the old token has changed,
             # so a failed rotation can always be retried with the same token.
-            tokens = issue_tokens(user)
+            tokens = issue_tokens(user, family=token_family(jti))
             store_grace_tokens(jti, user_id, tokens)
             forget_rotated_jti(jti, user_id)
             return Response(tokens)

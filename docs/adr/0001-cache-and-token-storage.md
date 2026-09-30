@@ -34,7 +34,7 @@ Access token 仍為 15 分鐘效期的無狀態 JWT，驗證時不查白名單�
 
 ## 抽象層
 
-- `accounts.token_store.TokenStore`：`record`、`lookup`、`mark_rotated`、`forget`、`revoke`、`revoke_all`、`purge`。`accounts/services.py` 的公開函式與錯誤語意（儲存失敗回 503 `TokenStoreUnavailable`，撤銷路徑失敗則降級）不變。
+- `accounts.token_store.TokenStore`：`record`、`lookup`、`mark_rotated`、`forget`、`revoke`、`revoke_all`、`revoke_family`、`purge`。（`revoke_family` 為後加：過了寬限期的重放只撤銷該次登入的 token 鏈，見 migration 0003。）`accounts/services.py` 的公開函式與錯誤語意（儲存失敗回 503 `TokenStoreUnavailable`，撤銷路徑失敗則降級）不變。
 - `accounts.one_time_tokens`：`issue`、`read`、`consume`，以及更換 email 的 `issue_email_change`、`pending_email_change`、`cancel_email_change`。
 - `core.throttling.ScopedThrottle`：`ScopedRateThrottle` 的直接替代，scope 與速率設定不變，計數交給 `ThrottleStore`。固定視窗在邊界處最多可放行兩倍額度，對目前的速率可接受。
 

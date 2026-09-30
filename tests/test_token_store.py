@@ -21,6 +21,7 @@ from accounts.services import (
     purge_token_store,
     refresh_token_is_whitelisted,
     revoke_all_tokens_for_user,
+    token_family,
 )
 from accounts.token_store import (
     LegacyCacheTokenStore,
@@ -215,6 +216,104 @@ def test_login_is_503_when_the_token_cannot_be_recorded(fallback, api, user):
 
 
 # ---------------------------------------------------------------------
+# Token families: a replay revokes one sign-in, not the whole account
+# ---------------------------------------------------------------------
+
+
+def _age_rotation(refresh_token):
+    """Push a rotation record past the grace window, making its reuse a replay."""
+    RefreshTokenRecord.objects.filter(jti=_jti(refresh_token)).update(
+        rotated_at=timezone.now() - REFRESH_ROTATION_GRACE - timedelta(seconds=1)
+    )
+
+
+def test_every_rotation_of_a_sign_in_shares_its_family(fallback, api, user):
+    first = issue_tokens(user)
+    second = _refresh(api, first["refresh"]).json()
+    third = _refresh(api, second["refresh"]).json()
+
+    families = {
+        RefreshTokenRecord.objects.get(jti=_jti(pair["refresh"])).family
+        for pair in (first, second, third)
+    }
+    assert families == {_jti(first["refresh"])}
+
+
+def test_each_sign_in_starts_its_own_family(fallback, user):
+    phone, laptop = issue_tokens(user), issue_tokens(user)
+
+    assert (RefreshTokenRecord.objects.get(jti=_jti(phone["refresh"])).family
+            != RefreshTokenRecord.objects.get(jti=_jti(laptop["refresh"])).family)
+
+
+def test_a_replay_revokes_that_sign_ins_live_token(fallback, api, user):
+    phone = issue_tokens(user)
+    current = _refresh(api, phone["refresh"]).json()
+    _age_rotation(phone["refresh"])
+
+    replay = _refresh(api, phone["refresh"])
+
+    assert replay.status_code == 401
+    assert replay.json()["error"]["code"] == "auth.errTokenRevoked"
+    assert _refresh(api, current["refresh"]).status_code == 401
+
+
+def test_a_replay_leaves_the_users_other_sign_ins_alone(fallback, api, user):
+    phone = issue_tokens(user)
+    laptop = issue_tokens(user)
+    _refresh(api, phone["refresh"])
+    _age_rotation(phone["refresh"])
+
+    _refresh(api, phone["refresh"])
+
+    assert _refresh(api, laptop["refresh"]).status_code == 200
+
+
+def test_a_thief_who_rotates_first_is_cut_off_when_the_owner_comes_back(fallback, api, user):
+    """The case the family exists for: the copy is used before the original.
+    Refusing the owner alone would sign them out and leave the thief in."""
+    stolen = issue_tokens(user)
+    thief = _refresh(api, stolen["refresh"]).json()
+    _age_rotation(stolen["refresh"])
+
+    assert _refresh(api, stolen["refresh"]).status_code == 401  # the owner, too late
+    assert _refresh(api, thief["refresh"]).status_code == 401
+
+
+def test_a_concurrent_refresh_inside_the_grace_window_revokes_nothing(fallback, api, user):
+    tokens = issue_tokens(user)
+    rotated = _refresh(api, tokens["refresh"]).json()
+
+    assert _refresh(api, tokens["refresh"]).status_code == 200
+    assert _refresh(api, rotated["refresh"]).status_code == 200
+
+
+def test_a_chain_from_before_families_is_revoked_through_its_head(fallback, api, user):
+    """Rows written before the column are NULL. The head's jti stands in as
+    the family, so what it rotates into is still reachable from a replay."""
+    head = issue_tokens(user)
+    RefreshTokenRecord.objects.filter(jti=_jti(head["refresh"])).update(family=None)
+    current = _refresh(api, head["refresh"]).json()
+    assert RefreshTokenRecord.objects.get(jti=_jti(current["refresh"])).family == _jti(head["refresh"])
+    _age_rotation(head["refresh"])
+
+    _refresh(api, head["refresh"])
+
+    assert _refresh(api, current["refresh"]).status_code == 401
+
+
+def test_a_store_failure_while_revoking_still_refuses_the_replay(fallback, api, user):
+    tokens = issue_tokens(user)
+    _refresh(api, tokens["refresh"])
+    _age_rotation(tokens["refresh"])
+
+    with mock.patch.object(PostgresTokenStore, "revoke_family", side_effect=OperationalError("db gone")):
+        resp = _refresh(api, tokens["refresh"])
+
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------
 # Tokens issued before the switch
 # ---------------------------------------------------------------------
 
@@ -245,6 +344,25 @@ def test_a_cache_era_rotation_record_still_serves_the_grace_pair(api, user):
 
     assert resp.status_code == 200
     assert resp.json() == handed_back
+
+
+@override_settings(AUTH_LEGACY_CACHE_FALLBACK=True)
+def test_a_replayed_cache_era_token_revokes_what_it_rotated_into(api, user):
+    tokens = _legacy_pair(user)
+    current = _refresh(api, tokens["refresh"]).json()
+    _age_rotation(tokens["refresh"])
+
+    assert _refresh(api, tokens["refresh"]).status_code == 401
+    assert _refresh(api, current["refresh"]).status_code == 401
+
+
+@override_settings(AUTH_LEGACY_CACHE_FALLBACK=True)
+def test_a_cache_era_token_heads_its_own_family_before_it_is_adopted(user):
+    """token_family must not depend on an earlier lookup having copied the
+    entry into Postgres: the legacy store knows nothing of families."""
+    tokens = _legacy_pair(user)
+
+    assert token_family(_jti(tokens["refresh"])) == _jti(tokens["refresh"])
 
 
 @override_settings(AUTH_LEGACY_CACHE_FALLBACK=True)

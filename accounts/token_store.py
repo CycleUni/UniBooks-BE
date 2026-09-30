@@ -20,6 +20,7 @@ from datetime import timezone as dt_timezone
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import models
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -33,16 +34,19 @@ class TokenRecord:
     "already exchanged" rather than "never issued" (see
     accounts.services.store_grace_tokens). `rotated_at` is a Unix timestamp;
     None on a rotated record means it predates rotated_at being recorded.
+    `family` is the sign-in this token descends from; None only for legacy
+    cache entries, which the caller treats as a family of one.
     """
     user_id: str
     rotated: bool = False
     tokens: dict | None = None
     rotated_at: float | None = None
+    family: str | None = None
 
 
 class TokenStore:
-    def record(self, jti, user_id, ttl):
-        """Whitelist a freshly issued refresh token."""
+    def record(self, jti, user_id, ttl, family):
+        """Whitelist a freshly issued refresh token as a member of `family`."""
         raise NotImplementedError
 
     def lookup(self, jti):
@@ -63,6 +67,10 @@ class TokenStore:
 
     def revoke_all(self, user_id):
         """Drop every live token the user has."""
+        raise NotImplementedError
+
+    def revoke_family(self, family, user_id):
+        """Drop the live token of one sign-in's chain."""
         raise NotImplementedError
 
     def purge(self, grace):
@@ -118,10 +126,11 @@ class PostgresTokenStore(TokenStore):
         from accounts.models import RefreshTokenRecord
         return RefreshTokenRecord
 
-    def record(self, jti, user_id, ttl):
+    def record(self, jti, user_id, ttl, family):
         self._model().objects.create(
             jti=jti,
             user_id=user_id,
+            family=family,
             expires_at=timezone.now() + timedelta(seconds=ttl),
         )
 
@@ -129,18 +138,27 @@ class PostgresTokenStore(TokenStore):
         row = (
             self._model().objects
             .filter(jti=jti, expires_at__gt=timezone.now())
-            .only("user_id", "rotated_at", "rotated_tokens")
+            .only("user_id", "rotated_at", "rotated_tokens", "family")
             .first()
         )
         if row is None:
             return None
+        # A row from before the family column is the head of its own chain:
+        # whatever it rotates into from now on records its jti as the family,
+        # so revoking by it reaches them (revoke_family matches the jti too).
+        # A rotation that happened before the column cannot be traced — its
+        # successor is NULL as well — so replaying such a token is refused
+        # without revoking anything, as before; those tokens are gone within
+        # one refresh lifetime.
+        family = row.family or jti
         if row.rotated_at is None:
-            return TokenRecord(user_id=str(row.user_id))
+            return TokenRecord(user_id=str(row.user_id), family=family)
         return TokenRecord(
             user_id=str(row.user_id),
             rotated=True,
             tokens=row.rotated_tokens,
             rotated_at=row.rotated_at.timestamp(),
+            family=family,
         )
 
     def mark_rotated(self, jti, user_id, tokens, rotated_at, ttl):
@@ -164,6 +182,14 @@ class PostgresTokenStore(TokenStore):
 
     def revoke_all(self, user_id):
         self._model().objects.filter(user_id=user_id, rotated_at__isnull=True).delete()
+
+    def revoke_family(self, family, user_id):
+        # jti=family covers a pre-family head that was never rotated.
+        self._model().objects.filter(
+            models.Q(family=family) | models.Q(jti=family, family__isnull=True),
+            user_id=user_id,
+            rotated_at__isnull=True,
+        ).delete()
 
     def purge(self, grace):
         """Delete expired rows, and blank the token pair on rotation records
@@ -194,8 +220,8 @@ class MigratingTokenStore(TokenStore):
         self.primary = primary or PostgresTokenStore()
         self.legacy = legacy or LegacyCacheTokenStore()
 
-    def record(self, jti, user_id, ttl):
-        self.primary.record(jti, user_id, ttl)
+    def record(self, jti, user_id, ttl, family):
+        self.primary.record(jti, user_id, ttl, family)
 
     def lookup(self, jti):
         found = self.primary.lookup(jti)
@@ -215,7 +241,7 @@ class MigratingTokenStore(TokenStore):
         if found.rotated:
             self.primary.mark_rotated(jti, found.user_id, found.tokens, found.rotated_at or 0, ttl)
         else:
-            self.primary.record(jti, found.user_id, ttl)
+            self.primary.record(jti, found.user_id, ttl, jti)
 
     def mark_rotated(self, jti, user_id, tokens, rotated_at, ttl):
         self.primary.mark_rotated(jti, user_id, tokens, rotated_at, ttl)
@@ -230,6 +256,11 @@ class MigratingTokenStore(TokenStore):
     def revoke_all(self, user_id):
         self.primary.revoke_all(user_id)
         self._legacy_best_effort("revoke_all", user_id)
+
+    def revoke_family(self, family, user_id):
+        # Only Postgres rows carry a family; a legacy entry's successors were
+        # all written there, under the legacy jti as their family.
+        self.primary.revoke_family(family, user_id)
 
     def purge(self, grace):
         return self.primary.purge(grace)

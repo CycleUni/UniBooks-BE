@@ -359,9 +359,16 @@ class RefreshTokenRecord(models.Model):
     the old token reads as "already exchanged" rather than "never issued";
     rotated_tokens holds the pair it became and is blanked by the cleanup
     cron once the grace window has passed (ADR 0001).
+
+    family ties together every token one sign-in has rotated through, so a
+    replay can revoke that device's chain and leave the user's other devices
+    signed in. It is the jti of the chain's first token; rows written before
+    the column existed are NULL and stand for themselves (see
+    PostgresTokenStore.lookup).
     """
     jti = models.CharField(max_length=64, primary_key=True)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refresh_tokens')
+    family = models.CharField(max_length=64, null=True, blank=True)
     expires_at = models.DateTimeField(db_index=True)
     rotated_at = models.DateTimeField(null=True, blank=True)
     rotated_tokens = models.JSONField(null=True, blank=True)
@@ -373,6 +380,12 @@ class RefreshTokenRecord(models.Model):
             models.Index(
                 fields=['user'],
                 name='refresh_token_live_by_user',
+                condition=models.Q(rotated_at__isnull=True),
+            ),
+            # revoke_family: the chain's live token.
+            models.Index(
+                fields=['family'],
+                name='refresh_token_live_by_family',
                 condition=models.Q(rotated_at__isnull=True),
             ),
         ]

@@ -89,10 +89,13 @@ def _safe(operation, *args, default=None):
         return default
 
 
-def issue_tokens(user):
+def issue_tokens(user, family=None):
     """
     Issue a token pair and record the refresh token JTI in the whitelist
     (Postgres, see accounts/token_store.py).
+
+    `family` is the chain a rotation continues; a sign-in leaves it None and
+    starts a new one, named after its own first jti.
 
     Raises TokenStoreUnavailable (503) if the whitelist cannot be written —
     see _strict for why that beats handing out the pair anyway.
@@ -113,7 +116,7 @@ def issue_tokens(user):
     # Strict throughout, including the store's own bookkeeping: a failed read
     # of the user's token collection degrading to "empty" would drop every
     # other device from what "log out all devices" and password reset revoke.
-    _strict(get_token_store().record, jti, user_id, _LIFETIME_SECONDS)
+    _strict(get_token_store().record, jti, user_id, _LIFETIME_SECONDS, family or jti)
 
     return {
         'access': str(refresh.access_token),
@@ -177,6 +180,37 @@ def store_grace_tokens(jti, user_id, tokens):
     get_grace_tokens); a later replay is recognized here and refused.
     """
     _strict(get_token_store().mark_rotated, jti, user_id, tokens, time.time(), _LIFETIME_SECONDS)
+
+
+def token_family(jti):
+    """The chain this jti belongs to, for the rotation that continues it.
+
+    A record without one (a legacy cache entry) heads its own chain, the same
+    rule PostgresTokenStore.lookup applies to rows older than the column.
+    """
+    record = _strict(get_token_store().lookup, jti)
+    if record is None:
+        return None
+    return record.family or jti
+
+
+def revoke_token_family(jti, user_id):
+    """
+    A rotated token came back after the grace window: someone is holding a
+    copy of this sign-in's refresh token. Revoke the chain's live token so
+    whichever side rotated it last — the owner or whoever took the copy — has
+    to sign in again, and only on this device. The user's other sign-ins are
+    separate chains and keep working; "log out all devices" and a password
+    change remain the way to end those.
+
+    Best effort, like the other revocation paths: the replay is refused
+    either way, and a store hiccup here must not turn that refusal into a 503.
+    """
+    store = get_token_store()
+    record = _safe(store.lookup, jti)
+    if record is None or record.user_id != user_id:
+        return
+    _safe(store.revoke_family, record.family or jti, user_id)
 
 
 def refresh_token_is_whitelisted(jti, user_id):
