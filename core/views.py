@@ -134,3 +134,36 @@ class RegionsView(APIView):
                 "edu_email_suffix": r.edu_email_suffix,
             })
         return Response(data, status=status.HTTP_200_OK)
+
+
+class GeoRegionView(APIView):
+    """The region the visitor's IP places them in, for the frontend's first visit.
+
+    Only the CDN's country header is read — not get_region(), whose ?region=,
+    X-Region and cookie all outrank the IP and would just echo back whatever
+    the frontend already sent. `region` is an active region code, or null
+    when the header is missing (no CDN in front, proxy turned off) or names
+    a country with no region here.
+
+    Kept apart from RegionsView on purpose: the region list is the same for
+    everyone, this answer is per visitor, and no-store keeps any cache on the
+    way from handing one visitor's answer to the next.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        from core.region import _get_active_regions, ip_country
+
+        country = ip_country(request)
+        region = None
+        if country:
+            try:
+                if country in _get_active_regions():
+                    region = country
+            except Exception:
+                logger.exception("Failed to load active regions for geo lookup")
+        response = Response({"region": region}, status=status.HTTP_200_OK)
+        response['Cache-Control'] = 'no-store'
+        return response

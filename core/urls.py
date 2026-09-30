@@ -1,5 +1,5 @@
 from django.urls import path
-from core.views import HealthCheckView, RegionsView
+from core.views import GeoRegionView, HealthCheckView, RegionsView
 
 # HomeMetadataView is routed at the project level (`unibooks/urls.py`) to 
 # `accounts.views.HomeMetadataView` to keep the `core` app independent.
@@ -7,5 +7,6 @@ from core.views import HealthCheckView, RegionsView
 urlpatterns = [
     path('healthz/', HealthCheckView.as_view(), name='healthz'),
     path('regions/', RegionsView.as_view(), name='regions'),
+    path('geo/', GeoRegionView.as_view(), name='geo'),
 ]
 

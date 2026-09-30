@@ -294,6 +294,11 @@ LANGUAGES = [
     ('en', _('English')),
 ]
 DEFAULT_REGION = 'TW'
+# The request header the CDN in front of the API puts the visitor's
+# ISO 3166-1 country in. Cloudflare's by default; moving to another CDN is a
+# matter of setting this (CloudFront-Viewer-Country, X-Vercel-IP-Country, ...).
+# Without the header, IP-based region detection is simply skipped.
+GEOIP_COUNTRY_HEADER = env.str("GEOIP_COUNTRY_HEADER", default="CF-IPCountry")
 LANGUAGE_CODE = 'en'
 TIME_ZONE = "Asia/Taipei"
 USE_I18N = True

@@ -38,6 +38,19 @@ def _get_active_regions():
     cache.set('active_regions', regions_dict, 3600)
     return regions_dict
 
+def ip_country(request):
+    """The visitor's country as the CDN placed it by IP, upper-cased, or None.
+
+    Read from settings.GEOIP_COUNTRY_HEADER so the CDN can change without
+    touching code. The value is not checked against the region list here —
+    Cloudflare also sends pseudo-codes such as XX (unknown) and T1 (Tor) —
+    callers match it against the active regions themselves.
+    """
+    header = getattr(settings, 'GEOIP_COUNTRY_HEADER', 'CF-IPCountry')
+    value = (request.headers.get(header) or '').strip().upper() if header else ''
+    return value or None
+
+
 def get_region(request):
     """
     Definitive entry point for region resolution in DRF views.
@@ -48,7 +61,7 @@ def get_region(request):
     2. X-Region (Header)
     3. region (Cookie)
     4. Authenticated user's single verified region (only if exactly one exists)
-    5. CF-IPCountry (Cloudflare Header)
+    5. The CDN's visitor-country header (settings.GEOIP_COUNTRY_HEADER)
     6. settings.DEFAULT_REGION
     7. The first active region in DB
     """
@@ -86,9 +99,9 @@ def get_region(request):
             if len(regions) == 1:
                 candidates.append(regions[0].code.upper())
         
-    cf_region = request.headers.get('CF-IPCountry')
-    if cf_region:
-        candidates.append(cf_region.upper())
+    ip_region = ip_country(request)
+    if ip_region:
+        candidates.append(ip_region)
         
     candidates.append(DEFAULT_REGION_CODE.upper())
     
