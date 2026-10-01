@@ -30,12 +30,15 @@ class ChatUploadURLView(views.APIView):
             return Response({"error": {"code": "msg.errConversationRequired"}}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            conversation = Conversation.objects.select_related('listing').get(id=conversation_id)
+            conversation = Conversation.objects.get(id=conversation_id)
         except (Conversation.DoesNotExist, ValidationError):
             return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        if conversation.buyer_id != request.user.id and conversation.listing.seller_id != request.user.id:
+        if conversation.buyer_id != request.user.id and conversation.seller_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
+        # A deleted listing's chat stays readable but takes no new messages.
+        if conversation.listing_id is None:
+            return Response({"error": {"code": "msg.errListingDeleted"}}, status=status.HTTP_403_FORBIDDEN)
 
         content_type = request.data.get('content_type')
         ext = ALLOWED_CONTENT_TYPES.get(content_type)
@@ -87,12 +90,15 @@ class ChatUploadDirectView(views.APIView):
             return Response({"error": {"code": "msg.errConversationRequired"}}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            conversation = Conversation.objects.select_related('listing').get(id=conversation_id)
+            conversation = Conversation.objects.get(id=conversation_id)
         except (Conversation.DoesNotExist, ValidationError):
             return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        if conversation.buyer_id != request.user.id and conversation.listing.seller_id != request.user.id:
+        if conversation.buyer_id != request.user.id and conversation.seller_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
+        # A deleted listing's chat stays readable but takes no new messages.
+        if conversation.listing_id is None:
+            return Response({"error": {"code": "msg.errListingDeleted"}}, status=status.HTTP_403_FORBIDDEN)
 
         from django.core.files.storage import default_storage
 

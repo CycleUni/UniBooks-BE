@@ -15,12 +15,14 @@ def visible_conversations(user):
     from messaging.models import Conversation
     return Conversation.objects.exclude(
         Q(buyer=user, buyer_deleted_at__isnull=False) |
-        Q(listing__seller=user, seller_deleted_at__isnull=False)
+        Q(seller=user, seller_deleted_at__isnull=False)
     )
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    listing_title = serializers.CharField(source='listing.book.title', read_only=True)
+    # From the snapshot, so a deleted listing's orders still say what was bought.
+    listing_title = serializers.CharField(source='book_title', read_only=True)
+    listing_deleted = serializers.SerializerMethodField()
     buyer_name = serializers.CharField(source='buyer.display_name', read_only=True)
     seller_name = serializers.CharField(source='seller.display_name', read_only=True)
     has_reviewed = serializers.SerializerMethodField()
@@ -50,9 +52,12 @@ class OrderSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return None
         conv_id = visible_conversations(request.user).filter(
-            listing_id=obj.listing_id, buyer_id=obj.buyer_id
+            listing_ref=obj.listing_ref, buyer_id=obj.buyer_id
         ).values_list('id', flat=True).first()
         return str(conv_id) if conv_id else None
+
+    def get_listing_deleted(self, obj):
+        return obj.listing_id is None
 
     def get_has_reviewed(self, obj):
         # OrderViewSet.get_queryset annotates this; the query below is only

@@ -2,6 +2,13 @@ import uuid
 from django.db import models
 from django.conf import settings
 
+from listings.snapshot import fill_listing_snapshot
+
+# An order in one of these states still needs its listing: the seller cannot
+# delete the listing until the order is completed or cancelled.
+ACTIVE_ORDER_STATUSES = ('pending', 'accepted', 'handed_over')
+
+
 class Order(models.Model):
     region = models.ForeignKey('core.Region', on_delete=models.PROTECT)
     currency = models.ForeignKey('core.Currency', on_delete=models.PROTECT)
@@ -16,7 +23,12 @@ class Order(models.Model):
 
     buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='orders_bought')
     seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='orders_sold')
-    listing = models.ForeignKey('listings.Listing', on_delete=models.CASCADE, related_name='orders')
+    # SET_NULL: the order (and its reviews) outlives a deleted listing and is
+    # shown from the snapshot below — see listings/snapshot.py.
+    listing = models.ForeignKey('listings.Listing', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
+    listing_ref = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
+    book_title = models.CharField(max_length=255, blank=True, default='')
+    book_isbn = models.CharField(max_length=13, blank=True, default='')
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     cancel_reason = models.CharField(max_length=50, blank=True, null=True)
@@ -42,8 +54,12 @@ class Order(models.Model):
             models.Index(fields=['status', 'meetup_time'], name='order_status_meetup_time_idx'),
         ]
 
+    def save(self, *args, **kwargs):
+        fill_listing_snapshot(self)
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Order #{self.id} - {self.listing.book.title} ({self.status})"
+        return f"Order #{self.id} - {self.book_title} ({self.status})"
 
 class Review(models.Model):
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='reviews')

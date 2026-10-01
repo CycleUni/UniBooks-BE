@@ -2,11 +2,20 @@ import uuid
 from django.db import models
 from django.conf import settings
 from listings.models import Listing
+from listings.snapshot import fill_listing_snapshot
 
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='conversations')
+    # SET_NULL: both sides keep the chat history after the seller deletes the
+    # listing. The seller and region were only ever reachable through the
+    # listing, so they are columns of their own now — see listings/snapshot.py.
+    listing = models.ForeignKey(Listing, on_delete=models.SET_NULL, null=True, blank=True, related_name='conversations')
     buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='conversations_as_buyer')
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True, related_name='conversations_as_seller')
+    region = models.ForeignKey('core.Region', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    listing_ref = models.UUIDField(null=True, blank=True, db_index=True, editable=False)
+    book_title = models.CharField(max_length=255, blank=True, default='')
+    book_isbn = models.CharField(max_length=13, blank=True, default='')
 
     latest_message_body = models.TextField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -32,7 +41,7 @@ class Conversation(models.Model):
         from django.utils import timezone
         if self.buyer_id == user.id:
             field = 'buyer_deleted_at'
-        elif self.listing.seller_id == user.id:
+        elif self.seller_id == user.id:
             field = 'seller_deleted_at'
         else:
             return False  # not a participant
@@ -46,6 +55,14 @@ class Conversation(models.Model):
             self.delete()
             return 'deleted'
         return 'hidden'
+
+    def save(self, *args, **kwargs):
+        fill_listing_snapshot(self, seller=True, region=True)
+        super().save(*args, **kwargs)
+
+    @property
+    def listing_deleted(self):
+        return self.listing_id is None
 
     class Meta:
         unique_together = ('listing', 'buyer')

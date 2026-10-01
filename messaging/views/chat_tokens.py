@@ -40,12 +40,19 @@ class ChatTokenView(views.APIView):
             return Response({"error": {"code": "msg.errConversationRequired"}}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            conversation = Conversation.objects.select_related('listing').get(id=conversation_id)
+            conversation = Conversation.objects.get(id=conversation_id)
         except (Conversation.DoesNotExist, ValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-        if conversation.buyer_id != request.user.id and conversation.listing.seller_id != request.user.id:
+        if conversation.buyer_id != request.user.id and conversation.seller_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
+
+        claims = {}
+        if conversation.listing_deleted:
+            # The seller deleted the listing: both sides may still read the
+            # history, but there is nothing left to arrange. CFEdgeChat lets
+            # an observer read the room and refuses its sends and deletes.
+            claims["role"] = "observer"
 
         # room_id ties this token to exactly this conversation: CFEdgeChat
         # rejects any attempt to use it against a different room, so a valid
@@ -71,8 +78,9 @@ class ChatTokenView(views.APIView):
             # rather than trusting client input, who is allowed to receive
             # cross-room notifications about this conversation on their
             # single per-user hub connection.
-            "participant_ids": [str(conversation.buyer_id), str(conversation.listing.seller_id)],
+            "participant_ids": [str(conversation.buyer_id), str(conversation.seller_id)],
             "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2),
+            **claims,
         })
         edge_chat_url = getattr(settings, 'EDGE_CHAT_URL', 'http://localhost:8787')
         return Response({"token": token, "edge_chat_url": edge_chat_url})
@@ -174,7 +182,7 @@ class EdgeChatWebhookView(views.APIView):
         is_offline = data.get("is_offline", False)
 
         try:
-            conversation = Conversation.objects.select_related('listing').get(id=room_id)
+            conversation = Conversation.objects.get(id=room_id)
             conversation.latest_message_body = content
             conversation.save(update_fields=['latest_message_body', 'updated_at'])
 
@@ -215,14 +223,14 @@ class EdgeChatWebhookView(views.APIView):
         try:
             conversation = (
                 Conversation.objects
-                .select_related("listing__book", "listing__seller", "listing__region", "buyer")
+                .select_related("seller", "region", "buyer")
                 .get(id=room_id)
             )
         except (Conversation.DoesNotExist, ValidationError):
             return Response({"error": "Conversation not found"}, status=status.HTTP_404_NOT_FOUND)
 
         buyer = conversation.buyer
-        seller = conversation.listing.seller
+        seller = conversation.seller
         if str(buyer.id) == str(recipient_id):
             recipient, other, hidden_at = buyer, seller, conversation.buyer_deleted_at
         elif str(seller.id) == str(recipient_id):
@@ -263,12 +271,12 @@ class EdgeChatWebhookView(views.APIView):
         # user-supplied; Django raises BadHeaderError rather than sending, but
         # only after the caller has already been told the mail went out.
         sender_name = " ".join((sender.display_name or "").split()) or "UniBooks"
-        listing_title = conversation.listing.book.title if conversation.listing.book else ""
+        listing_title = conversation.book_title
         # Region-prefixed: every frontend route lives under /<region>/, and the
         # inbox only lists conversations belonging to the region currently
         # selected — a link without the prefix lands the reader in whichever
         # region they last used, where this conversation may not exist.
-        region = str(conversation.listing.region_id).lower()
+        region = str(conversation.region_id).lower()
         link = f"{settings.FRONTEND_URL}/{region}/messages?chat={conversation.id}"
         quoted = _chat_email_preview(preview)
 
@@ -276,7 +284,7 @@ class EdgeChatWebhookView(views.APIView):
         # the frontend adds the reader's own.
         settings_link = f"{settings.FRONTEND_URL}/account/notifications"
 
-        lang = email_language_for(recipient, conversation.listing.region)
+        lang = email_language_for(recipient, conversation.region)
         lines = [t(lang, "email.chatMessage.intro", sender=sender_name), ""]
         if listing_title:
             lines.append(t(lang, "email.chatMessage.listing", title=listing_title))

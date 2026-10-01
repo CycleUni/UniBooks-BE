@@ -23,7 +23,7 @@ import time
 conv_id = '74c1c3031c344e1ebb87e51e516d028c'
 conv = Conversation.objects.get(id=conv_id)
 user_id = str(conv.buyer_id)
-seller_id = str(conv.listing.seller_id)
+seller_id = str(conv.seller_id)
 
 app_id = getattr(settings, 'EDGE_CHAT_APP_ID', 'unibooks')
 token_backend = TokenBackend(algorithm="HS256", signing_key=settings.EDGE_CHAT_JWT_SECRET)

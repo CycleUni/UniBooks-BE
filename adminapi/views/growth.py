@@ -101,10 +101,10 @@ class AdminStatsGrowthView(views.APIView):
         sellers = set(orders.values_list('seller_id', flat=True)) | set(listings.values_list('seller_id', flat=True))
 
         # Chats → orders
-        chats = Conversation.objects.filter(listing__region=region)
+        chats = Conversation.objects.filter(region=region)
         if since:
             chats = chats.filter(created_at__gte=since)
-        ordered = Order.objects.filter(listing=OuterRef('listing'), buyer=OuterRef('buyer'))
+        ordered = Order.objects.filter(listing_ref=OuterRef('listing_ref'), buyer=OuterRef('buyer'))
         chats = chats.annotate(
             has_order=Exists(ordered),
             has_sale=Exists(ordered.filter(status='completed')),
@@ -112,7 +112,7 @@ class AdminStatsGrowthView(views.APIView):
         chat_total = chats.count()
         chat_ordered = chats.filter(has_order=True).count()
         chat_sold = chats.filter(has_sale=True).count()
-        undated_chats = Conversation.objects.filter(listing__region=region, created_at__isnull=True).count()
+        undated_chats = Conversation.objects.filter(region=region, created_at__isnull=True).count()
 
         # Requests → orders by the requester, placed after the request
         requests = _since(Subscription.objects.filter(region=region), since)

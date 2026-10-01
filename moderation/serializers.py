@@ -4,9 +4,15 @@ from .models import Report, ChatReport
 
 
 class ReportListingSerializer(serializers.Serializer):
-    """Lightweight nested serializer, exposes only the listing fields needed by the report page."""
-    id = serializers.UUIDField(read_only=True)
-    title = serializers.CharField(source='book.title', read_only=True)
+    """The reported listing as the report page shows it — read from the
+    report's own snapshot, so a report outlives the listing it is about
+    (listings/snapshot.py). `deleted` tells the page not to link to it."""
+    id = serializers.UUIDField(source='listing_ref', read_only=True)
+    title = serializers.CharField(source='book_title', read_only=True)
+    deleted = serializers.SerializerMethodField()
+
+    def get_deleted(self, report):
+        return report.listing_id is None
 
 
 class ReportReporterSerializer(serializers.Serializer):
@@ -33,7 +39,7 @@ class ReportCreateSerializer(serializers.ModelSerializer):
 class ReportSerializer(serializers.ModelSerializer):
     """For reading reports (user's own submitted reports / staff review list)."""
 
-    listing = ReportListingSerializer(read_only=True)
+    listing = ReportListingSerializer(source='*', read_only=True)
     reporter = ReportReporterSerializer(read_only=True)
 
     class Meta:
@@ -69,7 +75,8 @@ class ReportStatusUpdateSerializer(serializers.ModelSerializer):
 class ChatReportConversationSerializer(serializers.Serializer):
     """Lightweight serializer for the conversation nested in a chat report."""
     id = serializers.UUIDField(read_only=True)
-    listing_title = serializers.CharField(source='listing.book.title', read_only=True)
+    listing_title = serializers.CharField(source='book_title', read_only=True)
+    listing_deleted = serializers.BooleanField(read_only=True)
 
 
 class ChatReportReporterSerializer(serializers.Serializer):
@@ -95,7 +102,7 @@ class ChatReportCreateSerializer(serializers.ModelSerializer):
     def validate_conversation(self, value):
         reporter = self.context['request'].user
         # `value` is already the Conversation row; no need to re-query it twice.
-        if reporter.id not in (value.buyer_id, value.listing.seller_id):
+        if reporter.id not in (value.buyer_id, value.seller_id):
             raise serializers.ValidationError("You are not a participant in this conversation.")
         return value
 
@@ -108,7 +115,7 @@ class ChatReportCreateSerializer(serializers.ModelSerializer):
         if conversation is not None and reported_party is not None:
             reporter = self.context['request'].user
             other_party_id = (
-                conversation.listing.seller_id if reporter.id == conversation.buyer_id else conversation.buyer_id
+                conversation.seller_id if reporter.id == conversation.buyer_id else conversation.buyer_id
             )
             if reported_party.id != other_party_id:
                 raise serializers.ValidationError({"reported_party": "moderation.errInvalidReportedParty"})

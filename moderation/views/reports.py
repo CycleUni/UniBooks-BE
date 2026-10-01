@@ -18,7 +18,7 @@ def scope_reports_to_manager(qs, user):
     rule adminapi applies to every other staff-facing list)."""
     if user.is_superuser:
         return qs
-    return qs.filter(listing__region__in=user.managed_regions.all())
+    return qs.filter(region__in=user.managed_regions.all())
 
 
 class ReportCreateView(generics.CreateAPIView):
@@ -70,8 +70,8 @@ class MyReportsView(generics.ListAPIView):
     def get_queryset(self):
         region = get_region(self.request)
         return (
-            Report.objects.filter(reporter=self.request.user, listing__region=region)
-            .select_related('listing__book', 'reporter')
+            Report.objects.filter(reporter=self.request.user, region=region)
+            .select_related('reporter')
             .order_by('-created_at')
         )
 
@@ -88,7 +88,7 @@ class ReportListView(generics.ListAPIView):
     pagination_class = PageNumberPagination
 
     def get_queryset(self):
-        qs = Report.objects.select_related('listing__book', 'reporter').order_by('-created_at')
+        qs = Report.objects.select_related('reporter').order_by('-created_at')
         qs = scope_reports_to_manager(qs, self.request.user)
         status_filter = self.request.query_params.get('status')
         if status_filter:
@@ -113,7 +113,8 @@ class ReportActionView(generics.UpdateAPIView):
 
     def perform_update(self, serializer):
         report = serializer.save()
-        if report.status == 'actioned':
+        # Nothing to take down if the seller has deleted the listing since.
+        if report.status == 'actioned' and report.listing is not None:
             listing = report.listing
             listing.status = 'removed'
             listing.save(update_fields=['status'])

@@ -40,10 +40,11 @@ class IsVerifiedInRegion(permissions.BasePermission):
             return False
             
         target_region = None
+        listing = getattr(obj, 'listing', None)
         if hasattr(obj, 'region'):
             target_region = obj.region
-        elif hasattr(obj, 'listing') and hasattr(obj.listing, 'region'):
-            target_region = obj.listing.region
+        elif listing is not None and hasattr(listing, 'region'):
+            target_region = listing.region
         elif hasattr(obj, 'order') and hasattr(obj.order, 'region'):
             target_region = obj.order.region
             

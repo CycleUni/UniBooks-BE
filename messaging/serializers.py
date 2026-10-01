@@ -4,8 +4,14 @@ from listings.serializers import ListingSerializer
 from accounts.serializers import school_name_in_region
 
 class ConversationSerializer(serializers.ModelSerializer):
-    listing_id = serializers.CharField(source='listing.id', read_only=True)
-    listing_title = serializers.CharField(source='listing.book.title', read_only=True)
+    # The original listing's id even once it is deleted: the chat links to the
+    # listing page, which then says the listing no longer exists. Title and
+    # ISBN come from the snapshot (listings/snapshot.py); price, condition and
+    # course are only shown while the listing exists and are null after.
+    listing_id = serializers.CharField(source='listing_ref', read_only=True)
+    listing_title = serializers.CharField(source='book_title', read_only=True)
+    listing_isbn = serializers.CharField(source='book_isbn', read_only=True)
+    listing_deleted = serializers.BooleanField(read_only=True)
     listing_photo = serializers.SerializerMethodField()
     listing_price = serializers.IntegerField(source='listing.price', read_only=True)
     listing_condition = serializers.CharField(source='listing.condition', read_only=True)
@@ -17,7 +23,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     other_party_school_name = serializers.SerializerMethodField()
     other_party_avatar_url = serializers.SerializerMethodField()
     buyer_id = serializers.IntegerField(source='buyer.id', read_only=True)
-    seller_id = serializers.IntegerField(source='listing.seller.id', read_only=True)
+    seller_id = serializers.IntegerField(read_only=True)
     latest_message = serializers.SerializerMethodField()
     order_id = serializers.SerializerMethodField()
     order_status = serializers.SerializerMethodField()
@@ -27,7 +33,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ['id', 'listing_id', 'listing_title', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'other_party_school_name', 'other_party_avatar_url', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status', 'order_meetup_time', 'order_meetup_location']
+        fields = ['id', 'listing_id', 'listing_title', 'listing_isbn', 'listing_deleted', 'listing_photo', 'listing_price', 'listing_condition', 'listing_course', 'other_party', 'other_party_role', 'other_party_school_name', 'other_party_avatar_url', 'buyer_id', 'seller_id', 'latest_message', 'updated_at', 'order_id', 'order_status', 'order_meetup_time', 'order_meetup_location']
 
     # A conversation can accumulate more than one Order over time (declined,
     # then the buyer requests again) — always resolve to the most recently
@@ -39,16 +45,18 @@ class ConversationSerializer(serializers.ModelSerializer):
         # Memoised per instance: order_id and order_status both need it.
         if hasattr(obj, '_latest_order_cache'):
             return obj._latest_order_cache
-        prefetched = getattr(obj.listing, 'prefetched_orders', None)
+        prefetched = getattr(obj.listing, 'prefetched_orders', None) if obj.listing else None
         if prefetched is not None:
             # ConversationListView prefetches the listing's orders newest
             # first, so this is a pure in-memory pick.
             mine = [o for o in prefetched if o.buyer_id == obj.buyer_id]
             order = next((o for o in mine if o.status != 'cancelled'), None) or (mine[0] if mine else None)
         else:
-            order = obj.listing.orders.filter(buyer=obj.buyer).exclude(status='cancelled').order_by('-created_at').first()
-            if not order:
-                order = obj.listing.orders.filter(buyer=obj.buyer).order_by('-created_at').first()
+            # Paired on listing_ref so a deleted listing's chat still finds
+            # its order.
+            from orders.models import Order
+            mine = Order.objects.filter(listing_ref=obj.listing_ref, buyer=obj.buyer).order_by('-created_at')
+            order = mine.exclude(status='cancelled').first() or mine.first()
         obj._latest_order_cache = order
         return order
 
@@ -73,7 +81,7 @@ class ConversationSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return None
-        return obj.listing.seller if obj.buyer_id == request.user.id else obj.buyer
+        return obj.seller if obj.buyer_id == request.user.id else obj.buyer
 
     def get_other_party(self, obj):
         user = self._other_party_user(obj)
@@ -96,9 +104,14 @@ class ConversationSerializer(serializers.ModelSerializer):
         return obj.latest_message_body if obj.latest_message_body else ""
 
     def get_listing_photo(self, obj):
-        if obj.listing.photos and len(obj.listing.photos) > 0:
-            return obj.listing.photos[0]
-        return obj.listing.book.cover_url if obj.listing.book else ''
+        # The photos are deleted from storage with the listing; the frontend
+        # shows the cover by ISBN instead.
+        listing = obj.listing
+        if listing is None:
+            return ''
+        if listing.photos:
+            return listing.photos[0]
+        return listing.book.cover_url if listing.book else ''
 
 
 

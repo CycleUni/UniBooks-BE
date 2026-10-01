@@ -5,6 +5,6 @@ from .models import Order
 class OrderAdmin(admin.ModelAdmin):
     list_display = ('id', 'buyer', 'seller', 'listing', 'status', 'total_amount', 'created_at')
     list_filter = ('status', 'created_at')
-    search_fields = ('buyer__email', 'seller__email', 'listing__book__title')
+    search_fields = ('buyer__email', 'seller__email', 'book_title')
     readonly_fields = ('created_at', 'updated_at')
     date_hierarchy = 'created_at'

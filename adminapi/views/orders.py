@@ -7,9 +7,8 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
-from core.models import AuditEvent
 from orders.models import Order
-from orders.views import send_order_notification
+from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_order
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminOrderSerializer
@@ -34,7 +33,7 @@ class AdminOrderListView(generics.ListAPIView):
                 Q(id__icontains=q_clean)
                 | Q(buyer__email__icontains=q)
                 | Q(seller__email__icontains=q)
-                | Q(listing__book__title__icontains=q)
+                | Q(book_title__icontains=q)
             )
         status_param = self.request.query_params.get('status')
         if status_param:
@@ -74,7 +73,7 @@ class AdminOrderForceCancelView(views.APIView):
         order = get_object_or_404(qs, pk=pk)
 
         reason = (request.data.get('reason') or '').strip()
-        if len(reason) < 3:
+        if len(reason) < PLATFORM_CANCEL_REASON_MIN_LENGTH:
             return Response(
                 {"error": {"code": "admin.errInvalidReason"}},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -86,16 +85,6 @@ class AdminOrderForceCancelView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        order.status = 'cancelled'
-        order.cancel_reason = f'admin_override: {reason}'
-        order.save(update_fields=['status', 'cancel_reason', 'updated_at'])
-
-        send_order_notification(order, 'order.notify.admin_cancelled', sender=request.user)
-
-        AuditEvent.objects.create(
-            user=request.user,
-            kind='admin.order_force_cancelled',
-            meta={'order_id': str(order.id), 'reason': reason},
-        )
+        platform_cancel_order(order, reason, request.user)
 
         return Response(AdminOrderSerializer(order).data)

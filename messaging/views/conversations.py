@@ -37,24 +37,24 @@ class ConversationListView(generics.ListAPIView):
         user = self.request.user
         region = get_region(self.request)
         return Conversation.objects.filter(
-            Q(buyer=user) | Q(listing__seller=user),
-            listing__region=region
+            Q(buyer=user) | Q(seller=user),
+            region=region
         ).exclude(
             Q(buyer=user, buyer_deleted_at__isnull=False) |
-            Q(listing__seller=user, seller_deleted_at__isnull=False) |
+            Q(seller=user, seller_deleted_at__isnull=False) |
             # A buyer who opened a chat and never wrote in it left the seller
             # nothing to read. The app now creates a conversation only with
             # its first message, but rows from before that (and from older
             # clients) are still empty; the seller doesn't see them.
-            Q(listing__seller=user, latest_message_body__isnull=True) |
-            Q(listing__seller=user, latest_message_body='')
-        ).select_related('listing__book', 'listing__seller', 'buyer').prefetch_related(
+            Q(seller=user, latest_message_body__isnull=True) |
+            Q(seller=user, latest_message_body='')
+        ).select_related('listing__book', 'seller', 'buyer').prefetch_related(
             # ConversationSerializer resolves each row's latest order; without
             # this it ran up to four queries per conversation in the inbox.
             Prefetch('listing__orders', queryset=Order.objects.order_by('-created_at'), to_attr='prefetched_orders'),
             # The other party's school, shown beside their name in the inbox.
             prefetch_verified_school('buyer', region),
-            prefetch_verified_school('listing__seller', region),
+            prefetch_verified_school('seller', region),
         ).order_by('-updated_at').distinct()
 
     def post(self, request):
@@ -96,7 +96,7 @@ class ConversationDeleteView(views.APIView):
     def delete(self, request, conversation_id):
         region = get_region(request)
         try:
-            conversation = Conversation.objects.select_related('listing').get(listing__region=region, id=conversation_id)
+            conversation = Conversation.objects.get(region=region, id=conversation_id)
         except (Conversation.DoesNotExist, ValidationError):
             return Response(status=status.HTTP_404_NOT_FOUND)
 

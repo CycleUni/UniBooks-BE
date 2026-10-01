@@ -1,5 +1,6 @@
 import logging
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics, status
@@ -10,6 +11,8 @@ from rest_framework.response import Response
 from core.models import AuditEvent
 from listings.models import Listing
 from listings.utils import delete_listing
+from orders.models import ACTIVE_ORDER_STATUSES
+from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_order
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
@@ -150,14 +153,25 @@ class AdminListingDetailView(generics.RetrieveUpdateAPIView):
 
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
-        # Orders cascade from their listing, so deleting one that was ever
-        # ordered would erase the buyer's and seller's order history with it.
-        # Take such a listing down (which locks it) instead.
-        if instance.orders.exists():
+        # The platform may remove any listing, open orders or not: that is
+        # how a violation is dealt with. Finished orders keep their snapshot
+        # (listings/snapshot.py). Open ones would be left pointing at nothing,
+        # so they are cancelled first, exactly as a force-cancel would — which
+        # needs the same written reason.
+        open_orders = list(instance.orders.filter(status__in=ACTIVE_ORDER_STATUSES))
+        reason = (request.data.get('reason') or request.query_params.get('reason') or '').strip()
+        if open_orders and len(reason) < PLATFORM_CANCEL_REASON_MIN_LENGTH:
             return Response(
-                {"error": {"code": "admin.errListingHasOrders"}},
-                status=status.HTTP_409_CONFLICT,
+                {"error": {"code": "admin.errInvalidReason"}, "open_orders": len(open_orders)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
+        with transaction.atomic():
+            for order in open_orders:
+                platform_cancel_order(order, reason, request.user)
+            self._delete(request, instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def _delete(self, request, instance):
         AuditEvent.objects.create(
             user=request.user,
             kind='admin.listing_deleted',
@@ -171,4 +185,3 @@ class AdminListingDetailView(generics.RetrieveUpdateAPIView):
             },
         )
         delete_listing(instance)
-        return Response(status=status.HTTP_204_NO_CONTENT)

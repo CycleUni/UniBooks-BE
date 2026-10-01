@@ -80,7 +80,7 @@ def _post_edge_chat_message(conv, sender, msg_body, log_prefix):
             "user_id": str(sender.id),
             "room_id": str(conv.id),
             "app_id": app_id,
-            "participant_ids": [str(conv.buyer_id), str(conv.listing.seller_id)],
+            "participant_ids": [str(conv.buyer_id), str(conv.seller_id)],
             "role": "system",
             # Used once, right now, by this server. Without an exp a leaked
             # copy (a proxy log, a crash dump) would post system-role
@@ -124,9 +124,10 @@ def send_order_notification(order, message_key, sender=None, recipient=None):
         sender: User who triggered the action (if None, uses order.buyer)
         recipient: User to send to (if None, sends to the other party)
     """
-    try:
-        conv = Conversation.objects.get(listing=order.listing, buyer=order.buyer)
-    except Conversation.DoesNotExist:
+    # Paired on listing_ref, not listing: the listing may be gone by now (a
+    # platform deletion cancels its open orders and then removes it).
+    conv = Conversation.objects.filter(listing_ref=order.listing_ref, buyer=order.buyer).first()
+    if conv is None:
         return  # No conversation yet (shouldn't happen for meetup)
 
     # Determine sender: use the user who performed the action, or default to buyer
@@ -207,7 +208,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             # queryset is already limited to orders the caller is party to.
             .annotate(conversation_id_annotated=Subquery(
                 visible_conversations(user)
-                .filter(listing=OuterRef('listing'), buyer=OuterRef('buyer'))
+                .filter(listing_ref=OuterRef('listing_ref'), buyer=OuterRef('buyer'))
                 .values('id')[:1]
             ))
             .prefetch_related(
@@ -222,9 +223,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             q_clean = q.lstrip('#').strip()
             qs = qs.filter(
                 Q(id__icontains=q_clean) |
-                Q(listing__book__title__icontains=q) |
+                Q(book_title__icontains=q) |
                 Q(listing__book__authors__icontains=q) |
-                Q(listing__book__isbn13__icontains=q)
+                Q(book_isbn__icontains=q)
             )
         return qs
 
@@ -327,24 +328,31 @@ class OrderViewSet(viewsets.ModelViewSet):
                 if clear_fields:
                     order.save(update_fields=clear_fields)
 
-            # Handle listing status changes
-            if new_status == 'cancelled':
-                # Only undo a reservation this order actually holds. A pending
-                # order never reserved anything, and a seller who has since
-                # marked the listing sold or removed must not have it flipped
-                # back to active by a buyer withdrawing a stale request.
-                if old_status in ('accepted', 'handed_over') and order.listing.status == 'reserved':
-                    order.listing.status = 'active'
-                    order.listing.save(update_fields=['status'])
-            elif new_status == 'accepted':
-                order.listing.status = 'reserved'
-                order.listing.save(update_fields=['status'])
-            elif new_status == 'completed':
-                if order.completed_at is None:
-                    order.completed_at = timezone.now()
-                    order.save(update_fields=['completed_at'])
-                order.listing.status = 'sold'
-                order.listing.save(update_fields=['status'])
+            if new_status == 'completed' and order.completed_at is None:
+                order.completed_at = timezone.now()
+                order.save(update_fields=['completed_at'])
+
+            # Handle listing status changes. Only an order on a listing that
+            # still exists has one to change: an order whose listing was
+            # deleted is already completed or cancelled (the seller cannot
+            # delete with an open order, and a platform deletion cancels them).
+            listing = order.listing
+            if listing is not None:
+                if new_status == 'cancelled':
+                    # Only undo a reservation this order actually holds. A
+                    # pending order never reserved anything, and a seller who
+                    # has since marked the listing sold or removed must not
+                    # have it flipped back to active by a buyer withdrawing a
+                    # stale request.
+                    if old_status in ('accepted', 'handed_over') and listing.status == 'reserved':
+                        listing.status = 'active'
+                        listing.save(update_fields=['status'])
+                elif new_status == 'accepted':
+                    listing.status = 'reserved'
+                    listing.save(update_fields=['status'])
+                elif new_status == 'completed':
+                    listing.status = 'sold'
+                    listing.save(update_fields=['status'])
 
         # No cache bookkeeping needed here: the listing.save() calls above fire
         # post_save, and listings.models.invalidate_listing_caches bumps every

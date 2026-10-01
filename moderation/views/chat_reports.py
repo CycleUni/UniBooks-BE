@@ -19,7 +19,7 @@ def scope_chat_reports_to_manager(qs, user):
     """
     if user.is_superuser:
         return qs
-    return qs.filter(conversation__listing__region__in=user.managed_regions.all())
+    return qs.filter(conversation__region__in=user.managed_regions.all())
 
 
 class ChatReportCreateView(generics.CreateAPIView):
@@ -40,7 +40,7 @@ class ChatReportCreateView(generics.CreateAPIView):
             already_pending = ChatReport.objects.filter(
                 reporter=request.user,
                 conversation_id=conversation_id,
-                conversation__listing__region=get_region(request),
+                conversation__region=get_region(request),
                 status='open'
             ).exists()
         except (DjangoValidationError, ValueError):
@@ -70,8 +70,8 @@ class MyChatReportsView(generics.ListAPIView):
     def get_queryset(self):
         region = get_region(self.request)
         return (
-            ChatReport.objects.filter(reporter=self.request.user, conversation__listing__region=region)
-            .select_related('conversation__listing__book', 'reporter', 'reported_party')
+            ChatReport.objects.filter(reporter=self.request.user, conversation__region=region)
+            .select_related('conversation', 'reporter', 'reported_party')
             .order_by('-created_at')
         )
 
@@ -84,7 +84,7 @@ class ChatReportListView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = ChatReport.objects.select_related(
-            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'conversation',
             'reporter', 'reported_party'
         ).order_by('-created_at')
         qs = scope_chat_reports_to_manager(qs, self.request.user)
@@ -136,7 +136,7 @@ class ChatReportDetailView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         qs = ChatReport.objects.select_related(
-            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'conversation',
             'reporter', 'reported_party',
         ).all()
         return scope_chat_reports_to_manager(qs, self.request.user)

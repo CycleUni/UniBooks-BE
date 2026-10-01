@@ -26,11 +26,11 @@ class AdminChatReportListView(generics.ListAPIView):
 
     def get_queryset(self):
         qs = ChatReport.objects.select_related(
-            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'conversation',
             'reporter', 'reported_party'
         ).order_by('-created_at')
         if not self.request.user.is_superuser:
-            qs = qs.filter(conversation__listing__region__in=self.request.user.managed_regions.all())
+            qs = qs.filter(conversation__region__in=self.request.user.managed_regions.all())
         status_param = self.request.query_params.get('status')
         if status_param:
             qs = qs.filter(status=status_param)
@@ -40,7 +40,7 @@ class AdminChatReportListView(generics.ListAPIView):
         # every admin list come back empty.
         region = (self.request.query_params.get('region') or '').upper()
         if region:
-            qs = qs.filter(conversation__listing__region_id=region)
+            qs = qs.filter(conversation__region_id=region)
         return qs
 
 
@@ -53,11 +53,11 @@ class AdminChatReportDetailView(generics.RetrieveUpdateAPIView):
 
     def get_queryset(self):
         qs = ChatReport.objects.select_related(
-            'conversation', 'conversation__listing', 'conversation__listing__book',
+            'conversation',
             'reporter', 'reported_party'
         ).all()
         if not self.request.user.is_superuser:
-            qs = qs.filter(conversation__listing__region__in=self.request.user.managed_regions.all())
+            qs = qs.filter(conversation__region__in=self.request.user.managed_regions.all())
         return qs
 
     def patch(self, request, *args, **kwargs):
@@ -106,7 +106,7 @@ class AdminChatReportTokenView(views.APIView):
     def get(self, request, pk):
         qs = ChatReport.objects.select_related('conversation')
         if not request.user.is_superuser:
-            qs = qs.filter(conversation__listing__region__in=request.user.managed_regions.all())
+            qs = qs.filter(conversation__region__in=request.user.managed_regions.all())
         chat_report = get_object_or_404(qs, pk=pk)
         conv = chat_report.conversation
 

@@ -646,11 +646,44 @@ def test_admin_can_delete_locked_listing(api, staff_header, listing):
     assert event.meta["admin_locked"] is True
 
 
-def test_admin_delete_refuses_listing_with_orders(api, staff_header, order):
+def test_admin_delete_with_open_orders_needs_a_reason(api, staff_header, order):
     resp = api.delete(f"/api/v1/admin/listings/{order.listing_id}/", **staff_header)
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "admin.errListingHasOrders"
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "admin.errInvalidReason"
+    assert resp.json()["open_orders"] == 1
     assert Listing.objects.filter(id=order.listing_id).exists()
+    order.refresh_from_db()
+    assert order.status == "pending"
+
+
+def test_admin_delete_cancels_open_orders_and_keeps_them(api, staff_header, order):
+    listing_id = order.listing_id
+    resp = api.delete(
+        f"/api/v1/admin/listings/{listing_id}/",
+        {"reason": "counterfeit textbook"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 204
+    assert not Listing.objects.filter(id=listing_id).exists()
+
+    order.refresh_from_db()
+    assert order.status == "cancelled"
+    assert order.cancel_reason == "admin_override: counterfeit textbook"
+    assert order.listing_id is None
+    assert order.listing_ref == listing_id
+    assert order.book_title == "Admin Test Book"
+    assert AuditEvent.objects.filter(kind="admin.order_force_cancelled", meta__order_id=str(order.id)).exists()
+    assert AuditEvent.objects.filter(kind="admin.listing_deleted", meta__listing_id=str(listing_id)).exists()
+
+
+def test_admin_delete_needs_no_reason_when_orders_are_finished(api, staff_header, order):
+    Order.objects.filter(pk=order.pk).update(status="completed")
+    resp = api.delete(f"/api/v1/admin/listings/{order.listing_id}/", **staff_header)
+    assert resp.status_code == 204
+    order.refresh_from_db()
+    assert order.status == "completed"
+    assert order.listing_id is None
 
 
 def test_non_staff_cannot_delete_listing_via_admin(api, normal_header, listing):

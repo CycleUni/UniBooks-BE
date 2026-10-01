@@ -491,8 +491,8 @@ class AdminStatsOverviewView(views.APIView):
             listing_status[row['status']] = row['c']
 
         # Moderation
-        listing_reports = Report.objects.filter(listing__region=region)
-        chat_reports = ChatReport.objects.filter(conversation__listing__region=region)
+        listing_reports = Report.objects.filter(region=region)
+        chat_reports = ChatReport.objects.filter(conversation__region=region)
         reasons = {}
         for qs in (_since(listing_reports, since), _since(chat_reports, since)):
             for row in qs.order_by().values('reason').annotate(c=Count('pk')):
@@ -555,7 +555,7 @@ class AdminStatsOverviewView(views.APIView):
             'engagement': {
                 # Conversation has no created_at, so this is a current total,
                 # not a count for the period.
-                'conversations': Conversation.objects.filter(listing__region=region).count(),
+                'conversations': Conversation.objects.filter(region=region).count(),
             },
             'requests': self._requests(region, since),
             'moderation': {

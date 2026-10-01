@@ -248,7 +248,8 @@ class AdminOrderSerializer(serializers.ModelSerializer):
         return {'id': obj.seller_id, 'email': obj.seller.email}
 
     def get_listing(self, obj):
-        return {'id': str(obj.listing_id), 'book_title': obj.listing.book.title}
+        # From the snapshot: the order outlives a deleted listing.
+        return {'id': str(obj.listing_ref), 'book_title': obj.book_title, 'deleted': obj.listing_id is None}
 
     class Meta:
         model = Order
@@ -266,7 +267,7 @@ class AdminChatReportSerializer(serializers.ModelSerializer):
         return str(obj.conversation_id)
 
     def get_listing_title(self, obj):
-        return obj.conversation.listing.book.title
+        return obj.conversation.book_title
 
     def get_reporter_email(self, obj):
         return obj.reporter.email
@@ -277,11 +278,11 @@ class AdminChatReportSerializer(serializers.ModelSerializer):
     region = serializers.SerializerMethodField()
 
     def get_region(self, obj):
-        # A chat report has no region of its own; it inherits the region of
-        # the listing the conversation is about — the same path adminapi
-        # filters on (conversation__listing__region). Derived here rather than
-        # in the frontend so the admin table cannot disagree with the filter.
-        return obj.conversation.listing.region_id
+        # A chat report has no region of its own; it inherits its
+        # conversation's — the same path adminapi filters on
+        # (conversation__region). Derived here rather than in the frontend so
+        # the admin table cannot disagree with the filter.
+        return obj.conversation.region_id
 
     class Meta:
         model = ChatReport

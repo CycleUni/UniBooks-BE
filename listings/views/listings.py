@@ -304,5 +304,11 @@ class ListingDetailView(views.APIView):
             return Response(status=status.HTTP_404_NOT_FOUND)
         if listing.admin_locked:
             return Response({"error": {"code": "listing.errAdminLocked"}}, status=status.HTTP_403_FORBIDDEN)
+        # Finished orders, the chat and any report outlive the listing on
+        # their snapshot (listings/snapshot.py). An open order still needs it,
+        # so the seller has to finish or cancel those first.
+        from orders.models import ACTIVE_ORDER_STATUSES
+        if listing.orders.filter(status__in=ACTIVE_ORDER_STATUSES).exists():
+            return Response({"error": {"code": "listing.errHasActiveOrders"}}, status=status.HTTP_409_CONFLICT)
         delete_listing(listing)
         return Response(status=status.HTTP_204_NO_CONTENT)

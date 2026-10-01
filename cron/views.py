@@ -188,7 +188,7 @@ class MeetupReminderView(views.APIView):
 
         due = (
             Order.objects
-            .select_related('buyer', 'seller', 'listing__book', 'region')
+            .select_related('buyer', 'seller', 'region')
             .filter(
                 status='accepted',
                 meetup_time__isnull=False,
@@ -254,11 +254,11 @@ class MeetupReminderView(views.APIView):
                     continue
 
                 lang = email_language_for(user, order.region)
-                subject = t(lang, "email.meetupReminder.subject", title=order.listing.book.title)
+                subject = t(lang, "email.meetupReminder.subject", title=order.book_title)
                 lines = [
                     t(lang, "email.meetupReminder.intro"),
                     "",
-                    t(lang, "email.meetupReminder.book", title=order.listing.book.title),
+                    t(lang, "email.meetupReminder.book", title=order.book_title),
                     t(lang, "email.meetupReminder.time", time=formatted_time),
                 ]
                 if order.meetup_location:
