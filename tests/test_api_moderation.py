@@ -212,3 +212,22 @@ def test_invalid_transition_on_resolved_report_rejected(api, listing, reporter, 
         **staff_header,
     )
     assert resp.status_code == 400
+    assert resp.json()["status"] == ["admin.errReportAlreadyResolved"]
+
+
+def test_invalid_transition_on_resolved_chat_report_rejected(api, listing, seller, reporter, staff_header):
+    from messaging.models import Conversation
+    from moderation.models import ChatReport
+
+    conversation = Conversation.objects.create(listing=listing, buyer=reporter)
+    report = ChatReport.objects.create(
+        conversation=conversation, reporter=reporter, reported_party=seller, reason="spam", status="dismissed",
+    )
+    resp = api.patch(
+        f"/api/v1/moderation/chat-reports/{report.id}/action/",
+        {"status": "actioned"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["status"] == ["admin.errReportAlreadyResolved"]

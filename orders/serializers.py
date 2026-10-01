@@ -116,7 +116,11 @@ class OrderStatusUpdateSerializer(serializers.ModelSerializer):
         
         current_status = self.instance.status
         if value not in valid_transitions.get(current_status, []):
-            raise serializers.ValidationError(f"Cannot transition from {current_status} to {value}.")
+            # A code, not prose: the frontend shows whatever this field says,
+            # and the usual cause is the other party having moved the order on
+            # first — which the user can only act on if it reaches them in
+            # their own language.
+            raise serializers.ValidationError("order.errInvalidTransition")
             
         return value
 

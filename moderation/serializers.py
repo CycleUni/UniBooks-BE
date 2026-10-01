@@ -58,7 +58,7 @@ class ReportStatusUpdateSerializer(serializers.ModelSerializer):
 
         current_status = self.instance.status
         if value not in valid_transitions.get(current_status, []):
-            raise serializers.ValidationError(f"Cannot transition from {current_status} to {value}.")
+            raise serializers.ValidationError("admin.errReportAlreadyResolved")
 
         return value
 
@@ -149,5 +149,5 @@ class ChatReportStatusUpdateSerializer(serializers.ModelSerializer):
         }
         current_status = self.instance.status
         if value not in valid_transitions.get(current_status, []):
-            raise serializers.ValidationError(f"Cannot transition from {current_status} to {value}.")
+            raise serializers.ValidationError("admin.errReportAlreadyResolved")
         return value

@@ -102,6 +102,19 @@ def test_seller_cannot_mark_completed_directly(api, order, seller_header, buyer_
     assert resp.json()["error"]["code"] == "order.errBuyerOnly"
 
 
+def test_invalid_transition_returns_an_i18n_code(api, order, seller_header, buyer_header):
+    # Cancelling an order the other party already completed: the answer has
+    # to be a code the frontend can translate, not an English sentence.
+    _patch_status(api, order, "accepted", seller_header)
+    _patch_status(api, order, "handed_over", seller_header)
+    _patch_status(api, order, "completed", buyer_header)
+    resp = _patch_status(api, order, "cancelled", seller_header)
+    assert resp.status_code == 400
+    assert resp.json()["status"] == ["order.errInvalidTransition"]
+    order.refresh_from_db()
+    assert order.status == "completed"
+
+
 def test_buyer_cannot_mark_handed_over(api, order, seller_header, buyer_header):
     _patch_status(api, order, "accepted", seller_header)
     resp = _patch_status(api, order, "handed_over", buyer_header)
