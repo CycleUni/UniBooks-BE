@@ -244,7 +244,7 @@ class ListingDetailView(views.APIView):
              return Response(status=status.HTTP_404_NOT_FOUND)
         
         if listing.admin_locked:
-            return Response({"error": {"code": "listing.errAdminLocked", "message": "This listing has been locked by an administrator and cannot be modified."}}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": {"code": "listing.errAdminLocked", "message": "This listing has been locked by UniBooks and cannot be modified."}}, status=status.HTTP_403_FORBIDDEN)
 
         # Handle manual book updates
         book_fields_sent = any(k in request.data for k in ('book_title', 'book_authors', 'isbn'))
