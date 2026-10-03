@@ -7,8 +7,6 @@ up in the external catalogues, edit the record, and fold it into the book
 that already has that ISBN.
 """
 
-from django.core.exceptions import ValidationError
-from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -20,6 +18,7 @@ from catalog.merge import merge_book_into
 from catalog.models import Book
 from catalog.serializers import BookSerializer
 from catalog.services import (
+    clean_cover_url,
     clean_publisher,
     get_google_books_by_isbn,
     get_isbnnet_book_by_isbn,
@@ -46,10 +45,6 @@ ISBN_LOOKUPS = {
 
 # Field name -> longest value the column takes.
 TEXT_FIELDS = {'title': 255, 'authors': 512, 'publisher': 255, 'published_date': 50}
-COVER_URL_MAX = 1024
-# http as well: Google Books still hands out http:// thumbnails, which the
-# cover proxy upgrades.
-_cover_url = URLValidator(schemes=['http', 'https'])
 
 
 def _invalid_isbn():
@@ -220,17 +215,9 @@ class AdminBookDetailView(_AdminBookView):
         if 'publisher' in updates:
             updates['publisher'] = clean_publisher(updates['publisher'])
         if 'cover_url' in data:
-            cover = data['cover_url']
-            if not isinstance(cover, str):
+            cover = clean_cover_url(data['cover_url'])
+            if cover is None:
                 return None, _invalid_field()
-            cover = cover.strip()
-            if len(cover) > COVER_URL_MAX:
-                return None, _invalid_field()
-            if cover:
-                try:
-                    _cover_url(cover)
-                except ValidationError:
-                    return None, _invalid_field()
             updates['cover_url'] = cover
         if 'source' in data:
             if data['source'] not in dict(Book.SOURCE_CHOICES):

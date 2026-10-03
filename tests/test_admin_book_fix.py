@@ -11,7 +11,7 @@ from django.utils import timezone
 from accounts.models import RegionVerification, School
 from accounts.services import issue_tokens
 from catalog.models import Book
-from catalog.services import validate_book_isbn
+from catalog.services import clean_cover_url, validate_book_isbn
 from core.models import AuditEvent, Region
 from listings.models import Listing
 from subscriptions.models import Subscription
@@ -89,6 +89,25 @@ def _patch(api, user, book, body):
 ])
 def test_validate_book_isbn(raw, expected):
     assert validate_book_isbn(raw) == expected
+
+
+# --- clean_cover_url ------------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("  https://covers.example/x.jpg  ", "https://covers.example/x.jpg"),
+    ("http://books.google.com/thumb.jpg", "http://books.google.com/thumb.jpg"),
+    ("", ""),
+    ("   ", ""),
+    ("javascript:alert(1)", None),
+    ("ftp://example.com/x.jpg", None),
+    ("https://", None),
+    ("https://exa mple.com/x.jpg", None),
+    ("https://example.com/" + "x" * 1024, None),
+    (None, None),
+    (123, None),
+])
+def test_clean_cover_url(raw, expected):
+    assert clean_cover_url(raw) == expected
 
 
 # --- writes outside the admin --------------------------------------------
