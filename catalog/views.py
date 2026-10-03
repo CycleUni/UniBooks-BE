@@ -1,3 +1,5 @@
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
 from django.db.models import Max, Min
 from rest_framework import views, status
 from rest_framework.response import Response
@@ -190,11 +192,38 @@ class BookDetailView(views.APIView):
 
         return Response(response_data)
 
+
+COVER_URL_MAX = 1024
+# http as well: Google Books still hands out http:// thumbnails, which the
+# cover proxy upgrades.
+_cover_url = URLValidator(schemes=['http', 'https'])
+
+
+def _clean_cover_url(value):
+    """The cover a seller posts back, or '' when it is not a usable URL.
+
+    The cover rides along from a search result, so a bad one is dropped
+    rather than failing the seller's listing.
+    """
+    if not isinstance(value, str):
+        return ''
+    value = value.strip()
+    if not value or len(value) > COVER_URL_MAX:
+        return ''
+    try:
+        _cover_url(value)
+    except ValidationError:
+        return ''
+    return value
+
+
 class ManualBookCreateView(views.APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         data = request.data.copy()
+        if 'cover_url' in data:
+            data['cover_url'] = _clean_cover_url(data['cover_url'])
         isbn13 = data.get('isbn13')
         from core.region import get_region
         region = get_region(request)

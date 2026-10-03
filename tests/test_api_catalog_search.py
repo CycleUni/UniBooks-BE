@@ -196,6 +196,66 @@ def test_manual_book_create_requires_auth_and_valid_payload(api, auth_header, db
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("cover", [
+    "javascript:alert(1)",
+    "ftp://example.com/cover.jpg",
+    "not a url",
+    "https://example.com/" + "a" * 1100,
+    123,
+])
+def test_manual_book_create_drops_bad_cover_url(api, auth_header, db, cover):
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"isbn13": "9780131103627", "title": "Bad Cover", "cover_url": cover},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 201
+    assert Book.objects.get(isbn13="9780131103627").cover_url == ""
+
+
+def test_manual_book_create_keeps_http_cover_url(api, auth_header, db):
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"isbn13": "9780131103627", "title": "Google Cover",
+         "cover_url": "  http://books.google.com/thumb.jpg  "},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 201
+    assert Book.objects.get(isbn13="9780131103627").cover_url == "http://books.google.com/thumb.jpg"
+
+
+@pytest.mark.parametrize("cover", [
+    "javascript:alert(1)",
+    "https://example.com/" + "a" * 1100,
+])
+def test_manual_book_create_ignores_bad_cover_on_existing_book(api, auth_header, db, cover):
+    book = Book.objects.create(region_id="TW", isbn13="9780131103627", title="Existing", source="manual")
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"isbn13": "9780131103627", "title": "Existing", "cover_url": cover},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 200
+    book.refresh_from_db()
+    assert book.cover_url == ""
+
+
+def test_manual_book_create_fills_valid_cover_on_existing_book(api, auth_header, db):
+    book = Book.objects.create(region_id="TW", isbn13="9780131103627", title="Existing", source="manual")
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"isbn13": "9780131103627", "title": "Existing", "cover_url": "https://example.com/c.jpg"},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 200
+    book.refresh_from_db()
+    assert book.cover_url == "https://example.com/c.jpg"
+
+
 # ---------------------------------------------------------------------
 # Google Books service (mocked HTTP)
 # ---------------------------------------------------------------------
