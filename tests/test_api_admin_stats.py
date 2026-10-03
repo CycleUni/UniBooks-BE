@@ -271,11 +271,13 @@ def test_book_detail(api, data):
     assert [l["price"] for l in body["active_listings"]] == [300]
 
 
-def test_book_detail_of_other_region_book_shows_no_foreign_orders(api, data):
-    body = api.get(f"/api/v1/admin/stats/books/{data['hk_book'].pk}/?region=TW", **_auth(data["tw_admin"])).json()
-    assert body["summary"]["completed_count"] == 0
-    assert body["summary"]["gmv"] == 0
-    assert body["recent_orders"] == []
+def test_book_detail_of_other_region_book_is_not_found(api, data):
+    # A Book belongs to one region; the TW page has no HK book to show (nor,
+    # since it carries the edit form, one to edit).
+    resp = api.get(f"/api/v1/admin/stats/books/{data['hk_book'].pk}/?region=TW", **_auth(data["tw_admin"]))
+    assert resp.status_code == 404
+    resp = api.get(f"/api/v1/admin/stats/books/{data['hk_book'].pk}/?region=HK", **_auth(data["superuser"]))
+    assert resp.status_code == 200
 
 
 def test_book_detail_404(api, data):

@@ -877,7 +877,9 @@ class AdminStatsBookDetailView(views.APIView):
 
         region_orders = _region_orders(region)
         orders = _since(region_orders, since)
-        book = get_object_or_404(annotate_book_stats(Book.objects.all(), region, orders), pk=pk)
+        # Only the region being viewed (resolve_stats_region checked the
+        # caller manages it): another region's book is not this page's.
+        book = get_object_or_404(annotate_book_stats(Book.objects.filter(region=region), region, orders), pk=pk)
         book_orders = orders.filter(listing__book=book)
         all_book_orders = region_orders.filter(listing__book=book)
 

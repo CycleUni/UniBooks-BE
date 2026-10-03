@@ -1,7 +1,7 @@
 import requests  # noqa: F401 — re-exported so `mock.patch("catalog.services.requests.get")` keeps working
 from django.core.cache import cache  # noqa: F401 — re-exported so `mock.patch("catalog.services.cache.get")` keeps working
 
-from .isbn import clean_and_validate_isbn
+from .isbn import clean_and_validate_isbn, isbn_checksum_ok, validate_book_isbn
 from ._common import (
     _NOT_FOUND_CACHE_TTL,
     _NOT_FOUND_SENTINEL,
@@ -33,6 +33,8 @@ from .isbn_net import (
 
 __all__ = [
     "clean_and_validate_isbn",
+    "isbn_checksum_ok",
+    "validate_book_isbn",
     "GoogleBooksRateLimited",
     "get_google_books_by_isbn",
     "search_google_books",

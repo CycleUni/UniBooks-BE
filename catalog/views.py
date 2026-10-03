@@ -201,6 +201,11 @@ class ManualBookCreateView(views.APIView):
         if isbn13 == '':
             data['isbn13'] = None
         elif isbn13:
+            from catalog.services import validate_book_isbn
+            isbn13 = validate_book_isbn(isbn13)
+            if not isbn13:
+                return Response({"error": {"code": "listing.errInvalidIsbn"}}, status=status.HTTP_400_BAD_REQUEST)
+            data['isbn13'] = isbn13
             existing_book = Book.objects.filter(region=region, isbn13=isbn13).first()
             if existing_book:
                 updated = False

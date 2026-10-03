@@ -34,6 +34,7 @@ from .views.stats import (
     AdminStatsBreakdownView,
     AdminStatsBookDetailView,
 )
+from .views.books import AdminBookDetailView, AdminBookLookupView
 from .views.school_requests import AdminSchoolRequestListView, AdminSchoolRequestDetailView
 from .views.growth import AdminStatsGrowthView, AdminStatsRetentionView
 from .views.uploads import (
@@ -54,6 +55,8 @@ urlpatterns = [
     path('stats/breakdown/', AdminStatsBreakdownView.as_view(), name='admin-stats-breakdown'),
     path('stats/books/requests/', AdminStatsBookRequestsView.as_view(), name='admin-stats-book-requests'),
     path('stats/books/<int:pk>/', AdminStatsBookDetailView.as_view(), name='admin-stats-book-detail'),
+    path('books/<int:pk>/', AdminBookDetailView.as_view(), name='admin-book-detail'),
+    path('books/<int:pk>/lookup/', AdminBookLookupView.as_view(), name='admin-book-lookup'),
     path('users/', AdminUserListView.as_view(), name='admin-user-list'),
     path('users/<int:pk>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('managers/<int:pk>/toggle/', AdminManagerToggleView.as_view(), name='admin-manager-toggle'),

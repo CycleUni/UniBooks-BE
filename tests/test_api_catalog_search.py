@@ -164,22 +164,22 @@ def test_book_detail_non_numeric_id_returns_clean_404(api, db):
 def test_manual_book_create_parses_source(api, auth_header, db):
     resp = api.post(
         "/api/v1/books/manual/",
-        {"isbn13": "9783333333333", "title": "Google Book", "source": "google_api"},
+        {"isbn13": "9780131103627", "title": "Google Book", "source": "google_api"},
         content_type="application/json",
         **auth_header,
     )
     assert resp.status_code == 201
-    book = Book.objects.get(isbn13="9783333333333")
+    book = Book.objects.get(isbn13="9780131103627")
     assert book.source == "google_api"
 
     resp2 = api.post(
         "/api/v1/books/manual/",
-        {"isbn13": "9783333333334", "title": "Invalid Source", "source": "fake"},
+        {"isbn13": "9781285740621", "title": "Invalid Source", "source": "fake"},
         content_type="application/json",
         **auth_header,
     )
     assert resp2.status_code == 201
-    book2 = Book.objects.get(isbn13="9783333333334")
+    book2 = Book.objects.get(isbn13="9781285740621")
     assert book2.source == "manual"
 
 

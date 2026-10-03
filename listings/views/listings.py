@@ -293,8 +293,8 @@ class ListingDetailView(views.APIView):
                     book.isbn13 = None
                 else:
                     from catalog.models import Book
-                    from catalog.services import clean_and_validate_isbn
-                    valid_isbn = clean_and_validate_isbn(isbn)
+                    from catalog.services import validate_book_isbn
+                    valid_isbn = validate_book_isbn(isbn)
                     if not valid_isbn:
                         return Response({"error": {"code": "listing.errInvalidIsbn"}}, status=status.HTTP_400_BAD_REQUEST)
                     # isbn13 is unique within a region: answer 400 instead of
