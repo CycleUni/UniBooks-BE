@@ -9,7 +9,7 @@ from rest_framework import serializers
 
 from accounts.models import User, School, SchoolRequest
 from accounts.school_codes import is_valid_code, normalize_code
-from core.models import Category, Region, Currency, Language
+from core.models import Category, City, Region, Currency, Language
 from listings.models import Listing
 from moderation.models import ChatReport
 from orders.models import Order
@@ -77,6 +77,9 @@ class AdminSchoolSerializer(serializers.ModelSerializer):
     # (region, code) UniqueConstraint would make DRF require `code` on every
     # create. Omitted or blank, School.save() derives one from the domain.
     code = serializers.CharField(required=False, allow_blank=True)
+    # The city's code, as the bulk import file spells it. Looked up in the
+    # school's own region in validate(): codes repeat across regions.
+    city = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate_code(self, value):
         code = normalize_code(value)
@@ -98,7 +101,26 @@ class AdminSchoolSerializer(serializers.ModelSerializer):
                 clash = clash.exclude(pk=instance.pk)
             if clash.exists():
                 raise ValidationError({'code': 'admin.errSchoolCodeTaken'})
+        if 'city' in attrs:
+            city_code = (attrs['city'] or '').strip().upper()
+            if not city_code:
+                attrs['city'] = None
+            else:
+                city = City.objects.filter(region=region, code=city_code).first() if region is not None else None
+                if city is None:
+                    raise ValidationError({'city': 'admin.errSchoolCityUnknown'})
+                attrs['city'] = city
+        elif instance is not None and 'region' in attrs and instance.city_id is not None \
+                and instance.city.region_id != attrs['region'].pk:
+            # Moved to another region: its old city is not one of the new
+            # region's, and would make it fall back to the wrong place.
+            attrs['city'] = None
         return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['city'] = instance.city.code if instance.city_id else None
+        return data
 
     def get_user_count(self, obj):
         # Prefer the annotation from the list view; fall back to a query so the
@@ -112,7 +134,7 @@ class AdminSchoolSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = School
-        fields = ('id', 'code', 'name', 'display_name', 'email_domain', 'translations', 'region', 'user_count')
+        fields = ('id', 'code', 'name', 'display_name', 'email_domain', 'translations', 'region', 'city', 'user_count')
         # validate() checks (region, code) itself, with an error the admin UI
         # can translate; DRF's generated UniqueTogetherValidator would also
         # make `code` mandatory.

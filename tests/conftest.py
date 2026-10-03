@@ -5,6 +5,7 @@ from django.core.cache import cache
 @pytest.fixture(autouse=True)
 def setup_regions(db):
     from core.default_categories import seed_default_categories
+    from core.default_cities import seed_default_cities
     from core.models import Region, Currency, Language
     twd, _ = Currency.objects.get_or_create(code='TWD', defaults={'symbol':'NT$', 'decimal_places':0})
     zh, _ = Language.objects.get_or_create(code='zh-TW', defaults={'name':'Taiwanese', 'native_name':'繁體中文'})
@@ -19,8 +20,10 @@ def setup_regions(db):
     })
     tw.languages.set([zh, en])
     seed_default_categories(tw)
+    seed_default_cities(tw)
     
     hkd, _ = Currency.objects.get_or_create(code='HKD', defaults={'symbol':'HK$', 'decimal_places':1})
     zh_hk, _ = Language.objects.get_or_create(code='zh-HK', defaults={'name':'Hong Kong', 'native_name':'繁體中文（香港）'})
-    Region.objects.update_or_create(code='HK', defaults={'name':'Hong Kong', 'currency':hkd, 'default_language':zh_hk, 'is_active':True, 'edu_email_suffix':['.edu.hk']})
+    hk, _ = Region.objects.update_or_create(code='HK', defaults={'name':'Hong Kong', 'currency':hkd, 'default_language':zh_hk, 'is_active':True, 'edu_email_suffix':['.edu.hk']})
+    seed_default_cities(hk)
     cache.clear()

@@ -19,9 +19,9 @@ from catalog.services.engines import (
 from catalog.models import Book
 from listings.models import Listing
 from subscriptions.models import Subscription
-from django.db.models import Count, Min, Q
+from django.db.models import Count, Min, Q, Value
 from core.region import get_region
-from accounts.school_codes import school_filter_id
+from accounts.school_codes import school_filter_id, school_filter_scope
 
 # Browsing by category or course reads Book rows straight out of the local
 # catalogue, and the whole matching set used to be pulled into Python before
@@ -79,7 +79,10 @@ class BookSearchView(views.APIView):
         # this region (codes repeat across regions). Every filter below
         # compares ids, so an unknown school matches nothing rather than
         # silently dropping the filter.
-        school_id = school_filter_id(region, request.GET.get('school', ''))
+        school_id, city = school_filter_scope(region, request.GET.get('school', ''))
+        # 'city' once the chosen school had nothing and the browse below fell
+        # back to the rest of its city; see RecentBooksView.
+        scope = 'all' if school_id is None else 'school'
         
         condition_param = request.GET.get('condition')
         if condition_param == 'none':
@@ -127,33 +130,42 @@ class BookSearchView(views.APIView):
         results_truncated = False
 
         if category or (not query and (course or listing_filtered)):
-            base_filter = Q(listings__status='active')
-            if category:
-                base_filter &= Q(listings__category__slug=category)
-            if course:
-                base_filter &= Q(listings__course_name=course)
-            if school_id is not None:
-                base_filter &= Q(listings__school_id=school_id)
-            # In the query, not only in the pass below: the cap counts books
-            # that can pass it, so a rare condition isn't cut off among the
-            # newest books of every condition and reported as truncated.
-            if allowed_conditions is not None:
-                base_filter &= Q(listings__condition__in=allowed_conditions)
-            # Bounded and ordered: this used to pull every matching Book into
-            # Python before paginating, in whatever order the database felt
-            # like, so page 2 could repeat page 1.
-            browse = Book.objects.filter(base_filter, region=region).distinct()
-            # Likewise the price, which the pass below reads as the book's
-            # lowest active price anywhere, so it is worked out the same way.
-            if filter_price:
-                browse = browse.annotate(
-                    browse_min_price=Min('listings__price', filter=Q(listings__status='active'))
-                )
-                if p_min is not None:
-                    browse = browse.filter(browse_min_price__gte=p_min)
-                if p_max is not None:
-                    browse = browse.filter(browse_min_price__lte=p_max)
-            books = list(browse.order_by('-created_at')[:LOCAL_BROWSE_LIMIT])
+            def browse_books(place_q):
+                base_filter = Q(listings__status='active')
+                if category:
+                    base_filter &= Q(listings__category__slug=category)
+                if course:
+                    base_filter &= Q(listings__course_name=course)
+                if place_q is not None:
+                    base_filter &= place_q
+                # In the query, not only in the pass below: the cap counts books
+                # that can pass it, so a rare condition isn't cut off among the
+                # newest books of every condition and reported as truncated.
+                if allowed_conditions is not None:
+                    base_filter &= Q(listings__condition__in=allowed_conditions)
+                # Bounded and ordered: this used to pull every matching Book into
+                # Python before paginating, in whatever order the database felt
+                # like, so page 2 could repeat page 1.
+                browse = Book.objects.filter(base_filter, region=region).distinct()
+                # Likewise the price, which the pass below reads as the book's
+                # lowest active price anywhere, so it is worked out the same way.
+                if filter_price:
+                    browse = browse.annotate(
+                        browse_min_price=Min('listings__price', filter=Q(listings__status='active'))
+                    )
+                    if p_min is not None:
+                        browse = browse.filter(browse_min_price__gte=p_min)
+                    if p_max is not None:
+                        browse = browse.filter(browse_min_price__lte=p_max)
+                return list(browse.order_by('-created_at')[:LOCAL_BROWSE_LIMIT])
+
+            books = browse_books(Q(listings__school_id=school_id) if school_id is not None else None)
+            # Nothing at the chosen school: the same browse over its city.
+            if not books and city is not None:
+                city_books = browse_books(Q(listings__school__city_id=city.id))
+                if city_books:
+                    books = city_books
+                    scope = 'city'
             results_truncated = len(books) == LOCAL_BROWSE_LIMIT
             results = []
             for book in books:
@@ -300,15 +312,25 @@ class BookSearchView(views.APIView):
                 elif not isbn and local_id:
                     results.append(item)
 
+        # Where "local" means from here on: the chosen school, or its city
+        # once the browse fell back to it. Listing field lookups.
+        if scope == 'city':
+            local_place = {'school__city_id': city.id}
+        elif school_id is not None:
+            local_place = {'school_id': school_id}
+        else:
+            local_place = {}
+
         isbns = [item['isbn'] for item in results if item.get('isbn')]
         ids = [item['id'] for item in results if item.get('id')]
         books_by_isbn = {}
         books_by_id = {}
         if isbns or ids:
             global_active_filter = Q(listings__status='active')
-            local_active_filter = Q(listings__status='active')
-            if school_id is not None:
-                local_active_filter &= Q(listings__school_id=school_id)
+            local_active_filter = Q(listings__status='active', **{f'listings__{k}': v for k, v in local_place.items()})
+            # The school's whole city, for "none here, but N in <city>" when
+            # a keyword search finds nothing at the school itself.
+            city_active_filter = Q(listings__status='active', listings__school__city_id=city.id) if city else None
 
             books = Book.objects.filter(Q(isbn13__in=isbns) | Q(id__in=ids), region=region).annotate(
                 global_active_listings_count=Count(
@@ -316,6 +338,10 @@ class BookSearchView(views.APIView):
                 ),
                 local_active_listings_count=Count(
                     'listings', filter=local_active_filter, distinct=True
+                ),
+                city_active_listings_count=(
+                    Count('listings', filter=city_active_filter, distinct=True)
+                    if city_active_filter is not None else Value(0)
                 ),
                 min_active_price=Min(
                     'listings__price', filter=global_active_filter
@@ -327,9 +353,7 @@ class BookSearchView(views.APIView):
 
         conditions_by_book_id = {}
         if books_by_id:
-            condition_filter = {'book_id__in': list(books_by_id.keys()), 'status': 'active'}
-            if school_id is not None:
-                condition_filter['school_id'] = school_id
+            condition_filter = {'book_id__in': list(books_by_id.keys()), 'status': 'active', **local_place}
             condition_rows = Listing.objects.filter(**condition_filter).values_list('book_id', 'condition').distinct()
             for book_id, condition in condition_rows:
                 conditions_by_book_id.setdefault(book_id, []).append(condition)
@@ -363,6 +387,7 @@ class BookSearchView(views.APIView):
                 'debug_source': item.get('debug_source'),
                 'activeListings': book.global_active_listings_count if book else 0,
                 'localActiveListings': book.local_active_listings_count if book else 0,
+                'cityActiveListings': book.city_active_listings_count if book else 0,
                 'minPrice': (book.min_active_price or 0) if book else 0,
                 'waitlistCount': book.waitlist_count if book else 0,
                 'conditions': conditions_by_book_id.get(book.id, []) if book else [],
@@ -391,9 +416,7 @@ class BookSearchView(views.APIView):
                     continue
             filtered_results.append(item)
 
-        facet_base_q = Q(status='active', book__region=region)
-        if school_id is not None:
-            facet_base_q &= Q(school_id=school_id)
+        facet_base_q = Q(status='active', book__region=region, **local_place)
             
         if category or (not query and (course or listing_filtered)):
             if category:
@@ -419,9 +442,7 @@ class BookSearchView(views.APIView):
         # Re-build query base without category/course for facet computation.
         
         # Base query that DOES NOT have category or course applied (we will apply them selectively)
-        base_facet_no_cat_no_course = Q(status='active', book__region=region)
-        if school_id is not None:
-            base_facet_no_cat_no_course &= Q(school_id=school_id)
+        base_facet_no_cat_no_course = Q(status='active', book__region=region, **local_place)
             
         if category or (not query and (course or listing_filtered)):
             # In this branch, query is ignored by the main search.
@@ -456,9 +477,7 @@ class BookSearchView(views.APIView):
         course_rows = Listing.objects.filter(course_q).exclude(course_name='').values('course_name').annotate(c=Count('book_id', distinct=True))
         course_counts_dict = {row['course_name']: row['c'] for row in course_rows}
         
-        courses_q = Q(status='active', book__region=region)
-        if school_id is not None:
-            courses_q &= Q(school_id=school_id)
+        courses_q = Q(status='active', book__region=region, **local_place)
         if category:
             courses_q &= Q(category__slug=category)
         top_courses = Listing.objects.filter(courses_q).exclude(course_name='').values('course_name').annotate(c=Count('id')).order_by('-c', 'course_name')[:20]
@@ -485,6 +504,10 @@ class BookSearchView(views.APIView):
         # Books with a copy at the chosen school across every page, for the
         # "found N at this school" line; the client sees only one page.
         local_count = sum(1 for item in filtered_results if item['localActiveListings'] > 0)
+        # The same across the school's city, for the line shown when the
+        # school itself has none; 0 when the school has no city.
+        city_count = sum(1 for item in filtered_results if item['cityActiveListings'] > 0)
+        place_fields = {'scope': scope, 'city': city.code if city else None, 'city_count': city_count}
 
         from rest_framework.pagination import PageNumberPagination
         paginator = PageNumberPagination()
@@ -496,6 +519,7 @@ class BookSearchView(views.APIView):
             response.data['results_truncated'] = results_truncated
             response.data['facets'] = facets
             response.data['local_count'] = local_count
+            response.data.update(place_fields)
             return response
             
         return Response({
@@ -503,6 +527,7 @@ class BookSearchView(views.APIView):
             'results_truncated': results_truncated,
             'facets': facets,
             'local_count': local_count,
+            **place_fields,
             'results': filtered_results
         })
 

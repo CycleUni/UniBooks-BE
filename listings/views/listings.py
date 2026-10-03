@@ -11,7 +11,7 @@ from core.throttling import ScopedThrottle
 
 from core.cache import HOME_RECENT_TTL, LISTING_CACHE_TTL, region_versioned_key
 from core.permissions import IsVerifiedInRegion
-from accounts.school_codes import school_filter_id
+from accounts.school_codes import school_filter_id, school_filter_scope
 
 
 class ListingListCreateView(views.APIView):
@@ -104,7 +104,7 @@ class RecentBooksView(views.APIView):
         region = get_region(request)
         # The resolved id rather than the raw (attacker-chosen) string also
         # bounds the cache keys the same way `limit` is bounded above.
-        school_id = school_filter_id(region, school)
+        school_id, city = school_filter_scope(region, school)
         cache_key = f"{region.code}_recent_books_{lang}_{'' if school_id is None else school_id}_{page_param}_{limit}"
         cached_data = cache.get(cache_key)
         if cached_data is not None:
@@ -134,6 +134,19 @@ class RecentBooksView(views.APIView):
         # leak survived a cache-key audit: only the query was wrong.
         books_qs = base_qs.filter(book_filter)
 
+        # The chosen school has no books: show the rest of its city's rather
+        # than an empty shelf, and say so (`scope`), so the page can tell the
+        # visitor these are not from their school. Only when the city has
+        # some — otherwise the school's own empty state is the honest answer.
+        # Same single-filter() rule as above.
+        scope = 'all' if school_id is None else 'school'
+        if city is not None and not books_qs.exists():
+            city_qs = base_qs.filter(listings__status='active', listings__school__city_id=city.id)
+            if city_qs.exists():
+                books_qs = city_qs
+                scope = 'city'
+        scope_fields = {'scope': scope, 'city': city.code if city else None}
+
         books_qs = books_qs.annotate(
             latest_listing=Max('listings__created_at')
         ).order_by('-latest_listing')
@@ -149,13 +162,17 @@ class RecentBooksView(views.APIView):
         book_ids = [b.id for b in books_to_process]
 
         if not book_ids:
-            return paginator.get_paginated_response([]) if paginated_books is not None else Response([])
+            if paginated_books is None:
+                return Response([])
+            return Response({**paginator.get_paginated_response([]).data, **scope_fields})
 
         # `region` here too: book_ids are already region-scoped, but the price
         # and condition stats aggregate listings, and a book carried by both
         # regions would otherwise mix another region's prices into this one.
         active_filter = {'book_id__in': book_ids, 'status': 'active', 'region': region}
-        if school_id is not None:
+        if scope == 'city':
+            active_filter['school__city_id'] = city.id
+        elif school_id is not None:
             active_filter['school_id'] = school_id
 
         all_book_listings = Listing.objects.filter(**active_filter).values('book_id', 'price', 'condition')
@@ -192,7 +209,7 @@ class RecentBooksView(views.APIView):
             })
 
         if paginated_books is not None:
-            response_data = paginator.get_paginated_response(results).data
+            response_data = {**paginator.get_paginated_response(results).data, **scope_fields}
         else:
             response_data = results
 

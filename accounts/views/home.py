@@ -9,7 +9,7 @@ from accounts.school_codes import resolve_school
 from core.cache import HOME_STATIC_TTL, HOME_WAITLIST_TTL
 from core.i18n import resolve_language
 from core.region import get_region
-from core.models import Category
+from core.models import Category, City
 from django.core.cache import cache
 from subscriptions.models import Subscription
 
@@ -56,6 +56,10 @@ class HomeMetadataView(views.APIView):
         # deploy (it selects and links by code). Treated as a miss instead.
         if static_data and any('code' not in s for s in static_data.get('schools', [])):
             static_data = None
+        # Likewise one cached before schools had cities: the selector could
+        # not group them and the fallback note could not name the city.
+        if static_data and 'cities' not in static_data:
+            static_data = None
 
         if not static_data:
             schools = [
@@ -65,8 +69,19 @@ class HomeMetadataView(views.APIView):
                     'name': school.name,
                     'display_name': school.localized_name(lang),
                     'email_domain': school.email_domain,
+                    'city': school.city.code if school.city else None,
                 }
-                for school in School.objects.filter(region=region)
+                for school in School.objects.filter(region=region).select_related('city')
+            ]
+
+            # In display order; the selector groups schools under these.
+            cities = [
+                {
+                    'code': city.code,
+                    'name': city.name,
+                    'display_name': city.localized_name(lang),
+                }
+                for city in City.objects.filter(region=region).order_by('sort_order', 'code')
             ]
 
             categories = [
@@ -76,6 +91,7 @@ class HomeMetadataView(views.APIView):
 
             static_data = {
                 "schools": schools,
+                "cities": cities,
                 "categories": categories,
             }
             # Long TTL is safe here only because admin edits invalidate this
@@ -143,6 +159,7 @@ class HomeMetadataView(views.APIView):
             "lang": lang,
             "region": {"code": region.code, "currency": region.currency_id},
             "schools": static_data["schools"],
+            "cities": static_data["cities"],
             "categories": static_data["categories"],
             "waitlist": waitlist
         }

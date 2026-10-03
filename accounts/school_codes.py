@@ -80,7 +80,7 @@ def resolve_school(region, value):
 
     if not value or region is None:
         return None
-    schools = School.objects.filter(region=region)
+    schools = School.objects.filter(region=region).select_related('city')
     code = normalize_code(value)
     if is_valid_code(code):
         school = schools.filter(code=code).first()
@@ -106,6 +106,21 @@ def school_filter_id(region, value):
         return None
     school = resolve_school(region, value)
     return school.id if school else NO_SCHOOL_ID
+
+
+def school_filter_scope(region, value):
+    """school_filter_id, plus the chosen school's city: (school_id, city).
+
+    `city` is the School's City, or None when no school was named, the value
+    named no school, or the school has no city — the cases where the home
+    page and search do not fall back to the rest of the city.
+    """
+    if not value:
+        return None, None
+    school = resolve_school(region, value)
+    if not school:
+        return NO_SCHOOL_ID, None
+    return school.id, school.city
 
 
 def admin_school_filter_id(request, value):

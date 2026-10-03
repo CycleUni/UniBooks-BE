@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from adminapi.pagination import AdminPagination
 from accounts.models import School
+from core.models import City
 from accounts.school_codes import dedupe_code, derive_code, is_valid_code, normalize_code
 from accounts.views import invalidate_home_static_cache
 
@@ -31,7 +32,7 @@ class AdminSchoolListView(generics.ListCreateAPIView):
         return context
 
     def get_queryset(self):
-        qs = School.objects.annotate(user_count_annotated=Count('verifications')).order_by('id')
+        qs = School.objects.annotate(user_count_annotated=Count('verifications')).select_related('city').order_by('id')
         if not self.request.user.is_superuser:
             qs = qs.filter(region__in=self.request.user.managed_regions.all())
         q = self.request.query_params.get('q')
@@ -137,9 +138,14 @@ class AdminSchoolBulkImportView(views.APIView):
         # Codes the file spells out, kept away from the derived ones even when
         # the item naming them comes later in the list.
         reserved = {normalize_code(i.get('code')) for i in items if isinstance(i, dict) and i.get('code')}
+        # `city` names one of this region's cities by code; absent, a new
+        # school gets none and an existing one keeps its own. Checked for the
+        # whole batch first, like the codes, so a typo writes nothing.
+        region_cities = {c.code: c for c in City.objects.filter(region_id=current_region)}
         planned = []
         bad_codes = []
         clashing = []
+        bad_cities = []
 
         valid_count = 0
         for idx, item in enumerate(items):
@@ -159,6 +165,14 @@ class AdminSchoolBulkImportView(views.APIView):
             if target_region != current_region or (existing and existing.region_id != current_region):
                 forbidden_items.append(item)
                 continue
+
+            city_given = 'city' in item
+            city = None
+            if city_given and item['city']:
+                city = region_cities.get(str(item['city']).strip().upper())
+                if city is None:
+                    bad_cities.append(domain)
+                    continue
 
             # A `code` in the item is taken as given (normalized); without one
             # a new school gets the derived default and an existing school
@@ -182,8 +196,13 @@ class AdminSchoolBulkImportView(views.APIView):
                     code_owner.pop(existing.code, None)
                 taken.add(code)
                 code_owner[code] = domain
-            planned.append((item, existing, code))
+            planned.append((item, existing, code, city_given, city))
 
+        if bad_cities:
+            return Response(
+                {"error": {"code": "admin.errSchoolCityUnknown", "domains": bad_cities}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if bad_codes:
             return Response(
                 {"error": {"code": "admin.errSchoolCodeInvalid", "domains": bad_codes}},
@@ -195,7 +214,7 @@ class AdminSchoolBulkImportView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        for item, existing, code in planned:
+        for item, existing, code, city_given, city in planned:
             domain = item['email_domain']
             if not existing:
                 # Echo the code it will get, so the preview shows the derived one.
@@ -206,6 +225,7 @@ class AdminSchoolBulkImportView(views.APIView):
                         email_domain=domain,
                         region_id=current_region,
                         code=code,
+                        city=city,
                         translations=item.get('translations', {})
                     )
             else:
@@ -213,11 +233,13 @@ class AdminSchoolBulkImportView(views.APIView):
                 name = item.get('name', existing.name)
                 translations = item.get('translations', existing.translations)
                 new_code = code if code is not None else existing.code
+                new_city_id = (city.id if city else None) if city_given else existing.city_id
                 
                 is_changed = (
                     existing.name != name
                     or existing.translations != translations
                     or existing.code != new_code
+                    or existing.city_id != new_city_id
                 )
                 if is_changed:
                     modified_items.append({
@@ -228,6 +250,7 @@ class AdminSchoolBulkImportView(views.APIView):
                         existing.name = name
                         existing.translations = translations
                         existing.code = new_code
+                        existing.city_id = new_city_id
                         existing.save()
                 else:
                     unchanged_items.append(item)

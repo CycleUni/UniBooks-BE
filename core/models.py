@@ -98,6 +98,36 @@ class Region(models.Model):
         from core.i18n import pick_translation
         return pick_translation(self.translations, lang).get('name') or self.name
 
+
+class City(models.Model):
+    """A city (or, in Hong Kong, an area) schools are grouped by.
+
+    When the chosen school has no books, the home page and search fall back
+    to the other schools in its city. `code` is unique within the region
+    (ISO 3166-2:TW for Taiwan: "TPE"); `translations` holds localized names
+    the same way Region's does. Defaults live in core.default_cities.
+    """
+    region = models.ForeignKey(Region, on_delete=models.CASCADE, related_name='cities')
+    code = models.CharField(max_length=10)
+    name = models.CharField(max_length=100)
+    translations = models.JSONField(default=dict, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['region', 'sort_order', 'code']
+        constraints = [
+            models.UniqueConstraint(fields=['region', 'code'], name='city_unique_code_per_region'),
+        ]
+        verbose_name_plural = 'cities'
+
+    def __str__(self):
+        return f"{self.name} ({self.region_id})"
+
+    def localized_name(self, lang):
+        from core.i18n import pick_translation
+        return pick_translation(self.translations, lang).get('name') or self.name
+
+
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from core.cache import safe_cache_delete
@@ -116,6 +146,15 @@ def invalidate_region_caches(sender, **kwargs):
         instance = kwargs.get('instance')
         if instance:
             safe_cache_delete(f"currency_dp_{instance.code}")
+
+
+@receiver([post_save, post_delete], sender=City)
+def invalidate_city_caches(sender, **kwargs):
+    """Cities are only edited in the Django admin, which has no hook of its
+    own: without this a renamed city kept its old name in the school
+    selector for the home metadata's 24-hour TTL."""
+    from accounts.views.home import invalidate_home_static_cache
+    invalidate_home_static_cache()
 
 
 class ThrottleCounter(models.Model):

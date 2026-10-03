@@ -27,6 +27,9 @@ class School(models.Model):
     name = models.CharField(max_length=255, help_text="Canonical English name, e.g. National Taiwan University")
     translations = models.JSONField(default=dict, blank=True, help_text='Localized fields per language, e.g. {"zh-TW": {"name": "國立台灣大學"}}')
     region = models.ForeignKey('core.Region', on_delete=models.PROTECT, related_name='schools')
+    # Where the main campus is. When this school has no books the home page
+    # and search show the rest of its city's instead. Null: no fallback.
+    city = models.ForeignKey('core.City', on_delete=models.SET_NULL, null=True, blank=True, related_name='schools')
     code = models.CharField(
         max_length=CODE_MAX_LENGTH,
         blank=True,

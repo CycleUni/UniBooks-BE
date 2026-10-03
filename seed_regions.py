@@ -92,8 +92,10 @@ def run():
     hk.languages.set([zh_hk, en])
 
     from core.default_categories import seed_default_categories
+    from core.default_cities import seed_default_cities
     for region in (tw, hk):
         seed_default_categories(region)
+        seed_default_cities(region)
     
     print("Regions seeded successfully.")
 
