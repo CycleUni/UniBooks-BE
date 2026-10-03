@@ -66,27 +66,31 @@ class BookDetailView(views.APIView):
                 if valid_isbn:
                     book = Book.objects.filter(region=region, isbn13=valid_isbn).first()
                 if not book:
-                    # Serve dynamically. A named engine is used as-is, with no
-                    # other catalogue substituted when it has no record: the
-                    # link was built from a search result that engine produced
-                    # (see the frontend's bookLinkParams), and another
-                    # engine's data would reintroduce the cover/title mismatch
-                    # this param exists to avoid. Only a Google rate limit
-                    # still hands over to Open Library. Without an engine —
-                    # a shared or typed-in ISBN link — every catalogue the
-                    # region allows is tried in order until one has the book.
+                    # Serve dynamically. A named engine is asked first and on
+                    # its own: the link was built from a search result that
+                    # engine produced (see the frontend's bookLinkParams), and
+                    # another engine's data could show a different cover or
+                    # title than the result just clicked. But a page that
+                    # says the book does not exist is worse than that, and a
+                    # catalogue's ISBN lookup can miss a book its own search
+                    # returned — so when the named engine has nothing, the
+                    # rest of the region's catalogues are tried in order.
+                    # Without an engine — a shared or typed-in ISBN link —
+                    # that order is all there is.
                     gb_data = None
                     if valid_isbn:
-                        gb_data, engine_used, meta, _ = lookup_in_order(
-                            valid_isbn,
-                            engine_order(engine, allowed_engines, ISBN_FALLBACK_ORDER),
-                            {
-                                'googlebooks': get_google_books_by_isbn,
-                                'isbnnet': get_isbnnet_book_by_isbn,
-                                'openlibrary': get_open_library_book_by_isbn,
-                            },
-                            allowed_engines,
-                        )
+                        lookups = {
+                            'googlebooks': get_google_books_by_isbn,
+                            'isbnnet': get_isbnnet_book_by_isbn,
+                            'openlibrary': get_open_library_book_by_isbn,
+                        }
+                        order = engine_order(engine, allowed_engines, ISBN_FALLBACK_ORDER)
+                        gb_data, engine_used, meta, _ = lookup_in_order(valid_isbn, order, lookups, allowed_engines)
+                        if not gb_data and engine:
+                            tried = {attempt['engine'] for attempt in meta['attempts']}
+                            rest = [e for e in engine_order(None, allowed_engines, ISBN_FALLBACK_ORDER) if e not in tried]
+                            if rest:
+                                gb_data, engine_used, meta, _ = lookup_in_order(valid_isbn, rest, lookups, allowed_engines)
                     if gb_data:
                         return Response({
                             'id': '',

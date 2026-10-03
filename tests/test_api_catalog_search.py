@@ -1027,6 +1027,28 @@ def test_book_detail_without_engine_tries_isbn_registry_when_google_has_no_recor
     assert resp.json()["source"] == "isbnnet_api"
 
 
+def test_book_detail_named_engine_falls_through_when_it_has_no_record(api, db):
+    # A search result's link names the engine it came from, but that
+    # engine's ISBN lookup can miss the book; the page must not 404.
+    with mock.patch("catalog.views.get_google_books_by_isbn", return_value=None) as google, \
+            mock.patch("catalog.views.get_isbnnet_book_by_isbn", return_value=_isbn_book("Registry Book", "9786260000010")):
+        resp = api.get("/api/v1/books/?isbn=9786260000010&engine=googlebooks")
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "isbnnet_api"
+    google.assert_called_once()
+
+
+def test_book_detail_named_engine_is_used_alone_when_it_has_the_book(api, db):
+    with mock.patch("catalog.views.get_google_books_by_isbn") as google, \
+            mock.patch("catalog.views.get_isbnnet_book_by_isbn", return_value=_isbn_book("Registry Book", "9786260000011")), \
+            mock.patch("catalog.views.get_open_library_book_by_isbn") as ol_isbn:
+        resp = api.get("/api/v1/books/?isbn=9786260000011&engine=isbnnet")
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "isbnnet_api"
+    google.assert_not_called()
+    ol_isbn.assert_not_called()
+
+
 def test_book_detail_respects_the_region_engines(api, db):
     _set_tw_engines(['googlebooks'])
     with mock.patch("catalog.views.get_google_books_by_isbn", return_value=None), \
