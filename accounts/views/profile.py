@@ -8,6 +8,7 @@ from core.throttling import ScopedThrottle
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from core.cache import bump_cache_version
 from core.i18n import EMAIL_LANGUAGES
 from core.region import get_region
 from django.contrib.auth import get_user_model
@@ -32,6 +33,19 @@ LISTING_SORTS = {
     'price_asc': ('price', '-created_at'),
     'price_desc': ('-price', '-created_at'),
 }
+
+
+def invalidate_seller_caches(user):
+    """Retire cached pages that embed `user` as a seller.
+
+    Listing feeds, a book's page and each listing's page carry the seller's
+    avatar, and are cached for minutes; without this, hiding the avatar would
+    leave it on show there until they expired.
+    """
+    bump_cache_version('listing_list')
+    bump_cache_version('book_detail')
+    for pk in user.listings.values_list('pk', flat=True):
+        bump_cache_version(f'listing:{pk}')
 
 
 class MyProfileView(views.APIView):
@@ -110,13 +124,20 @@ class MyProfileView(views.APIView):
         email = request.data.get('email')
         last_seen_bought_orders_at = request.data.get('last_seen_bought_orders_at')
         last_seen_sold_orders_at = request.data.get('last_seen_sold_orders_at')
+        show_avatar = request.data.get('show_avatar')
 
+        if show_avatar is not None and not isinstance(show_avatar, bool):
+            return Response({"show_avatar": [_("Invalid value.")]}, status=status.HTTP_400_BAD_REQUEST)
         if first_name is not None and not isinstance(first_name, str):
             return Response({"first_name": [_("Invalid value.")]}, status=status.HTTP_400_BAD_REQUEST)
         if last_name is not None and not isinstance(last_name, str):
             return Response({"last_name": [_("Invalid value.")]}, status=status.HTTP_400_BAD_REQUEST)
 
         updated_fields = []
+        avatar_visibility_changed = show_avatar is not None and show_avatar != user.show_avatar
+        if avatar_visibility_changed:
+            user.show_avatar = show_avatar
+            updated_fields.append('show_avatar')
         if first_name is not None:
             user.first_name = first_name.strip()
             updated_fields.append('first_name')
@@ -173,6 +194,8 @@ class MyProfileView(views.APIView):
 
         if updated_fields:
             user.save(update_fields=updated_fields)
+        if avatar_visibility_changed:
+            invalidate_seller_caches(user)
 
         serializer = UserSerializer(user, context={'request': request})
         return Response(serializer.data)

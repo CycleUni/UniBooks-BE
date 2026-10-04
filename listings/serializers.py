@@ -137,7 +137,7 @@ class ListingSerializer(serializers.ModelSerializer):
     def get_seller_avatar_url(self, obj):
         if not obj.seller:
             return ''
-        return obj.seller.avatar_url
+        return obj.seller.public_avatar_url
 
     def get_seller_review_count(self, obj):
         annotated = getattr(obj, 'seller_review_count_annotated', None)

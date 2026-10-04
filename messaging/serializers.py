@@ -92,7 +92,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     def get_other_party_avatar_url(self, obj):
         user = self._other_party_user(obj)
-        return (user.avatar_url or "") if user else ""
+        return user.public_avatar_url if user else ""
 
     def get_other_party_role(self, obj):
         request = self.context.get('request')

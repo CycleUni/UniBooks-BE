@@ -120,6 +120,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     first_name = models.CharField(max_length=150, default='')
     last_name = models.CharField(max_length=150, default='')
     avatar_url = models.URLField(max_length=500, null=True, blank=True, help_text="Avatar URL")
+    # The avatar comes from the user's Google account, set on sign-in without
+    # asking. This lets them keep it off everything other people see (seller
+    # profile, listings, inbox, orders); they still see it themselves.
+    show_avatar = models.BooleanField(
+        default=True,
+        help_text="Show the avatar to other users",
+    )
     
     
     last_seen_bought_orders_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp of the most recent bought order seen by the user")
@@ -170,6 +177,11 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+    @property
+    def public_avatar_url(self):
+        """The avatar as other users may see it: '' when the owner hid it."""
+        return (self.avatar_url or '') if self.show_avatar else ''
 
     def is_verified_in(self, region):
         """Check if user is verified in the specified region (by Region instance or string code)."""

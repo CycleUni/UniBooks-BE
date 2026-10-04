@@ -28,8 +28,8 @@ class OrderSerializer(serializers.ModelSerializer):
     has_reviewed = serializers.SerializerMethodField()
     # Disambiguate the other party beyond a display name, which is not unique
     # — see accounts.serializers.school_name_in_region.
-    buyer_avatar_url = serializers.CharField(source='buyer.avatar_url', read_only=True, default='')
-    seller_avatar_url = serializers.CharField(source='seller.avatar_url', read_only=True, default='')
+    buyer_avatar_url = serializers.CharField(source='buyer.public_avatar_url', read_only=True, default='')
+    seller_avatar_url = serializers.CharField(source='seller.public_avatar_url', read_only=True, default='')
     buyer_school_name = serializers.SerializerMethodField()
     seller_school_name = serializers.SerializerMethodField()
     # The buyer/seller conversation this order was arranged in, so the order

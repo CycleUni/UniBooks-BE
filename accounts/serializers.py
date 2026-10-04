@@ -98,8 +98,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
-        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
+        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
+        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):
@@ -120,6 +120,7 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
 class PublicUserProfileSerializer(serializers.ModelSerializer):
     school_name = serializers.SerializerMethodField()
     is_verified = serializers.SerializerMethodField()
+    avatar_url = serializers.CharField(source='public_avatar_url', read_only=True)
 
     def _verification(self, obj):
         """The seller's verification in the region being browsed.
