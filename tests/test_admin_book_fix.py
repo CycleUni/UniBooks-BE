@@ -147,6 +147,65 @@ def test_seller_listing_edit_refuses_a_non_isbn(api, data):
     assert resp.json()["error"]["code"] == "listing.errInvalidIsbn"
 
 
+# --- admin book list and detail ------------------------------------------
+
+def _list(api, user, query=""):
+    return api.get(f"/api/v1/admin/books/{query}", **_auth(user))
+
+
+def test_book_list_shows_only_the_managed_regions(api, data):
+    body = _list(api, data["tw_admin"]).json()
+    ids = [b["id"] for b in body["results"]]
+    assert data["wrong"].pk in ids
+    assert data["hk_book"].pk not in ids
+
+
+def test_book_list_finds_a_book_that_never_sold(api, data):
+    unsold = Book.objects.create(region=data["tw"], title="Nobody bought this", source="manual")
+    body = _list(api, data["tw_admin"], "?q=nobody").json()
+    assert [b["id"] for b in body["results"]] == [unsold.pk]
+
+
+def test_book_list_matches_a_hyphenated_isbn(api, data):
+    body = _list(api, data["hk_admin"], "?q=978-0-13-110362").json()
+    assert [b["id"] for b in body["results"]] == [data["hk_book"].pk]
+
+
+def test_book_list_filters_by_region(api, data):
+    admin = _user("super@test.com", is_staff=True, is_superuser=True)
+    body = _list(api, admin, "?region=hk").json()
+    assert [b["id"] for b in body["results"]] == [data["hk_book"].pk]
+
+
+def test_book_list_counts_active_listings_and_requests(api, data):
+    Listing.objects.create(
+        region=data["tw"], currency=data["tw"].currency, book=data["wrong"],
+        seller=data["other_seller"], school=data["school"], price=200, status="sold",
+    )
+    Subscription.objects.create(region=data["tw"], user=data["other_seller"], book=data["wrong"])
+    row = next(b for b in _list(api, data["tw_admin"]).json()["results"] if b["id"] == data["wrong"].pk)
+    assert row["active_listings"] == 1
+    assert row["request_count"] == 1
+
+
+def test_book_list_is_for_staff_only(api, data):
+    assert _list(api, data["seller"]).status_code == 403
+
+
+def test_book_detail_returns_the_record(api, data):
+    resp = api.get(f"/api/v1/admin/books/{data['wrong'].pk}/", **_auth(data["tw_admin"]))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == data["wrong"].title
+    assert body["isbn13"] == MISREAD
+    assert body["active_listings"] == 1
+
+
+def test_book_detail_is_404_outside_the_managed_regions(api, data):
+    resp = api.get(f"/api/v1/admin/books/{data['hk_book'].pk}/", **_auth(data["tw_admin"]))
+    assert resp.status_code == 404
+
+
 # --- admin lookup ---------------------------------------------------------
 
 @mock.patch("adminapi.views.books.ISBN_LOOKUPS", {"googlebooks": lambda isbn, _meta=None: dict(FOUND)})

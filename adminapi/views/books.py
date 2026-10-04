@@ -8,9 +8,11 @@ that already has that ISBN.
 """
 
 from django.db import IntegrityError, transaction
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
-from rest_framework import status, views
+from rest_framework import generics, serializers, status, views
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
@@ -34,7 +36,10 @@ from catalog.services.engines import (
 )
 from core.cache import bump_cache_version, safe_cache_delete
 from core.models import AuditEvent
+from listings.models import Listing
+from subscriptions.models import Subscription
 
+from ..pagination import AdminPagination
 from ..permissions import IsRegionManager
 
 ISBN_LOOKUPS = {
@@ -72,14 +77,65 @@ def _book_ref(book):
     return {'id': book.pk, 'title': book.title} if book else None
 
 
+class AdminBookListSerializer(BookSerializer):
+    active_listings = serializers.IntegerField(read_only=True)
+    request_count = serializers.IntegerField(read_only=True)
+
+
+def _count_of(qs):
+    # A subquery per count, not two joins: joining both listings and
+    # subscriptions multiplies one by the other before counting.
+    counted = qs.filter(book=OuterRef('pk')).order_by().values('book').annotate(n=Count('pk')).values('n')
+    return Coalesce(Subquery(counted, output_field=IntegerField()), Value(0))
+
+
+def _with_counts(qs):
+    return qs.annotate(
+        active_listings=_count_of(Listing.objects.filter(status='active')),
+        request_count=_count_of(Subscription.objects.all()),
+    )
+
+
+def _scoped_books(request):
+    qs = Book.objects.select_related('region')
+    if not request.user.is_superuser:
+        qs = qs.filter(region__in=request.user.managed_regions.all())
+    return qs
+
+
+class AdminBookListView(generics.ListAPIView):
+    """GET /api/v1/admin/books/?q=&region=
+
+    Every book of the regions the admin manages, newest first, so one that
+    never sold, and so never reaches the stats ranking, can still be found
+    and corrected. `q` matches the title, the authors or the ISBN.
+    """
+    permission_classes = [IsAdminUser, IsRegionManager]
+    serializer_class = AdminBookListSerializer
+    pagination_class = AdminPagination
+
+    def get_queryset(self):
+        qs = _scoped_books(self.request)
+        q = (self.request.query_params.get('q') or '').strip()
+        if q:
+            match = Q(title__icontains=q) | Q(authors__icontains=q)
+            # ISBNs are stored bare; an admin may paste one with hyphens.
+            digits = q.replace('-', '').replace(' ', '')
+            if digits:
+                match |= Q(isbn13__icontains=digits)
+            qs = qs.filter(match)
+        # Uppercased: the frontend spells the region as the URL does.
+        region = (self.request.query_params.get('region') or '').upper()
+        if region:
+            qs = qs.filter(region_id=region)
+        return _with_counts(qs).order_by('-created_at', '-pk')
+
+
 class _AdminBookView(views.APIView):
     permission_classes = [IsAdminUser, IsRegionManager]
 
-    def get_book(self, request, pk):
-        qs = Book.objects.select_related('region')
-        if not request.user.is_superuser:
-            qs = qs.filter(region__in=request.user.managed_regions.all())
-        book = get_object_or_404(qs, pk=pk)
+    def get_book(self, request, pk, qs=None):
+        book = get_object_or_404(_scoped_books(request) if qs is None else qs, pk=pk)
         self.check_object_permissions(request, book)
         return book
 
@@ -122,13 +178,17 @@ class AdminBookLookupView(_AdminBookView):
 
 
 class AdminBookDetailView(_AdminBookView):
-    """PATCH /api/v1/admin/books/<id>/
+    """GET / PATCH /api/v1/admin/books/<id>/
 
-    Edits the record. An `isbn13` another book of the region already has is
+    GET is the record with its listing and request counts. PATCH edits it. An `isbn13` another book of the region already has is
     refused with 409 and that book, unless `merge` is true: then this book's
     listings and subscriptions move to that one and this book is deleted,
     leaving that book's own details as they are.
     """
+
+    def get(self, request, pk):
+        book = self.get_book(request, pk, _with_counts(_scoped_books(request)))
+        return Response(AdminBookListSerializer(book).data)
 
     def patch(self, request, pk):
         book = self.get_book(request, pk)
