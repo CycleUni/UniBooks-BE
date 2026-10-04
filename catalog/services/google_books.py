@@ -19,6 +19,7 @@ from ._common import (
     _set_status,
     clean_publisher,
 )
+from .isbn import isbn_forms
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,13 @@ def get_google_books_by_isbn(isbn, _meta=None):
             _set_status(_meta, STATUS_ERROR)
             return None
         data = response.json()
-        if data.get('totalItems', 0) > 0:
-            item = data['items'][0]['volumeInfo']
+        item = data['items'][0]['volumeInfo'] if data.get('totalItems', 0) > 0 and data.get('items') else None
+        if item is None:
+            # Google's isbn: operator has been answering zero for books it
+            # holds (seen 2026-10 for every ISBN tried). A plain search for
+            # the number still finds some of them among unrelated results.
+            item = _volume_with_isbn(isbn)
+        if item is not None:
             result = {
                 'title': item.get('title', ''),
                 'authors': ', '.join(item.get('authors', [])),
@@ -119,6 +125,33 @@ def get_google_books_by_isbn(isbn, _meta=None):
     except (requests.RequestException, ValueError, KeyError):
         logger.exception("Google Books ISBN lookup failed for %s", isbn)
         _set_status(_meta, STATUS_ERROR)
+    return None
+
+
+def _volume_with_isbn(isbn):
+    """The volume a plain search for `isbn` returns that carries that exact
+    ISBN, or None. Only an identifier match counts: the rest of such a
+    search is whatever mentions the number. A 429 raises like the main call."""
+    params = _google_books_params(isbn)
+    params['maxResults'] = 40
+    response = requests.get(
+        GOOGLE_BOOKS_API_URL,
+        params=params,
+        headers={'User-Agent': 'UniBooks Backend Service'},
+        timeout=EXTERNAL_API_TIMEOUT,
+    )
+    if response.status_code == 429:
+        logger.warning("Google Books rate-limited (429) on plain search for ISBN %s", isbn)
+        _safe_cache_set(_GOOGLE_RATE_LIMIT_CACHE_KEY, True, _GOOGLE_RATE_LIMIT_TTL)
+        raise GoogleBooksRateLimited(f"429 for plain isbn={isbn}")
+    if response.status_code != 200:
+        return None
+    wanted = isbn_forms(isbn)
+    for volume in response.json().get('items') or []:
+        info = volume.get('volumeInfo') or {}
+        ids = {(x.get('identifier') or '').upper() for x in info.get('industryIdentifiers') or []}
+        if ids & wanted:
+            return info
     return None
 
 

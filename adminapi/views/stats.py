@@ -246,6 +246,7 @@ def _book_dict(book, full=False):
     if full:
         data['publisher'] = book.publisher
         data['published_date'] = book.published_date
+        data['source'] = book.source
     return data
 
 

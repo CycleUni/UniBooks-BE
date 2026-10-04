@@ -16,6 +16,7 @@ from catalog.services import (
     GoogleBooksRateLimited, describe_source, clean_publisher,
     _NOT_FOUND_CACHE_TTL,
 )
+from catalog.services.isbn import isbn_forms
 from listings.models import Listing
 from subscriptions.models import Subscription
 
@@ -332,7 +333,8 @@ def test_get_google_books_by_isbn_negative_caches_not_found(db):
     ) as get:
         assert get_google_books_by_isbn("1111111111111") is None
         assert get_google_books_by_isbn("1111111111111") is None
-        assert get.call_count == 1
+        # The isbn: query and the plain-search retry, once.
+        assert get.call_count == 2
 
 
 def test_search_google_books_negative_caches_not_found(db):
@@ -1104,3 +1106,55 @@ def test_search_endpoint_returns_200_when_engine_confirms_not_found(api, db):
     assert resp.status_code == 200
     assert resp.json()["results"] == []
 
+
+
+def _volume(title, *identifiers):
+    return {"volumeInfo": {
+        "title": title,
+        "industryIdentifiers": [
+            {"type": "ISBN_13" if len(i) == 13 else "ISBN_10", "identifier": i} for i in identifiers
+        ],
+    }}
+
+
+def test_google_isbn_lookup_retries_as_a_plain_search(db):
+    # isbn: answers zero; the plain search holds the book among others.
+    plain = {"totalItems": 3, "items": [
+        _volume("Unrelated", "9781111111116"),
+        _volume("Clean Code", "0132350882", "9780132350884"),
+    ]}
+    with mock.patch(
+        "catalog.services.requests.get",
+        side_effect=[_fake_response({"totalItems": 0}), _fake_response(plain)],
+    ) as get:
+        result = get_google_books_by_isbn("9780132350884")
+    assert result["title"] == "Clean Code"
+    assert get.call_args_list[1].kwargs["params"]["q"] == "9780132350884"
+
+
+def test_google_plain_search_matches_the_isbn_10_form(db):
+    plain = {"totalItems": 1, "items": [_volume("Old record", "0132350882")]}
+    with mock.patch(
+        "catalog.services.requests.get",
+        side_effect=[_fake_response({"totalItems": 0}), _fake_response(plain)],
+    ):
+        assert get_google_books_by_isbn("9780132350884")["title"] == "Old record"
+
+
+def test_google_plain_search_ignores_volumes_without_the_isbn(db):
+    plain = {"totalItems": 2, "items": [_volume("Mentions the number", "9781111111116"), {"volumeInfo": {"title": "No ids"}}]}
+    with mock.patch(
+        "catalog.services.requests.get",
+        side_effect=[_fake_response({"totalItems": 0}), _fake_response(plain)],
+    ):
+        assert get_google_books_by_isbn("9780132350884") is None
+
+
+@pytest.mark.parametrize("isbn,forms", [
+    ("9780132350884", {"9780132350884", "0132350882"}),
+    ("0132350882", {"0132350882", "9780132350884"}),
+    ("080442957X", {"080442957X", "9780804429573"}),
+    ("9791032305690", {"9791032305690"}),
+])
+def test_isbn_forms(isbn, forms):
+    assert isbn_forms(isbn) == forms

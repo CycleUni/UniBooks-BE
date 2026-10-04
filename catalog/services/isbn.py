@@ -42,3 +42,19 @@ def validate_book_isbn(isbn_str):
     if len(isbn) == 13 and not isbn.startswith(('978', '979')):
         return None
     return isbn
+
+
+def isbn_forms(isbn):
+    """A cleaned ISBN with its other length, when it has one: an ISBN-10 and
+    the 978 ISBN-13 are the same book. (979 numbers have no ISBN-10.)"""
+    forms = {isbn}
+    if len(isbn) == 13 and isbn.startswith('978'):
+        core = isbn[3:12]
+        total = sum(int(d) * (10 - i) for i, d in enumerate(core))
+        check = (11 - total % 11) % 11
+        forms.add(core + ('X' if check == 10 else str(check)))
+    elif len(isbn) == 10 and isbn[:9].isdigit():
+        core = '978' + isbn[:9]
+        total = sum(int(d) * (1 if i % 2 == 0 else 3) for i, d in enumerate(core))
+        forms.add(core + str((10 - total % 10) % 10))
+    return forms
