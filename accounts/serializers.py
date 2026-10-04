@@ -33,6 +33,14 @@ class UserSerializer(serializers.ModelSerializer):
     def get_regions(self, obj):
         return sorted([v.region_id for v in obj.region_verifications.all() if v.is_active and v.verified_at])
 
+    # Blank once the verification it was saved under has ended (unbound or
+    # revoked), so a sign-in never switches to a region the user may no
+    # longer trade in.
+    site_region = serializers.SerializerMethodField()
+
+    def get_site_region(self, obj):
+        return obj.site_region if obj.site_region in self.get_regions(obj) else ''
+
     def get_verifications(self, obj):
         request = self.context.get('request')
         lang = resolve_language(request) if request else DEFAULT_LANGUAGE
@@ -98,8 +106,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
-        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language')
+        fields = ('id', 'email', 'edu_email', 'first_name', 'last_name', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language', 'site_region')
+        read_only_fields = ('id', 'edu_email', 'display_name', 'school', 'school_name', 'is_active', 'is_verified', 'verified_at', 'average_rating', 'review_count', 'no_show_count', 'has_password', 'is_google_linked', 'avatar_url', 'show_avatar', 'last_seen_bought_orders_at', 'last_seen_sold_orders_at', 'is_staff', 'is_superuser', 'managed_regions', 'regions', 'verifications', 'site_language', 'site_region')
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):

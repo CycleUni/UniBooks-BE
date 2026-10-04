@@ -153,6 +153,15 @@ class User(AbstractBaseUser, PermissionsMixin):
         default='',
         help_text="The language the user last used the site in, as reported by the frontend",
     )
+    # Brought back on the next sign-in, on any device, with site_language.
+    # Only ever a region the user has verified a school email in (see
+    # SiteRegionView), and only shown while that verification lasts.
+    site_region = models.CharField(
+        max_length=2,
+        blank=True,
+        default='',
+        help_text="Code of the verified region the user last used the site in, as reported by the frontend",
+    )
     # Set when the owner deletes their account. The row stays, stripped of
     # everything personal, because Order and Review point at it from both
     # sides: a real delete cascaded through them and took the *other* party's

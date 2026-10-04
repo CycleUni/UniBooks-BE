@@ -1192,6 +1192,60 @@ def test_site_language_refuses_an_unsupported_language(api, user, auth_header, v
     assert user.site_language == ""
 
 
+SITE_REGION_URL = "/api/v1/auth/me/site-region/"
+
+
+def _verify_in_tw(user, school, **fields):
+    from accounts.models import RegionVerification
+
+    fields = {"verified_at": "2024-01-01T00:00:00Z", "is_active": True, **fields}
+    return RegionVerification.objects.create(
+        user=user, region_id="TW", school=school, edu_email="test@ntu.edu.tw", **fields,
+    )
+
+
+def test_site_region_requires_sign_in(api, db):
+    assert api.put(SITE_REGION_URL, {"region": "tw"}, content_type="application/json").status_code == 401
+
+
+def test_site_region_is_recorded_in_a_verified_region_and_shown(api, user, auth_header, ntu_school):
+    _verify_in_tw(user, ntu_school)
+
+    resp = api.put(SITE_REGION_URL, {"region": "tw"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 204
+    user.refresh_from_db()
+    assert user.site_region == "TW"
+    assert api.get("/api/v1/auth/me/", **auth_header).json()["site_region"] == "TW"
+
+
+@pytest.mark.parametrize("value", ["hk", "zz", "", None, 1])
+def test_site_region_refuses_a_region_the_user_is_not_verified_in(api, user, auth_header, ntu_school, value):
+    _verify_in_tw(user, ntu_school)
+
+    resp = api.put(SITE_REGION_URL, {"region": value}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+    user.refresh_from_db()
+    assert user.site_region == ""
+
+
+def test_site_region_refuses_a_verification_still_pending(api, user, auth_header, ntu_school):
+    _verify_in_tw(user, ntu_school, verified_at=None)
+
+    resp = api.put(SITE_REGION_URL, {"region": "tw"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+
+
+def test_site_region_is_hidden_once_its_verification_ends(api, user, auth_header, ntu_school):
+    verification = _verify_in_tw(user, ntu_school)
+    user.site_region = "TW"
+    user.save(update_fields=["site_region"])
+
+    verification.is_active = False
+    verification.save(update_fields=["is_active"])
+
+    assert api.get("/api/v1/auth/me/", **auth_header).json()["site_region"] == ""
+
+
 def test_email_language_prefers_the_explicit_choice_then_the_site_language_then_the_region(user):
     from core.i18n import email_language_for
     from core.models import Region

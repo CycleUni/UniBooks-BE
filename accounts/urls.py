@@ -23,5 +23,6 @@ urlpatterns = [
     path('me/', views.MyProfileView.as_view(), name='auth-me'),
     path('me/notifications/', views.NotificationSettingsView.as_view(), name='auth-me-notifications'),
     path('me/site-language/', views.SiteLanguageView.as_view(), name='auth-me-site-language'),
+    path('me/site-region/', views.SiteRegionView.as_view(), name='auth-me-site-region'),
     path('users/<int:pk>/', views.PublicUserProfileView.as_view(), name='auth-user-profile'),
 ]

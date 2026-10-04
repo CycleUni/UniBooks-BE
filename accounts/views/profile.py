@@ -249,6 +249,27 @@ class SiteLanguageView(views.APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class SiteRegionView(views.APIView):
+    """PUT the region the signed-in user is using the site in.
+
+    The counterpart of SiteLanguageView, brought back on the next sign-in.
+    Kept only for a region the user has verified a school email in: that is
+    where they trade, while the region they happen to be browsing may be
+    nothing of theirs.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        code = request.data.get('region')
+        if not isinstance(code, str) or not request.user.is_verified_in(code.upper()):
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+        code = code.upper()
+        if request.user.site_region != code:
+            request.user.site_region = code
+            request.user.save(update_fields=['site_region'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class PublicUserProfileView(views.APIView):
     # Sequential integer ids, a name and a join date per hit: unthrottled this
     # is a directory of every account on the site, walkable in one pass.
