@@ -2,6 +2,7 @@
 /api/v1/sitemap.xml naming one sitemap per kind, region and page."""
 
 import gzip
+from datetime import UTC, datetime
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -112,6 +113,32 @@ def test_a_book_with_several_listings_appears_once(api, seller):
     _list(book, seller)
 
     assert _locs(api, "/api/v1/sitemap/books-tw-1.xml") == ["https://unibooks.app/tw/book?isbn=9780000000005"]
+
+
+def test_a_book_is_dated_by_its_newest_active_listing(api, seller):
+    book = _book("9780000000006")
+    older, newer, gone = _list(book, seller), _list(book, seller), _list(book, seller, status='sold')
+    Listing.objects.filter(pk=older.pk).update(
+        created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    Listing.objects.filter(pk=newer.pk).update(created_at=datetime(2026, 3, 1, tzinfo=UTC))
+    Listing.objects.filter(pk=gone.pk).update(created_at=datetime(2026, 6, 1, tzinfo=UTC))
+
+    resp = api.get("/api/v1/sitemap/books-tw-1.xml")
+    lastmods = [el.text for el in ET.fromstring(resp.content).findall('sm:url/sm:lastmod', NS)]
+    # Not the older listing's later edit, nor the sold listing.
+    assert lastmods == ["2026-03-01"]
+
+
+def test_a_listing_is_dated_by_when_it_went_up_for_sale(api, seller):
+    listing = _list(_book("9780000000007"), seller)
+    Listing.objects.filter(pk=listing.pk).update(
+        created_at=datetime(2026, 2, 1, tzinfo=UTC), updated_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
+
+    resp = api.get("/api/v1/sitemap/listings-tw-1.xml")
+    lastmods = [el.text for el in ET.fromstring(resp.content).findall('sm:url/sm:lastmod', NS)]
+    assert lastmods == ["2026-02-01"]
 
 
 def test_pages_split_at_page_size_in_id_order(api, seller, monkeypatch):

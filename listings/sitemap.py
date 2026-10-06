@@ -52,20 +52,23 @@ XMLNS = 'http://www.sitemaps.org/schemas/sitemap/0.9'
 
 
 def _books(region_code):
+    # Dated by its newest active listing: a new copy for sale is what changes
+    # a book page, while an edit to an existing listing barely touches it.
     return (
         Book.objects
         .filter(region_id=region_code, listings__status='active')
-        .annotate(lastmod=Max('listings__updated_at'))
+        .annotate(lastmod=Max('listings__created_at'))
         .order_by('id')
     )
 
 
 def _listings(region_code):
-    # Walks listing_region_status_id_idx in order.
+    # Dated by when it went up for sale, like a book. Walks
+    # listing_region_status_id_idx in order.
     return (
         Listing.objects
         .filter(region_id=region_code, status='active')
-        .annotate(lastmod=F('updated_at'))
+        .annotate(lastmod=F('created_at'))
         .order_by('id')
     )
 
