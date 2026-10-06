@@ -398,6 +398,159 @@ def test_merge_never_crosses_regions(api, data):
     assert Book.objects.filter(pk=data["hk_book"].pk).exists()
 
 
+# --- review of manual books -------------------------------------------------
+
+def _confirm(api, user, book):
+    return api.post(f"/api/v1/admin/books/{book.pk}/confirm-manual/", **_auth(user))
+
+
+def _list_ids(api, user, **params):
+    resp = api.get("/api/v1/admin/books/", params, **_auth(user))
+    assert resp.status_code == 200
+    return [b["id"] for b in resp.json()["results"]]
+
+
+def test_manual_books_wait_in_the_review_queue(api, data):
+    catalogued = Book.objects.create(region=data["tw"], title="From Google", isbn13=REAL, source="google_api")
+    pending = _list_ids(api, data["tw_admin"], review="pending")
+    assert data["wrong"].pk in pending
+    assert catalogued.pk not in pending
+    assert data["hk_book"].pk not in pending  # another region's queue
+    row = api.get(f"/api/v1/admin/books/{data['wrong'].pk}/", **_auth(data["tw_admin"])).json()
+    assert row["pending_review"] is True
+    assert row["reviewed_at"] is None
+
+
+def test_confirming_takes_the_book_out_of_the_queue(api, data):
+    resp = _confirm(api, data["tw_admin"], data["wrong"])
+    assert resp.status_code == 200
+    assert resp.json()["pending_review"] is False
+    assert resp.json()["reviewed_at"]
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_by == data["tw_admin"]
+    assert data["wrong"].pk not in _list_ids(api, data["tw_admin"], review="pending")
+    assert data["wrong"].pk in _list_ids(api, data["tw_admin"], review="confirmed")
+    assert AuditEvent.objects.filter(kind="admin.book_manual_confirmed", user=data["tw_admin"]).count() == 1
+    # Confirming again changes nothing and logs nothing new.
+    first = data["wrong"].reviewed_at
+    assert _confirm(api, data["tw_admin"], data["wrong"]).status_code == 200
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at == first
+    assert AuditEvent.objects.filter(kind="admin.book_manual_confirmed").count() == 1
+
+
+def test_only_manual_books_are_confirmed(api, data):
+    book = Book.objects.create(region=data["tw"], title="From Google", isbn13=REAL, source="google_api")
+    resp = _confirm(api, data["tw_admin"], book)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "admin.errBookNotManual"
+
+
+def test_confirm_is_scoped_to_the_admins_regions(api, data):
+    assert _confirm(api, data["hk_admin"], data["wrong"]).status_code == 404
+    assert _confirm(api, data["seller"], data["wrong"]).status_code == 403
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is None
+
+
+def test_a_seller_cannot_create_a_book_already_reviewed(api, data):
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"title": "Typed", "reviewed_at": "2026-01-01T00:00:00Z", "reviewed_by": data["tw_admin"].pk},
+        content_type="application/json", HTTP_X_REGION="TW", **_auth(data["seller"]),
+    )
+    assert resp.status_code == 201, resp.content
+    assert "reviewed_at" not in resp.json()
+    book = Book.objects.get(pk=resp.json()["id"])
+    assert book.reviewed_at is None and book.reviewed_by is None
+
+
+def test_an_admin_changing_the_isbn_reopens_the_review(api, data):
+    _confirm(api, data["tw_admin"], data["wrong"])
+    assert _patch(api, data["tw_admin"], data["wrong"], {"title": "Fixed title"}).status_code == 200
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is not None
+    assert _patch(api, data["tw_admin"], data["wrong"], {"isbn13": REAL}).status_code == 200
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is None and data["wrong"].reviewed_by is None
+
+
+def test_a_seller_editing_the_book_reopens_the_review(api, data):
+    _confirm(api, data["tw_admin"], data["wrong"])
+    url = f"/api/v1/listings/{data['listing'].pk}/"
+    # Sending the same title back is not an edit.
+    resp = api.patch(url, {"book_title": data["wrong"].title}, content_type="application/json", **_auth(data["seller"]))
+    assert resp.status_code == 200, resp.content
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is not None
+    resp = api.patch(url, {"book_title": "Another title"}, content_type="application/json", **_auth(data["seller"]))
+    assert resp.status_code == 200, resp.content
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is None
+
+
+def _bulk_confirm(api, user, body):
+    return api.post("/api/v1/admin/books/confirm-manual/", body, content_type="application/json", **_auth(user))
+
+
+def test_bulk_confirm_confirms_only_the_admins_pending_manual_books(api, data):
+    tw = data["tw"]
+    second = Book.objects.create(region=tw, title="Typed 2", source="manual")
+    done = Book.objects.create(region=tw, title="Typed 3", source="manual")
+    _confirm(api, data["tw_admin"], done)
+    catalogued = Book.objects.create(region=tw, title="From Google", isbn13=REAL, source="google_api")
+    ids = [data["wrong"].pk, second.pk, done.pk, catalogued.pk, data["hk_book"].pk, 999999]
+    resp = _bulk_confirm(api, data["tw_admin"], {"ids": ids})
+    assert resp.status_code == 200, resp.content
+    assert sorted(resp.json()["confirmed"]) == sorted([data["wrong"].pk, second.pk])
+    for book in (data["wrong"], second):
+        book.refresh_from_db()
+        assert book.reviewed_by == data["tw_admin"]
+    data["hk_book"].refresh_from_db()
+    assert data["hk_book"].reviewed_at is None  # another region's book
+    catalogued.refresh_from_db()
+    assert catalogued.reviewed_at is None
+    assert AuditEvent.objects.filter(kind="admin.book_manual_confirmed").count() == 3
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"ids": []}, {"ids": "1"}, {"ids": ["1"]}, {"ids": [True]}, {"ids": list(range(1, 102))}, [1],
+])
+def test_bulk_confirm_refuses_bad_ids(api, data, body):
+    assert _bulk_confirm(api, data["tw_admin"], body).status_code == 400
+
+
+def test_bulk_confirm_is_for_admins(api, data):
+    assert _bulk_confirm(api, data["seller"], {"ids": [data["wrong"].pk]}).status_code == 403
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is None
+
+
+def test_reopen_puts_confirmed_manual_books_back_in_the_queue(api, data):
+    tw = data["tw"]
+    pending = Book.objects.create(region=tw, title="Still pending", source="manual")
+    _confirm(api, data["tw_admin"], data["wrong"])
+    _confirm(api, data["hk_admin"], data["hk_book"])
+    resp = api.post(
+        "/api/v1/admin/books/reopen-review/",
+        {"ids": [data["wrong"].pk, pending.pk, data["hk_book"].pk]},
+        content_type="application/json", **_auth(data["tw_admin"]),
+    )
+    assert resp.status_code == 200, resp.content
+    assert resp.json()["reopened"] == [data["wrong"].pk]
+    data["wrong"].refresh_from_db()
+    assert data["wrong"].reviewed_at is None and data["wrong"].reviewed_by is None
+    data["hk_book"].refresh_from_db()
+    assert data["hk_book"].reviewed_at is not None  # another region's book
+    assert data["wrong"].pk in _list_ids(api, data["tw_admin"], review="pending")
+    assert AuditEvent.objects.filter(kind="admin.book_review_reopened").count() == 1
+
+
+def test_reopen_refuses_bad_ids(api, data):
+    resp = api.post("/api/v1/admin/books/reopen-review/", {"ids": "x"}, content_type="application/json", **_auth(data["tw_admin"]))
+    assert resp.status_code == 400
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     cache.clear()

@@ -24,6 +24,14 @@ class Book(models.Model):
     cover_url = models.URLField(max_length=1024, blank=True)
     source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
     created_at = models.DateTimeField(auto_now_add=True)
+    # A 'manual' book holds what a seller typed in, which no catalogue
+    # vouches for. It waits in the admin's review queue until an admin has
+    # checked that the catalogues really have nothing for it; a book found
+    # there leaves the queue by taking the catalogue's record and source.
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        'accounts.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
 
     class Meta:
         constraints = [

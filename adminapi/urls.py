@@ -34,7 +34,7 @@ from .views.stats import (
     AdminStatsBreakdownView,
     AdminStatsBookDetailView,
 )
-from .views.books import AdminBookDetailView, AdminBookListView, AdminBookLookupView
+from .views.books import AdminBookBulkConfirmManualView, AdminBookBulkReopenReviewView, AdminBookConfirmManualView, AdminBookDetailView, AdminBookListView, AdminBookLookupView
 from .views.school_requests import AdminSchoolRequestListView, AdminSchoolRequestDetailView
 from .views.growth import AdminStatsGrowthView, AdminStatsRetentionView
 from .views.uploads import (
@@ -56,8 +56,11 @@ urlpatterns = [
     path('stats/books/requests/', AdminStatsBookRequestsView.as_view(), name='admin-stats-book-requests'),
     path('stats/books/<int:pk>/', AdminStatsBookDetailView.as_view(), name='admin-stats-book-detail'),
     path('books/', AdminBookListView.as_view(), name='admin-book-list'),
+    path('books/confirm-manual/', AdminBookBulkConfirmManualView.as_view(), name='admin-book-confirm-manual-bulk'),
+    path('books/reopen-review/', AdminBookBulkReopenReviewView.as_view(), name='admin-book-reopen-review-bulk'),
     path('books/<int:pk>/', AdminBookDetailView.as_view(), name='admin-book-detail'),
     path('books/<int:pk>/lookup/', AdminBookLookupView.as_view(), name='admin-book-lookup'),
+    path('books/<int:pk>/confirm-manual/', AdminBookConfirmManualView.as_view(), name='admin-book-confirm-manual'),
     path('users/', AdminUserListView.as_view(), name='admin-user-list'),
     path('users/<int:pk>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('managers/<int:pk>/toggle/', AdminManagerToggleView.as_view(), name='admin-manager-toggle'),

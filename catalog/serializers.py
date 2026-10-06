@@ -6,7 +6,9 @@ from catalog.services import clean_publisher
 class BookSerializer(serializers.ModelSerializer):
     class Meta:
         model = Book
-        fields = '__all__'
+        # The admin's review of a manual book is the admin's business, and a
+        # seller's create must not be able to mark its own book reviewed.
+        exclude = ('reviewed_at', 'reviewed_by')
         read_only_fields = ('source', 'created_at', 'region')
 
     def validate_publisher(self, value):

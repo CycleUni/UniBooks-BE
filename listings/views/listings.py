@@ -275,6 +275,7 @@ class ListingDetailView(views.APIView):
                 return Response({"error": {"code": "listing.errBookShared"}}, status=status.HTTP_403_FORBIDDEN)
 
             update_fields = []
+            before = (book.title, book.authors, book.isbn13)
             book_title = request.data.get('book_title')
             if book_title is not None:
                 if not isinstance(book_title, str) or not book_title.strip():
@@ -304,6 +305,12 @@ class ListingDetailView(views.APIView):
                     book.isbn13 = valid_isbn
                 update_fields.append('isbn13')
             if update_fields:
+                if (book.title, book.authors, book.isbn13) != before:
+                    # What the admin confirmed no catalogue has was the old
+                    # record; the seller's new one goes back in the review queue.
+                    book.reviewed_at = None
+                    book.reviewed_by = None
+                    update_fields += ['reviewed_at', 'reviewed_by']
                 book.save(update_fields=update_fields)
 
         serializer = ListingSerializer(listing, data=request.data, partial=True, context={'request': request})

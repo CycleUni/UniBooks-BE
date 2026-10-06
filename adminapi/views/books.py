@@ -12,6 +12,7 @@ from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, serializers, status, views
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
@@ -80,6 +81,22 @@ def _book_ref(book):
 class AdminBookListSerializer(BookSerializer):
     active_listings = serializers.IntegerField(read_only=True)
     request_count = serializers.IntegerField(read_only=True)
+    pending_review = serializers.SerializerMethodField()
+
+    class Meta(BookSerializer.Meta):
+        exclude = ('reviewed_by',)
+        read_only_fields = BookSerializer.Meta.read_only_fields + ('reviewed_at',)
+
+    def get_pending_review(self, book):
+        return book.source == 'manual' and book.reviewed_at is None
+
+
+# `?review=` on the book list: the manual books still to check, or those an
+# admin has confirmed no catalogue has.
+REVIEW_FILTERS = {
+    'pending': Q(source='manual', reviewed_at__isnull=True),
+    'confirmed': Q(source='manual', reviewed_at__isnull=False),
+}
 
 
 def _count_of(qs):
@@ -104,11 +121,13 @@ def _scoped_books(request):
 
 
 class AdminBookListView(generics.ListAPIView):
-    """GET /api/v1/admin/books/?q=&region=
+    """GET /api/v1/admin/books/?q=&region=&review=
 
     Every book of the regions the admin manages, newest first, so one that
     never sold, and so never reaches the stats ranking, can still be found
-    and corrected. `q` matches the title, the authors or the ISBN.
+    and corrected. `q` matches the title, the authors or the ISBN. `review`
+    narrows to the manual books still to review (`pending`) or already
+    confirmed (`confirmed`).
     """
     permission_classes = [IsAdminUser, IsRegionManager]
     serializer_class = AdminBookListSerializer
@@ -128,6 +147,9 @@ class AdminBookListView(generics.ListAPIView):
         region = (self.request.query_params.get('region') or '').upper()
         if region:
             qs = qs.filter(region_id=region)
+        review = REVIEW_FILTERS.get(self.request.query_params.get('review') or '')
+        if review is not None:
+            qs = qs.filter(review)
         return _with_counts(qs).order_by('-created_at', '-pk')
 
 
@@ -234,13 +256,18 @@ class AdminBookDetailView(_AdminBookView):
                         },
                     )
                 elif updates:
+                    if 'isbn13' in updates and updates['isbn13'] != book.isbn13 and book.reviewed_at:
+                        # The check was that the catalogues have nothing
+                        # for the old ISBN; the new one has not been looked up.
+                        updates['reviewed_at'] = None
+                        updates['reviewed_by_id'] = None
                     AuditEvent.objects.create(
                         user=request.user,
                         kind='admin.book_updated',
                         meta={
                             'book_id': book.pk,
-                            'before': {f: getattr(book, f) for f in updates},
-                            'after': updates,
+                            'before': {f: _audit_value(getattr(book, f)) for f in updates},
+                            'after': {f: _audit_value(v) for f, v in updates.items()},
                         },
                     )
                     for field, value in updates.items():
@@ -293,6 +320,119 @@ class AdminBookDetailView(_AdminBookView):
                     return None, _invalid_isbn()
                 updates['isbn13'] = isbn
         return updates, None
+
+
+class AdminBookConfirmManualView(_AdminBookView):
+    """POST /api/v1/admin/books/<id>/confirm-manual/
+
+    Records that an admin looked the manual book up and no catalogue has it,
+    which takes it out of the review queue. A book with a catalogue record
+    is corrected through PATCH instead, which gives it that source.
+    """
+
+    def post(self, request, pk):
+        with transaction.atomic():
+            book = self.get_book(request, pk, _scoped_books(request).select_for_update(of=('self',)))
+            if book.source != 'manual':
+                return Response({"error": {"code": "admin.errBookNotManual"}}, status=status.HTTP_400_BAD_REQUEST)
+            _confirm_manual([book], request.user)
+        book = _with_counts(_scoped_books(request)).get(pk=book.pk)
+        return Response(AdminBookListSerializer(book).data)
+
+
+# One page of the admin's book list at its largest.
+MAX_BULK_REVIEW = 100
+
+
+def _bulk_ids(request):
+    """The book ids a bulk review request names, or None when malformed."""
+    ids = request.data.get('ids') if isinstance(request.data, dict) else None
+    if (
+        not isinstance(ids, list) or not ids or len(ids) > MAX_BULK_REVIEW
+        # bool is an int subclass; True is not book 1.
+        or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids)
+    ):
+        return None
+    return set(ids)
+
+
+class _AdminBookBulkReviewView(views.APIView):
+    """A review change for several manual books, as picked from the book
+    list. A book that is not the admin's to see, is not manual or is
+    already in the wanted state is skipped, not an error: the response
+    lists, under `result_key`, the ids this request changed."""
+    permission_classes = [IsAdminUser, IsRegionManager]
+    result_key = ''
+    # Which manual books the change applies to.
+    applies_to = Q()
+
+    def post(self, request):
+        ids = _bulk_ids(request)
+        if ids is None:
+            return _invalid_field()
+        with transaction.atomic():
+            books = list(
+                _scoped_books(request)
+                .select_for_update(of=('self',))
+                .filter(self.applies_to, pk__in=ids, source='manual')
+                .order_by('pk')
+            )
+            self.apply(books, request.user)
+        return Response({self.result_key: [b.pk for b in books]})
+
+    def apply(self, books, user):
+        raise NotImplementedError
+
+
+class AdminBookBulkConfirmManualView(_AdminBookBulkReviewView):
+    """POST /api/v1/admin/books/confirm-manual/  {"ids": [...]} -> {"confirmed": [...]}"""
+    result_key = 'confirmed'
+    applies_to = Q(reviewed_at__isnull=True)
+
+    def apply(self, books, user):
+        _confirm_manual(books, user)
+
+
+class AdminBookBulkReopenReviewView(_AdminBookBulkReviewView):
+    """POST /api/v1/admin/books/reopen-review/  {"ids": [...]} -> {"reopened": [...]}
+
+    Puts confirmed manual books back in the review queue, for one confirmed
+    by mistake or worth a second look.
+    """
+    result_key = 'reopened'
+    applies_to = Q(reviewed_at__isnull=False)
+
+    def apply(self, books, user):
+        for book in books:
+            book.reviewed_at = None
+            book.reviewed_by = None
+            book.save(update_fields=['reviewed_at', 'reviewed_by'])
+            AuditEvent.objects.create(
+                user=user,
+                kind='admin.book_review_reopened',
+                meta={'book_id': book.pk, 'isbn13': book.isbn13, 'title': book.title},
+            )
+
+
+def _confirm_manual(books, user):
+    """Marks locked manual books reviewed by `user`, each with its audit record."""
+    now = timezone.now()
+    for book in books:
+        if book.reviewed_at is not None:
+            continue
+        book.reviewed_at = now
+        book.reviewed_by = user
+        book.save(update_fields=['reviewed_at', 'reviewed_by'])
+        AuditEvent.objects.create(
+            user=user,
+            kind='admin.book_manual_confirmed',
+            meta={'book_id': book.pk, 'isbn13': book.isbn13, 'title': book.title},
+        )
+
+
+def _audit_value(value):
+    """A field's value as the audit log's JSON can hold it."""
+    return value.isoformat() if hasattr(value, 'isoformat') else value
 
 
 def _book_snapshot(book):
