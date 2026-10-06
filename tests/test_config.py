@@ -353,3 +353,24 @@ def test_env_template_covers_every_key_settings_requires():
     declared = {key for key, _ in _template_declarations()}
     for key in REQUIRED_KEYS + ["DEFAULT_FROM_EMAIL"]:
         assert key in declared, f"{key} is required by settings.py but absent from .env.template"
+
+
+# ---------------------------------------------------------------------
+# Sentry: off unless SENTRY_DSN is set
+# ---------------------------------------------------------------------
+
+
+def test_sentry_stays_off_without_a_dsn():
+    with mock.patch("sentry_sdk.init") as init:
+        settings = load_settings(FULL_ENV)
+    assert settings.SENTRY_DSN == ""
+    init.assert_not_called()
+
+
+def test_sentry_initialises_with_a_dsn_and_no_pii():
+    dsn = "https://key@o1.ingest.us.sentry.io/2"
+    with mock.patch("sentry_sdk.init") as init:
+        load_settings({**FULL_ENV, "SENTRY_DSN": dsn})
+    init.assert_called_once()
+    assert init.call_args.kwargs["dsn"] == dsn
+    assert init.call_args.kwargs["send_default_pii"] is False

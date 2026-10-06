@@ -18,6 +18,8 @@ django-anymail==15.2
 Pillow==12.3.0
 # Railway / 其他常駐容器部署用生產級 WSGI 伺服器（取代本機開發用的 runserver）
 gunicorn==26.2.0
+# 錯誤回報（SENTRY_DSN 未設定時不啟用），見 unibooks/settings.py
+sentry-sdk==2.71.0
 
 # 間接依賴（一併固定，確保建置可重現）
 asgiref==3.12.1

@@ -97,6 +97,10 @@ else:
     CORS_ALLOW_ALL_ORIGINS = False
     CORS_ALLOWED_ORIGINS = _cors_origins
 
+# Sentry error reporting. The DSN is a public ingest address, not a secret;
+# unset (the default, and what tests use) leaves Sentry off.
+SENTRY_DSN = env.str("SENTRY_DSN", default="").strip()
+
 # Frontend base URL: used to build links embedded in outbound email
 # (email verification). Dev-friendly default matches local Angular dev server;
 # production must set this explicitly.
@@ -428,3 +432,18 @@ else:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+
+# =====================================================================
+# Sentry
+# =====================================================================
+# The Django integration is picked up automatically. send_default_pii stays
+# off, so request bodies, cookies and user details are not attached to events.
+if SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment="development" if DEBUG else "production",
+        traces_sample_rate=0.1,
+        send_default_pii=False,
+    )
