@@ -247,7 +247,13 @@ class AdminListingSerializer(serializers.ModelSerializer):
     def get_school(self, obj):
         if not obj.school_id:
             return None
-        return {'id': obj.school_id, 'code': obj.school.code, 'name': obj.school.name}
+        lang = self.context.get('lang')
+        return {
+            'id': obj.school_id,
+            'code': obj.school.code,
+            'name': obj.school.name,
+            'display_name': obj.school.localized_name(lang) if lang else obj.school.name,
+        }
 
     class Meta:
         model = Listing

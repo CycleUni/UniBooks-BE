@@ -31,6 +31,33 @@ from accounts.school_codes import school_filter_id, school_filter_scope
 LOCAL_BROWSE_LIMIT = 200
 
 
+def _listing_own_text_q(query, prefix=''):
+    """Q matching listings by the text that is the listing's own rather than
+    its book's: course, professor, and the category's name in any language.
+    `prefix` reaches the listing from a Book ('listings__')."""
+    from core.models import Language
+
+    match = (
+        Q(**{f'{prefix}course_name__icontains': query})
+        | Q(**{f'{prefix}professor_name__icontains': query})
+        | Q(**{f'{prefix}category__title__icontains': query})
+    )
+    for code in Language.objects.values_list('code', flat=True):
+        match |= Q(**{f'{prefix}category__translations__{code}__title__icontains': query})
+    return match
+
+
+def _listing_text_q(query):
+    """Q matching listings by everything a keyword search covers: the book's
+    title, authors or ISBN, plus the listing's own text."""
+    return (
+        Q(book__title__icontains=query)
+        | Q(book__authors__icontains=query)
+        | Q(book__isbn13__icontains=query)
+        | _listing_own_text_q(query)
+    )
+
+
 def _isbn_lookups():
     # Resolved per call so tests patching search.views.<name> are honoured.
     return {
@@ -255,10 +282,9 @@ class BookSearchView(views.APIView):
                 for gb_book in gb_results:
                     gb_book['source'] = SOURCE_BY_ENGINE[engine_used]
                     gb_book['debug_source'] = debug_source
-                listing_text_match = Q(listings__status='active') & (
-                    Q(listings__course_name__icontains=query) |
-                    Q(listings__professor_name__icontains=query)
-                )
+                # Course, professor and category name are the listing's, not
+                # the book's: only an active listing makes them a match.
+                listing_text_match = Q(listings__status='active') & _listing_own_text_q(query, prefix='listings__')
                 if school_id is not None:
                     listing_text_match &= Q(listings__school_id=school_id)
 
@@ -429,13 +455,7 @@ class BookSearchView(views.APIView):
             if is_isbn:
                 facet_base_q &= Q(book__isbn13=query_stripped)
             elif query_stripped:
-                facet_base_q &= (
-                    Q(book__title__icontains=query_stripped) |
-                    Q(book__authors__icontains=query_stripped) |
-                    Q(book__isbn13__icontains=query_stripped) |
-                    Q(course_name__icontains=query_stripped) |
-                    Q(professor_name__icontains=query_stripped)
-                )
+                facet_base_q &= _listing_text_q(query_stripped)
 
         from core.models import Category
         # IMPORTANT: When calculating facets, we DO NOT apply the facet's own condition!
@@ -453,13 +473,7 @@ class BookSearchView(views.APIView):
             if is_isbn:
                 base_facet_no_cat_no_course &= Q(book__isbn13=query_stripped)
             elif query_stripped:
-                base_facet_no_cat_no_course &= (
-                    Q(book__title__icontains=query_stripped) |
-                    Q(book__authors__icontains=query_stripped) |
-                    Q(book__isbn13__icontains=query_stripped) |
-                    Q(course_name__icontains=query_stripped) |
-                    Q(professor_name__icontains=query_stripped)
-                )
+                base_facet_no_cat_no_course &= _listing_text_q(query_stripped)
                 
         # 1. Category Facets (apply course, but not category)
         cat_q = base_facet_no_cat_no_course

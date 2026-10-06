@@ -17,6 +17,7 @@ from rest_framework import generics, serializers, status, views
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
+from catalog.book_search import book_search_q
 from catalog.merge import merge_book_into
 from catalog.models import Book
 from catalog.serializers import BookSerializer
@@ -137,12 +138,7 @@ class AdminBookListView(generics.ListAPIView):
         qs = _scoped_books(self.request)
         q = (self.request.query_params.get('q') or '').strip()
         if q:
-            match = Q(title__icontains=q) | Q(authors__icontains=q)
-            # ISBNs are stored bare; an admin may paste one with hyphens.
-            digits = q.replace('-', '').replace(' ', '')
-            if digits:
-                match |= Q(isbn13__icontains=digits)
-            qs = qs.filter(match)
+            qs = qs.filter(book_search_q(q))
         # Uppercased: the frontend spells the region as the URL does.
         region = (self.request.query_params.get('region') or '').upper()
         if region:

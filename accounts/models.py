@@ -68,6 +68,17 @@ class School(models.Model):
         from core.i18n import pick_translation
         return pick_translation(self.translations, lang).get('name') or self.name
 
+    def all_names(self):
+        """The canonical name and every localized one, without repeats, for
+        matching a search typed in any language."""
+        names = [self.name]
+        if isinstance(self.translations, dict):
+            for fields in self.translations.values():
+                name = fields.get('name') if isinstance(fields, dict) else None
+                if name and name not in names:
+                    names.append(name)
+        return names
+
     def __str__(self):
         return self.name
 

@@ -1,5 +1,5 @@
 import logging
-from django.db.models import Count, Q
+from django.db.models import Count
 
 from django.utils.translation import gettext_lazy as _
 from rest_framework.exceptions import ValidationError
@@ -11,6 +11,7 @@ from adminapi.pagination import AdminPagination
 from accounts.models import School
 from core.models import City
 from accounts.school_codes import dedupe_code, derive_code, is_valid_code, normalize_code
+from accounts.school_search import school_search_q
 from accounts.views import invalidate_home_static_cache
 
 from ..permissions import IsRegionManager
@@ -37,11 +38,7 @@ class AdminSchoolListView(generics.ListCreateAPIView):
             qs = qs.filter(region__in=self.request.user.managed_regions.all())
         q = self.request.query_params.get('q')
         if q:
-            qs = qs.filter(
-                Q(name__icontains=q) |
-                Q(code__icontains=q) |
-                Q(email_domain__icontains=q)
-            )
+            qs = qs.filter(school_search_q(q))
         # Uppercased: Region.code is 'TW'/'HK', but the frontend spells the
         # region the way the URL does (lowercase) and ApiUrlInterceptor
         # appends it to every request — so an unnormalized comparison made

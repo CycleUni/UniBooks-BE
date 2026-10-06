@@ -8,6 +8,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
+from core.i18n import resolve_language
 from core.models import AuditEvent
 from listings.models import Listing
 from listings.utils import delete_listing
@@ -17,6 +18,8 @@ from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_o
 from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
 from accounts.school_codes import admin_school_filter_id
+from accounts.school_search import school_search_q
+from catalog.book_search import book_search_q
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,11 @@ class AdminListingListView(generics.ListAPIView):
     serializer_class = AdminListingSerializer
     pagination_class = PageNumberPagination
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['lang'] = resolve_language(self.request)
+        return context
+
     def get_queryset(self):
         qs = Listing.objects.select_related('book', 'seller', 'school').order_by('-created_at')
         if not self.request.user.is_superuser:
@@ -34,10 +42,11 @@ class AdminListingListView(generics.ListAPIView):
         q = self.request.query_params.get('q')
         if q:
             qs = qs.filter(
-                Q(book__title__icontains=q)
+                book_search_q(q, prefix='book__')
+                | Q(course_name__icontains=q)
+                | Q(professor_name__icontains=q)
                 | Q(seller__email__icontains=q)
-                | Q(school__name__icontains=q)
-                | Q(school__code__iexact=q)
+                | school_search_q(q, prefix='school__')
             )
         status_param = self.request.query_params.get('status')
         if status_param:

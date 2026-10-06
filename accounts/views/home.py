@@ -60,6 +60,10 @@ class HomeMetadataView(views.APIView):
         # not group them and the fallback note could not name the city.
         if static_data and 'cities' not in static_data:
             static_data = None
+        # And one cached before schools carried their names in every
+        # language: the selector would match only the shown one.
+        if static_data and any('names' not in s for s in static_data.get('schools', [])):
+            static_data = None
 
         if not static_data:
             schools = [
@@ -68,6 +72,9 @@ class HomeMetadataView(views.APIView):
                     'code': school.code,
                     'name': school.name,
                     'display_name': school.localized_name(lang),
+                    # Every name the school goes by, so the selector finds
+                    # 臺灣大學 while the page is in English and the reverse.
+                    'names': school.all_names(),
                     'email_domain': school.email_domain,
                     'city': school.city.code if school.city else None,
                 }

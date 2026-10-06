@@ -7,6 +7,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
+from catalog.book_search import book_search_q
 from orders.models import Order
 from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_order
 
@@ -29,12 +30,18 @@ class AdminOrderListView(generics.ListAPIView):
         q = self.request.query_params.get('q')
         if q:
             q_clean = q.lstrip('#').strip()
-            qs = qs.filter(
+            match = (
                 Q(id__icontains=q_clean)
                 | Q(buyer__email__icontains=q)
                 | Q(seller__email__icontains=q)
+                # The order's own copy of the book: it outlives the listing.
                 | Q(book_title__icontains=q)
+                | book_search_q(q, prefix='listing__book__')
             )
+            digits = q.replace('-', '').replace(' ', '')
+            if digits:
+                match |= Q(book_isbn__icontains=digits)
+            qs = qs.filter(match)
         status_param = self.request.query_params.get('status')
         if status_param:
             qs = qs.filter(status=status_param)

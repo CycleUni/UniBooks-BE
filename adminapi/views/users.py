@@ -14,6 +14,7 @@ from core.models import AuditEvent
 from ..permissions import IsRegionManager
 from ..serializers import AdminUserSerializer
 from accounts.school_codes import admin_school_filter_id
+from accounts.school_search import school_search_q
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +45,15 @@ class AdminUserListView(generics.ListAPIView):
             ).distinct()
         q = self.request.query_params.get('q')
         if q:
+            # distinct: matching through verifications would list a user
+            # verified at two schools once per match.
             qs = qs.filter(
                 Q(email__icontains=q)
                 | Q(first_name__icontains=q)
                 | Q(last_name__icontains=q)
                 | Q(region_verifications__edu_email__icontains=q)
-            )
+                | school_search_q(q, prefix='region_verifications__school__')
+            ).distinct()
         is_active = self.request.query_params.get('is_active')
         if is_active is not None:
             qs = qs.filter(is_active=is_active.lower() == 'true')

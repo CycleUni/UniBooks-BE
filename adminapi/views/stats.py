@@ -850,10 +850,17 @@ class AdminStatsBreakdownView(views.APIView):
     @staticmethod
     def _label(by, rows, lang):
         """Display labels, plus the text `q` matches: the shown name and the
-        canonical one, so a search in either language finds the row."""
+        canonical one (for a school, its name in every language and its code
+        too), so a search in any language finds the row."""
         keys = [r['key'] for r in rows]
         if by == 'school':
-            names = {s.pk: (s.localized_name(lang), s.name) for s in School.objects.filter(pk__in=keys)}
+            schools = School.objects.filter(pk__in=keys)
+            keywords = {s.pk: [*s.all_names(), s.code] for s in schools}
+            names = {s.pk: (s.localized_name(lang), ' '.join(keywords[s.pk])) for s in schools}
+            # The page's school filter matches these too, so it finds a
+            # school by a name in another language or by its code.
+            for r in rows:
+                r['keywords'] = keywords.get(r['key'], [])
         elif by == 'category':
             names = {c.pk: (c.localized(lang)['title'], c.title) for c in Category.objects.filter(pk__in=keys)}
         else:

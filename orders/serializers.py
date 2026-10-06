@@ -23,6 +23,9 @@ class OrderSerializer(serializers.ModelSerializer):
     # From the snapshot, so a deleted listing's orders still say what was bought.
     listing_title = serializers.CharField(source='book_title', read_only=True)
     listing_deleted = serializers.SerializerMethodField()
+    # For the account orders page's search. From the live book: an order keeps
+    # no copy of the authors, so a deleted listing's order has none.
+    book_authors = serializers.CharField(source='listing.book.authors', read_only=True, default='')
     buyer_name = serializers.CharField(source='buyer.display_name', read_only=True)
     seller_name = serializers.CharField(source='seller.display_name', read_only=True)
     has_reviewed = serializers.SerializerMethodField()

@@ -19,6 +19,7 @@ from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
 from subscriptions.models import subscriptions_with_new_listings_count
 from subscriptions.serializers import SubscriptionSerializer
+from catalog.book_search import book_search_q
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +85,9 @@ class MyProfileView(views.APIView):
         q = request.query_params.get('q', '').strip()
         if q:
             my_listings = my_listings.filter(
-                Q(book__title__icontains=q) |
-                Q(book__authors__icontains=q) |
-                Q(book__isbn13__icontains=q)
+                book_search_q(q, prefix='book__')
+                | Q(course_name__icontains=q)
+                | Q(professor_name__icontains=q)
             )
 
         my_listings = my_listings.order_by(*LISTING_SORTS.get(request.query_params.get('sort'), LISTING_SORTS['newest']))
