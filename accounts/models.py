@@ -152,12 +152,13 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=True,
         help_text="Email the user about a chat message that arrives while they are not on the site",
     )
-    # Push notifications (FCM). Only has an effect for a user who has also
-    # registered a device (PushDevice), which the browser asks them for; on
-    # by default so that granting the permission is the single opt-in.
-    notify_new_message_push = models.BooleanField(
+    # Push notifications (FCM): one switch for every kind (chat messages, order
+    # updates, meetup reminders, waitlist alerts). Only has an effect for a user
+    # who has also registered a device (PushDevice), which the browser asks them
+    # for; on by default so that granting the permission is the single opt-in.
+    notify_push = models.BooleanField(
         default=True,
-        help_text="Push-notify the user about a chat message that arrives while they are not on the site",
+        help_text="Send push notifications to the browsers the user registered",
     )
     # 'auto' follows site_language. See core.i18n.email_language_for.
     email_language = models.CharField(

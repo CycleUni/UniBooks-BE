@@ -34,6 +34,9 @@ def _keys_used_in_code():
         used.update(literal.findall(path.read_text(encoding='utf-8')))
     # _link_email builds its keys from a kind name, so expand those.
     used.update(f"email.{kind}.{part}" for kind in LINK_EMAIL_KINDS for part in ('subject', 'intro', 'ignore'))
+    # The order-update push picks its wording by event name the same way.
+    from messaging.views.chat_tokens import ORDER_PUSH_EVENTS
+    used.update(f"push.orderNotify.{event}" for event in ORDER_PUSH_EVENTS)
     return used
 
 

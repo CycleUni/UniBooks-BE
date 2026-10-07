@@ -494,8 +494,8 @@ def test_push_still_goes_out_when_the_email_switch_is_off(api, conversation, use
 def test_email_still_goes_out_when_the_push_switch_is_off(api, conversation, user, mailoutbox):
     from unittest import mock
 
-    user.notify_new_message_push = False
-    user.save(update_fields=["notify_new_message_push"])
+    user.notify_push = False
+    user.save(update_fields=["notify_push"])
     _register_device(user)
     with mock.patch("core.fcm.send_data_message") as send:
         resp = _post_offline_email(api, _offline_email_payload(conversation, user))
@@ -530,3 +530,60 @@ def test_a_deactivated_recipient_is_not_pushed_to(api, conversation, user, mailo
 
     assert resp.json()["reason"] == "recipient_unreachable"
     send.assert_not_called()
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_an_order_update_is_pushed_in_words_not_as_a_placeholder(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    _register_device(user)
+    user.site_language = "en"
+    user.save(update_fields=["site_language"])
+    payload = _offline_email_payload(
+        conversation, user, preview="[SYSTEM:order.notify.seller_approved] System Notification",
+    )
+    with mock.patch("core.fcm.send_data_message", return_value=(1, [])) as send:
+        resp = _post_offline_email(api, payload)
+
+    assert resp.json()["push"] == 1
+    _, data = send.call_args.args
+    assert data["title"] == "Order update: Chat Test Book"
+    assert data["body"] == "The seller accepted your meetup."
+    assert "[SYSTEM" not in " ".join(data.values())
+    # The conversation is where the order card lives.
+    assert f"/tw/messages?chat={conversation.id}" in data["link"]
+
+
+@pytest.mark.parametrize("preview", [
+    "[SYSTEM:order.notify.something_new_we_have_no_words_for] System Notification",
+    "[SYSTEM:msg.imagePlaceholder]",
+    "order.notify.seller_approved",
+])
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_other_previews_fall_back_to_the_ordinary_message_push(api, conversation, user, mailoutbox, preview):
+    from unittest import mock
+
+    _register_device(user)
+    with mock.patch("core.fcm.send_data_message", return_value=(1, [])) as send:
+        _post_offline_email(api, _offline_email_payload(conversation, user, preview=preview))
+
+    _, data = send.call_args.args
+    assert "sent you a" in data["title"] or "傳送了新訊息" in data["title"]
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_every_order_event_the_backend_sends_has_push_wording(api, db):
+    import re
+    from pathlib import Path
+    from core.i18n import CATALOGS
+
+    source = (Path(settings.BASE_DIR) / "orders" / "views" / "orders.py").read_text(encoding="utf-8")
+    events = set(re.findall(r"'order\.notify\.([a-z_]+)'", source)) | set(re.findall(r"\[SYSTEM:order\.notify\.([a-z_]+)\]", source))
+    assert events, "found no order events — the pattern this test looks for has changed"
+    from messaging.views.chat_tokens import ORDER_PUSH_EVENTS
+
+    assert events <= set(ORDER_PUSH_EVENTS), f"no push wording for {sorted(events - set(ORDER_PUSH_EVENTS))}"
+    for lang, catalog in CATALOGS.items():
+        missing = [e for e in ORDER_PUSH_EVENTS if f"push.orderNotify.{e}" not in catalog]
+        assert not missing, f"{lang} has no push wording for {missing}"
+

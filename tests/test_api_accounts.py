@@ -1093,7 +1093,7 @@ def test_new_message_email_is_on_by_default(api, user, auth_header):
     resp = api.get(NOTIFICATIONS_URL, **auth_header)
     assert resp.status_code == 200
     assert resp.json() == {
-        "new_message_email": True, "new_message_push": True, "email_language": "auto", "site_language": "",
+        "new_message_email": True, "push": True, "email_language": "auto", "site_language": "",
     }
 
 
@@ -1320,11 +1320,11 @@ def test_removing_a_token_never_touches_another_accounts_device(api, user, auth_
 
 
 def test_push_switch_can_be_turned_off(api, user, auth_header):
-    resp = api.patch(NOTIFICATIONS_URL, {"new_message_push": False}, content_type="application/json", **auth_header)
+    resp = api.patch(NOTIFICATIONS_URL, {"push": False}, content_type="application/json", **auth_header)
     assert resp.status_code == 200
-    assert resp.json()["new_message_push"] is False
+    assert resp.json()["push"] is False
     user.refresh_from_db()
-    assert user.notify_new_message_push is False
+    assert user.notify_push is False
 
 
 def test_deleting_an_account_drops_its_push_devices(user):

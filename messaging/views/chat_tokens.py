@@ -1,6 +1,7 @@
 import datetime
 import hmac
 import logging
+import re
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -27,6 +28,26 @@ SYSTEM_PREVIEW_PREFIXES = ("[SYSTEM:", "[MEETUP_")
 # the conversation, short enough that the email is a nudge to open the app
 # rather than a copy of the chat.
 CHAT_EMAIL_PREVIEW_MAX_CHARS = 120
+
+
+# The order events the push has wording for (push.orderNotify.<event>); every
+# message_key orders.views sends is expected here, which
+# tests/test_api_edge_chat.py checks. "[SYSTEM:order.notify.seller_approved]
+# System Notification" is what such an event looks like as a chat preview.
+ORDER_PUSH_EVENTS = (
+    "meetup_requested", "meetup_updated", "seller_approved", "seller_rejected",
+    "delivered", "cancelled_by_buyer", "cancelled_by_seller", "admin_cancelled",
+)
+ORDER_EVENT_PREVIEW = re.compile(r"^\[SYSTEM:order\.notify\.([a-z_]+)\]")
+
+
+def _order_event_in(preview):
+    """The order event a system-message preview announces, if the push has words
+    for it ('seller_approved'); None for ordinary chat text and unknown events."""
+    match = ORDER_EVENT_PREVIEW.match(preview or "")
+    if match and match.group(1) in ORDER_PUSH_EVENTS:
+        return match.group(1)
+    return None
 
 
 class ChatTokenView(views.APIView):
@@ -259,33 +280,43 @@ class EdgeChatWebhookView(views.APIView):
         if recipient.notify_new_message_email:
             self._send_chat_notification_email(conversation, recipient, other, data.get("preview"))
             emailed = True
-        pushed = 0
-        if recipient.notify_new_message_push:
-            pushed = self._send_chat_push(conversation, recipient, other)
+        pushed = self._send_chat_push(conversation, recipient, other, data.get("preview"))
 
         if not emailed and not pushed:
             return Response({"status": "skipped", "reason": "opted_out"}, status=status.HTTP_200_OK)
         return Response({"status": "sent", "email": emailed, "push": pushed}, status=status.HTTP_200_OK)
 
-    def _send_chat_push(self, conversation, recipient, sender):
+    def _send_chat_push(self, conversation, recipient, sender, preview):
         """Push to the recipient's registered browsers; returns how many took it.
 
         Names the sender and the listing but, unlike the email, never quotes
         the message: a notification can be read on a locked screen by whoever
         is holding the phone. Same link and language as the email.
+
+        An order update arrives as a system message ("[SYSTEM:order.notify.x]"),
+        which the push says in words — the email drops those placeholders, but
+        "the seller accepted your meetup" is exactly what the recipient wants
+        to see.
         """
         sender_name = " ".join((sender.display_name or "").split()) or "UniBooks"
         region = str(conversation.region_id).lower()
         lang = email_language_for(recipient, conversation.region)
         listing_title = conversation.book_title
-        body = (
-            t(lang, "push.chatMessage.listing", title=listing_title)
-            if listing_title else t(lang, "push.chatMessage.generic")
-        )
+
+        order_event = _order_event_in(preview)
+        if order_event:
+            title = t(lang, "push.orderNotify.title", title=listing_title or "UniBooks")
+            body = t(lang, f"push.orderNotify.{order_event}")
+        else:
+            title = t(lang, "push.chatMessage.title", sender=sender_name)
+            body = (
+                t(lang, "push.chatMessage.listing", title=listing_title)
+                if listing_title else t(lang, "push.chatMessage.generic")
+            )
         try:
             return fcm.push_to_user(
                 recipient,
-                title=t(lang, "push.chatMessage.title", sender=sender_name),
+                title=title,
                 body=body,
                 link=f"{settings.FRONTEND_URL}/{region}/messages?chat={conversation.id}",
             )

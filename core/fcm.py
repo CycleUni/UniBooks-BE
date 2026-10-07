@@ -163,10 +163,14 @@ def send_data_message(tokens, data):
 def push_to_user(user, *, title, body, link):
     """Push to every device `user` has registered; returns how many accepted.
 
-    Devices FCM reports as gone are deleted here, so the table does not
-    accumulate tokens that can never be reached again.
+    Honours the user's push switch, so every caller gets it without having to
+    remember. Devices FCM reports as gone are deleted here, so the table does
+    not accumulate tokens that can never be reached again.
     """
     from accounts.models import PushDevice
+
+    if not user.notify_push:
+        return 0
 
     tokens = list(PushDevice.objects.filter(user=user).values_list("token", flat=True))
     if not tokens:

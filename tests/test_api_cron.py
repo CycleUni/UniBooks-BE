@@ -717,3 +717,90 @@ def test_meetup_reminder_partial_failure_does_not_double_send_to_succeeded_party
     assert order.meetup_reminder_sent_at is not None
     assert len(mailoutbox) == 1
     assert mailoutbox[0].to == [seller.email]
+
+
+# --- push notifications next to the cron emails -----------------------------
+
+
+@pytest.fixture
+def pushes():
+    """Every fcm.push_to_user call the cron makes, without touching FCM."""
+    with mock.patch("cron.views.fcm.push_to_user", return_value=1) as push:
+        yield push
+
+
+def test_waitlist_notify_pushes_a_single_book_with_a_link_to_it(api, waitlister, seller, book, mailoutbox, pushes):
+    _subscribe_before_now(waitlister, book)
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="good")
+
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    assert pushes.call_count == 1
+    (user,), kwargs = pushes.call_args
+    assert user == waitlister
+    assert "Waitlisted Book" in kwargs["body"]
+    assert kwargs["link"].endswith("/tw/book?isbn=9781111111111")
+
+
+def test_waitlist_notify_pushes_once_for_several_books(api, waitlister, seller, book, mailoutbox, pushes):
+    other = Book.objects.create(region_id='TW', isbn13="9783333333333", title="Second Book", source="manual")
+    for b in (book, other):
+        _subscribe_before_now(waitlister, b)
+        Listing.objects.create(region_id='TW', currency_id='TWD', book=b, seller=seller, price=100, condition="good")
+
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    assert pushes.call_count == 1
+    kwargs = pushes.call_args.kwargs
+    assert "1" in kwargs["body"]  # "…and 1 more…"
+    assert kwargs["link"].endswith("/account/subscriptions")
+
+
+def test_a_failed_waitlist_email_sends_no_push(api, waitlister, seller, book, mailoutbox, pushes):
+    _subscribe_before_now(waitlister, book)
+    Listing.objects.create(region_id='TW', currency_id='TWD', book=book, seller=seller, price=100, condition="good")
+
+    with mock.patch("cron.views.send_mail", side_effect=RuntimeError("smtp down")):
+        api.get("/api/cron/waitlist-notify/", **cron_auth())
+
+    pushes.assert_not_called()
+
+
+def test_meetup_reminder_pushes_both_parties_without_the_location(api, db, seller, mailoutbox, pushes):
+    buyer = User.objects.create_user(email="buyer@example.com", first_name="Buy", last_name="Er", password="x")
+    test_book = Book.objects.create(region_id='TW', isbn13="9782222222222", title="Algorithms Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller, price=350, condition="good", status="reserved",
+    )
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller, listing=test_listing,
+        total_amount=test_listing.price, status='accepted',
+        meetup_time=timezone.now() + timezone.timedelta(minutes=30), meetup_location="Main Library Gate",
+    )
+
+    api.get("/api/cron/meetup-reminder/", **cron_auth())
+
+    assert {c.args[0] for c in pushes.call_args_list} == {buyer, seller}
+    for call in pushes.call_args_list:
+        assert "Algorithms Book" in call.kwargs["body"]
+        assert "Main Library Gate" not in " ".join(str(v) for v in call.kwargs.values())
+        assert call.kwargs["link"].endswith("/account/orders")
+
+
+def test_meetup_reminder_does_not_push_again_on_a_rerun(api, db, seller, mailoutbox, pushes):
+    buyer = User.objects.create_user(email="buyer@example.com", first_name="Buy", last_name="Er", password="x")
+    test_book = Book.objects.create(region_id='TW', isbn13="9782222222222", title="Algorithms Book", source="manual")
+    test_listing = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=test_book, seller=seller, price=350, condition="good", status="reserved",
+    )
+    Order.objects.create(
+        region_id='TW', currency_id='TWD', buyer=buyer, seller=seller, listing=test_listing,
+        total_amount=test_listing.price, status='accepted', meetup_time=timezone.now() + timezone.timedelta(minutes=30),
+    )
+
+    api.get("/api/cron/meetup-reminder/", **cron_auth())
+    pushes.reset_mock()
+    api.get("/api/cron/meetup-reminder/", **cron_auth())
+
+    pushes.assert_not_called()
+

@@ -11,6 +11,7 @@ from rest_framework import status, views
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 
+from core import fcm
 from core.i18n import email_language_for, t
 from core.throttling import ScopedThrottle
 from orders.models import Order
@@ -152,6 +153,22 @@ class WaitlistNotifyView(views.APIView):
                 logger.exception("Failed to send waitlist notification to user %s", user.id)
                 continue
 
+            # Best effort, after the email that decides whether this user is
+            # retried: a push that fails must not make the next run mail them
+            # again.
+            first = subs[0]
+            first_url = book_lines[0].split(": ", 1)[1]
+            fcm.push_to_user(
+                user,
+                title=t(lang, "push.waitlist.title"),
+                body=(
+                    t(lang, "push.waitlist.one", title=first.book.title)
+                    if len(subs) == 1
+                    else t(lang, "push.waitlist.many", title=first.book.title, count=len(subs) - 1)
+                ),
+                link=first_url if len(subs) == 1 else request_page,
+            )
+
             Subscription.objects.filter(id__in=[s.id for s in subs]).update(notified_at=now)
             notified_users += 1
             notified_subscriptions += len(subs)
@@ -281,6 +298,15 @@ class MeetupReminderView(views.APIView):
                     order_updates[field_name] = now
                     already_sent_pks.add(user.pk)
                     notified_users += 1
+                    # Best effort, after the email that marks this party as
+                    # reminded. The location stays out of it: a lock screen
+                    # should not say where two people are about to meet.
+                    fcm.push_to_user(
+                        user,
+                        title=t(lang, "push.meetupReminder.title"),
+                        body=t(lang, "push.meetupReminder.body", title=order.book_title, time=formatted_time),
+                        link=orders_page,
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to send meetup reminder for order %s to %s %s",

@@ -134,3 +134,14 @@ def test_push_to_user_without_devices_does_not_call_fcm(user):
     with mock.patch("core.fcm.send_data_message") as send:
         assert fcm.push_to_user(user, title="t", body="b", link="https://x") == 0
     send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_push_to_user_does_nothing_when_the_user_turned_push_off(user):
+    PushDevice.objects.create(user=user, token="tok")
+    user.notify_push = False
+    user.save(update_fields=["notify_push"])
+    with mock.patch("core.fcm.send_data_message") as send:
+        assert fcm.push_to_user(user, title="t", body="b", link="https://x") == 0
+    send.assert_not_called()
+
