@@ -1,6 +1,10 @@
+import logging
+
 from django.conf import settings
 from django.core.cache import cache
 from django.utils.functional import SimpleLazyObject
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_REGION_CODE = getattr(settings, 'DEFAULT_REGION', 'TW')
 
@@ -71,6 +75,7 @@ def get_region(request):
     try:
         active_regions = _get_active_regions()
     except Exception:
+        logger.exception("Failed to load active regions; request has no region")
         return None
         
     if not active_regions:

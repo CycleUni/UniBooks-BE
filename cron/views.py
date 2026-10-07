@@ -212,6 +212,7 @@ class MeetupReminderView(views.APIView):
                 tz = ZoneInfo(order.region.timezone)
                 local_time = order.meetup_time.astimezone(tz)
             except Exception:
+                logger.exception("Bad timezone for order %s; reminding in stored time", order.pk)
                 local_time = order.meetup_time
             formatted_time = local_time.strftime("%Y-%m-%d %H:%M")
 

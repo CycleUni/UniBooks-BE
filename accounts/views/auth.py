@@ -414,6 +414,7 @@ class GoogleLoginView(views.APIView):
             provider = get_adapter().get_provider(request, GoogleProvider.id)
             app = provider.app
         except Exception:
+            logger.exception("Google sign-in provider is not configured")
             return Response({"error": {"code": "auth.errProviderNotConfigured"}}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         # Only the verification is guarded, and only against the errors that

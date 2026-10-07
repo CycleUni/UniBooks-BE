@@ -14,6 +14,7 @@ completion use `completed_at`. A "transaction" is an order whose status is
 """
 
 import bisect
+import logging
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -43,6 +44,8 @@ from subscriptions.models import Subscription
 
 from ..pagination import AdminPagination
 from ..permissions import IsRegionManager
+
+logger = logging.getLogger(__name__)
 
 # 1 is "today": from local midnight, like every other window here.
 ALLOWED_DAYS = (1, 7, 30, 90, 365, 0)
@@ -108,6 +111,7 @@ def _tz(region):
     try:
         return ZoneInfo(region.timezone)
     except Exception:
+        logger.exception("Invalid timezone %r on region; falling back to the default", region.timezone)
         return timezone.get_current_timezone()
 
 
