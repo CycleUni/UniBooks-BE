@@ -448,3 +448,85 @@ def test_offline_email_does_not_touch_the_inbox_preview(api, conversation, user,
     assert resp.status_code == 200
     conversation.refresh_from_db()
     assert conversation.latest_message_body == "the real latest message"
+
+
+# --- the same offline_email event also pushes to the recipient's browsers ----
+
+
+def _register_device(user, token="fcm-token-1"):
+    from accounts.models import PushDevice
+    return PushDevice.objects.create(user=user, token=token)
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_offline_event_pushes_to_the_recipients_devices(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    _register_device(user)
+    with mock.patch("core.fcm.send_data_message", return_value=(1, [])) as send:
+        resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    assert resp.json() == {"status": "sent", "email": True, "push": 1}
+    tokens, data = send.call_args.args
+    assert tokens == ["fcm-token-1"]
+    assert f"/tw/messages?chat={conversation.id}" in data["link"]
+    assert "Chat Test Book" in data["body"]
+    # A lock screen can be read by anyone holding the phone: the message text
+    # stays out of the notification (it is in the email, which is not).
+    assert "are you free on Friday?" not in " ".join(data.values())
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_push_still_goes_out_when_the_email_switch_is_off(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    user.notify_new_message_email = False
+    user.save(update_fields=["notify_new_message_email"])
+    _register_device(user)
+    with mock.patch("core.fcm.send_data_message", return_value=(1, [])):
+        resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    assert resp.json() == {"status": "sent", "email": False, "push": 1}
+    assert mailoutbox == []
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_email_still_goes_out_when_the_push_switch_is_off(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    user.notify_new_message_push = False
+    user.save(update_fields=["notify_new_message_push"])
+    _register_device(user)
+    with mock.patch("core.fcm.send_data_message") as send:
+        resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    assert resp.json() == {"status": "sent", "email": True, "push": 0}
+    send.assert_not_called()
+    assert len(mailoutbox) == 1
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_a_push_failure_does_not_fail_the_webhook(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    _register_device(user)
+    with mock.patch("core.fcm.push_to_user", side_effect=RuntimeError("boom")):
+        resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    assert resp.status_code == 200
+    assert resp.json()["email"] is True
+    assert len(mailoutbox) == 1
+
+
+@override_settings(EDGE_CHAT_WEBHOOK_SECRET=FAKE_WEBHOOK_SECRET)
+def test_a_deactivated_recipient_is_not_pushed_to(api, conversation, user, mailoutbox):
+    from unittest import mock
+
+    user.is_active = False
+    user.save(update_fields=["is_active"])
+    _register_device(user)
+    with mock.patch("core.fcm.send_data_message") as send:
+        resp = _post_offline_email(api, _offline_email_payload(conversation, user))
+
+    assert resp.json()["reason"] == "recipient_unreachable"
+    send.assert_not_called()

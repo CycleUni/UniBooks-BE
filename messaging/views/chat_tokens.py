@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.backends import TokenBackend
 
+from core import fcm
 from core.i18n import email_language_for, t
 from messaging.models import Conversation
 
@@ -249,15 +250,49 @@ class EdgeChatWebhookView(views.APIView):
             return Response({"status": "skipped", "reason": "conversation_deleted"}, status=status.HTTP_200_OK)
         if recipient.deleted_at is not None or not recipient.is_active or not recipient.email:
             return Response({"status": "skipped", "reason": "recipient_unreachable"}, status=status.HTTP_200_OK)
-        if not recipient.notify_new_message_email:
-            # Turned off on their Notifications page. The Worker has already
-            # marked this conversation as notified, so turning it back on
-            # resumes with the next conversation they have not opened since —
-            # not a backlog of mail for everything that arrived meanwhile.
-            return Response({"status": "skipped", "reason": "opted_out"}, status=status.HTTP_200_OK)
+        # Each channel is its own switch on the Notifications page, and either
+        # can be off. Whatever is off, the Worker has already marked this
+        # conversation as notified, so turning a channel back on resumes with
+        # the next conversation they have not opened since — not a backlog for
+        # everything that arrived meanwhile.
+        emailed = False
+        if recipient.notify_new_message_email:
+            self._send_chat_notification_email(conversation, recipient, other, data.get("preview"))
+            emailed = True
+        pushed = 0
+        if recipient.notify_new_message_push:
+            pushed = self._send_chat_push(conversation, recipient, other)
 
-        self._send_chat_notification_email(conversation, recipient, other, data.get("preview"))
-        return Response({"status": "sent"}, status=status.HTTP_200_OK)
+        if not emailed and not pushed:
+            return Response({"status": "skipped", "reason": "opted_out"}, status=status.HTTP_200_OK)
+        return Response({"status": "sent", "email": emailed, "push": pushed}, status=status.HTTP_200_OK)
+
+    def _send_chat_push(self, conversation, recipient, sender):
+        """Push to the recipient's registered browsers; returns how many took it.
+
+        Names the sender and the listing but, unlike the email, never quotes
+        the message: a notification can be read on a locked screen by whoever
+        is holding the phone. Same link and language as the email.
+        """
+        sender_name = " ".join((sender.display_name or "").split()) or "UniBooks"
+        region = str(conversation.region_id).lower()
+        lang = email_language_for(recipient, conversation.region)
+        listing_title = conversation.book_title
+        body = (
+            t(lang, "push.chatMessage.listing", title=listing_title)
+            if listing_title else t(lang, "push.chatMessage.generic")
+        )
+        try:
+            return fcm.push_to_user(
+                recipient,
+                title=t(lang, "push.chatMessage.title", sender=sender_name),
+                body=body,
+                link=f"{settings.FRONTEND_URL}/{region}/messages?chat={conversation.id}",
+            )
+        except Exception:
+            # Best effort, like the email: the Worker will not ask again.
+            logger.exception("Failed to push chat notification for room %s", conversation.id)
+            return 0
 
     def _send_chat_notification_email(self, conversation, recipient, sender, preview):
         """Best-effort send. A mail failure must not turn into a 500 for the

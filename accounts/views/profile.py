@@ -1,6 +1,7 @@
 import logging
 
 from django.db.models import Count, Q, prefetch_related_objects
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import status, views
@@ -13,7 +14,7 @@ from core.i18n import EMAIL_LANGUAGES
 from core.region import get_region
 from django.contrib.auth import get_user_model
 
-from accounts.models import School
+from accounts.models import PUSH_TOKEN_MAX_LENGTH, PushDevice, School
 from accounts.serializers import NotificationSettingsSerializer, PublicUserProfileSerializer, UserSerializer
 from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
@@ -229,6 +230,43 @@ class NotificationSettingsView(views.APIView):
             return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
         return Response(serializer.data)
+
+
+class PushDeviceView(views.APIView):
+    """POST registers this browser for push notifications; DELETE removes it.
+
+    Keyed on the FCM token alone. Registering a token another account holds
+    moves it to the signed-in user (a shared browser changing hands), and
+    removing one only ever removes the caller's own, so knowing someone's
+    token is no way to silence their device. Both are idempotent: the
+    frontend re-registers on every visit in case the token has rotated.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ScopedThrottle]
+    throttle_scope = 'push_device'
+
+    def _token(self, request):
+        token = request.data.get('token')
+        if not isinstance(token, str) or not token.strip() or len(token) > PUSH_TOKEN_MAX_LENGTH:
+            return None
+        return token.strip()
+
+    def post(self, request):
+        token = self._token(request)
+        if token is None:
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+        PushDevice.objects.update_or_create(
+            token=token,
+            defaults={'user': request.user, 'last_registered_at': timezone.now()},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def delete(self, request):
+        token = self._token(request)
+        if token is None:
+            return Response({"error": {"code": "auth.errValidation"}}, status=status.HTTP_400_BAD_REQUEST)
+        PushDevice.objects.filter(user=request.user, token=token).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SiteLanguageView(views.APIView):

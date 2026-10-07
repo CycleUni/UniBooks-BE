@@ -22,6 +22,9 @@
   "email.chatMessage.open": "前往查看：{link}",
   "email.chatMessage.once": "在你開啟這段對話之前，同一段對話的新訊息不會再以電郵通知。",
   "email.chatMessage.turnOff": "不想收到這類通知？可以在「通知設定」關閉或更改電郵語言：{link}",
+  "push.chatMessage.title": "{sender} 向你傳送了新訊息",
+  "push.chatMessage.listing": "書籍：{title}",
+  "push.chatMessage.generic": "開啟 UniBooks 查看。",
 
   "email.waitlist.subject": "UniBooks 到貨通知：你的求書有新上架",
   "email.waitlist.intro": "你的求書清單中以下書籍有新上架：",

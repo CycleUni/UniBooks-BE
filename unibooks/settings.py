@@ -97,6 +97,18 @@ else:
     CORS_ALLOW_ALL_ORIGINS = False
     CORS_ALLOWED_ORIGINS = _cors_origins
 
+# Firebase Cloud Messaging, for browser push notifications. Optional: with the
+# project id or the service-account key unset, nothing is pushed and the
+# switch is hidden from the account page (see core/fcm.py). The service-account
+# JSON is a secret; the rest is the Firebase *web* app config, which the
+# frontend needs in the browser and receives from AuthConfigView.
+FCM_PROJECT_ID = env.str("FCM_PROJECT_ID", default="").strip()
+FCM_SERVICE_ACCOUNT_JSON = env.str("FCM_SERVICE_ACCOUNT_JSON", default="")
+FCM_WEB_API_KEY = env.str("FCM_WEB_API_KEY", default="").strip()
+FCM_WEB_APP_ID = env.str("FCM_WEB_APP_ID", default="").strip()
+FCM_MESSAGING_SENDER_ID = env.str("FCM_MESSAGING_SENDER_ID", default="").strip()
+FCM_VAPID_KEY = env.str("FCM_VAPID_KEY", default="").strip()
+
 # Sentry error reporting. The DSN is a public ingest address, not a secret;
 # unset (the default, and what tests use) leaves Sentry off.
 SENTRY_DSN = env.str("SENTRY_DSN", default="").strip()
@@ -364,6 +376,8 @@ REST_FRAMEWORK = {
         'listing_create': _throttle('10/hour', '1000/hour'),
         'refresh_token': _throttle('10/min', '60/min'),
         'password_change': _throttle('5/min', '60/min'),
+        # Push-device register/remove: once per visit per browser in normal use.
+        'push_device': _throttle('30/min', '300/min'),
         'password-reset-request': _throttle('3/hour', '60/hour'),
         # "Report my school" from the verification form. A real user files
         # one or two; the cap is what keeps a script from filling the admin

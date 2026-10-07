@@ -152,6 +152,13 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=True,
         help_text="Email the user about a chat message that arrives while they are not on the site",
     )
+    # Push notifications (FCM). Only has an effect for a user who has also
+    # registered a device (PushDevice), which the browser asks them for; on
+    # by default so that granting the permission is the single opt-in.
+    notify_new_message_push = models.BooleanField(
+        default=True,
+        help_text="Push-notify the user about a chat message that arrives while they are not on the site",
+    )
     # 'auto' follows site_language. See core.i18n.email_language_for.
     email_language = models.CharField(
         max_length=10,
@@ -246,6 +253,7 @@ class User(AbstractBaseUser, PermissionsMixin):
             # nothing pointing at them; they go for real.
             self.region_verifications.all().delete()
             self.subscriptions.all().delete()
+            self.push_devices.all().delete()
             self.socialaccount_set.all().delete()
             # School requests stay: which campuses people asked for is the
             # useful part, and it names nobody. The address they typed does.
@@ -451,3 +459,28 @@ class OneTimeToken(models.Model):
             # pending_email_change / cancel_email_change.
             models.Index(fields=['user', 'purpose'], name='one_time_token_user_purpose'),
         ]
+
+
+# FCM web tokens are ~150 characters; the cap keeps the unique index well
+# inside PostgreSQL's per-entry limit.
+PUSH_TOKEN_MAX_LENGTH = 512
+
+
+class PushDevice(models.Model):
+    """A browser the user has allowed to receive push notifications on.
+
+    `token` is the FCM registration token, unique across the table: signing in
+    as someone else on the same browser re-registers the same token, which
+    moves it to the new account instead of leaving the previous account's
+    notifications arriving on a device it no longer uses. Tokens FCM reports
+    as no longer valid are deleted when a send finds out (core.fcm).
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='push_devices')
+    token = models.CharField(max_length=PUSH_TOKEN_MAX_LENGTH, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Refreshed on every registration: the frontend re-registers whenever the
+    # token changes, so a stale value points at a device that has gone quiet.
+    last_registered_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"PushDevice({self.user_id})"

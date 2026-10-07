@@ -22,6 +22,9 @@
   "email.chatMessage.open": "Open the conversation: {link}",
   "email.chatMessage.once": "You won't get another email about this conversation until you open it.",
   "email.chatMessage.turnOff": "Don't want these emails, or want them in another language? Change it in your notification settings: {link}",
+  "push.chatMessage.title": "{sender} sent you a message",
+  "push.chatMessage.listing": "About: {title}",
+  "push.chatMessage.generic": "Open UniBooks to read it.",
 
   "email.waitlist.subject": "UniBooks: new listings for your book requests",
   "email.waitlist.intro": "New listings are available for books on your UniBooks waitlist:",

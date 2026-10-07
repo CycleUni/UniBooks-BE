@@ -586,8 +586,22 @@ class AuthConfigView(views.APIView):
 
     def get(self, request):
         from django.conf import settings
+        from core import fcm
         return Response({
-            "google_client_id": getattr(settings, "GOOGLE_CLIENT_ID", "")
+            "google_client_id": getattr(settings, "GOOGLE_CLIENT_ID", ""),
+            # The Firebase web config, or null while push is not set up — the
+            # frontend takes null to mean "do not offer push". Public values:
+            # they ship in every Firebase web app's JavaScript.
+            "fcm": {
+                "api_key": settings.FCM_WEB_API_KEY,
+                "project_id": settings.FCM_PROJECT_ID,
+                "app_id": settings.FCM_WEB_APP_ID,
+                "messaging_sender_id": settings.FCM_MESSAGING_SENDER_ID,
+                "vapid_key": settings.FCM_VAPID_KEY,
+            } if fcm.is_configured() and all([
+                settings.FCM_WEB_API_KEY, settings.FCM_WEB_APP_ID,
+                settings.FCM_MESSAGING_SENDER_ID, settings.FCM_VAPID_KEY,
+            ]) else None,
         })
 
 

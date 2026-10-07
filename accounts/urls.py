@@ -22,6 +22,7 @@ urlpatterns = [
     path('email/change/cancel/', views.CancelEmailChangeView.as_view(), name='auth-email-change-cancel'),
     path('me/', views.MyProfileView.as_view(), name='auth-me'),
     path('me/notifications/', views.NotificationSettingsView.as_view(), name='auth-me-notifications'),
+    path('me/push-devices/', views.PushDeviceView.as_view(), name='auth-me-push-devices'),
     path('me/site-language/', views.SiteLanguageView.as_view(), name='auth-me-site-language'),
     path('me/site-region/', views.SiteRegionView.as_view(), name='auth-me-site-region'),
     path('users/<int:pk>/', views.PublicUserProfileView.as_view(), name='auth-user-profile'),

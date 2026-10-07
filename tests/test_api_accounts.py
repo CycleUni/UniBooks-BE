@@ -1092,7 +1092,9 @@ def test_new_message_email_is_on_by_default(api, user, auth_header):
     # It was the only behaviour before the switch existed.
     resp = api.get(NOTIFICATIONS_URL, **auth_header)
     assert resp.status_code == 200
-    assert resp.json() == {"new_message_email": True, "email_language": "auto", "site_language": ""}
+    assert resp.json() == {
+        "new_message_email": True, "new_message_push": True, "email_language": "auto", "site_language": "",
+    }
 
 
 def test_new_message_email_can_be_turned_off_and_on(api, user, auth_header):
@@ -1262,3 +1264,76 @@ def test_email_language_prefers_the_explicit_choice_then_the_site_language_then_
     user.email_language, user.site_language = "auto", ""
     assert email_language_for(user, None) == "en"            # nothing at all: the default
 
+
+# --- push devices -----------------------------------------------------------
+
+PUSH_DEVICES_URL = "/api/v1/auth/me/push-devices/"
+
+
+def test_push_device_requires_sign_in(api, db):
+    assert api.post(PUSH_DEVICES_URL, {"token": "t"}, content_type="application/json").status_code == 401
+    assert api.delete(PUSH_DEVICES_URL, {"token": "t"}, content_type="application/json").status_code == 401
+
+
+def test_push_device_can_be_registered_twice_and_removed(api, user, auth_header):
+    from accounts.models import PushDevice
+
+    for _ in range(2):
+        resp = api.post(PUSH_DEVICES_URL, {"token": "tok-1"}, content_type="application/json", **auth_header)
+        assert resp.status_code == 204
+    assert PushDevice.objects.filter(user=user, token="tok-1").count() == 1
+
+    resp = api.delete(PUSH_DEVICES_URL, {"token": "tok-1"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 204
+    assert not PushDevice.objects.filter(token="tok-1").exists()
+
+
+@pytest.mark.parametrize("token", [None, "", "   ", 123, "x" * 513])
+def test_push_device_rejects_a_bad_token(api, user, auth_header, token):
+    resp = api.post(PUSH_DEVICES_URL, {"token": token}, content_type="application/json", **auth_header)
+    assert resp.status_code == 400
+
+
+def test_registering_a_token_moves_it_to_the_new_account(api, user, auth_header, django_user_model):
+    from accounts.models import PushDevice
+
+    other = django_user_model.objects.create_user(
+        email="other@example.com", first_name="O", last_name="T", password="pw-12345-xyz",
+    )
+    PushDevice.objects.create(user=other, token="shared-browser")
+
+    resp = api.post(PUSH_DEVICES_URL, {"token": "shared-browser"}, content_type="application/json", **auth_header)
+    assert resp.status_code == 204
+    assert PushDevice.objects.get(token="shared-browser").user_id == user.id
+
+
+def test_removing_a_token_never_touches_another_accounts_device(api, user, auth_header, django_user_model):
+    from accounts.models import PushDevice
+
+    other = django_user_model.objects.create_user(
+        email="other@example.com", first_name="O", last_name="T", password="pw-12345-xyz",
+    )
+    PushDevice.objects.create(user=other, token="not-mine")
+
+    api.delete(PUSH_DEVICES_URL, {"token": "not-mine"}, content_type="application/json", **auth_header)
+    assert PushDevice.objects.filter(token="not-mine", user=other).exists()
+
+
+def test_push_switch_can_be_turned_off(api, user, auth_header):
+    resp = api.patch(NOTIFICATIONS_URL, {"new_message_push": False}, content_type="application/json", **auth_header)
+    assert resp.status_code == 200
+    assert resp.json()["new_message_push"] is False
+    user.refresh_from_db()
+    assert user.notify_new_message_push is False
+
+
+def test_deleting_an_account_drops_its_push_devices(user):
+    from accounts.models import PushDevice
+
+    PushDevice.objects.create(user=user, token="gone-with-the-account")
+    user.delete()
+    assert not PushDevice.objects.filter(token="gone-with-the-account").exists()
+
+
+def test_auth_config_hides_fcm_until_it_is_fully_set_up(api, db):
+    assert api.get("/api/v1/auth/config/").json()["fcm"] is None

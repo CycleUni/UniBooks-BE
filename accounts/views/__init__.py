@@ -21,7 +21,9 @@ from .auth import (
     _send_verification_email,
 )
 from .school_requests import SchoolRequestCreateView
-from .profile import MyProfileView, NotificationSettingsView, PublicUserProfileView, SiteLanguageView, SiteRegionView
+from .profile import (
+    MyProfileView, NotificationSettingsView, PublicUserProfileView, PushDeviceView, SiteLanguageView, SiteRegionView,
+)
 from .home import (
     HomeMetadataView,
     invalidate_home_static_cache,
@@ -30,6 +32,7 @@ from .home import (
 
 __all__ = [
     "NotificationSettingsView",
+    "PushDeviceView",
     "SiteLanguageView",
     "SiteRegionView",
     "RegisterView",

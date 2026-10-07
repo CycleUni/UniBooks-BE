@@ -115,6 +115,7 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
     preference, not the column: new switches can join without the API naming
     storage details."""
     new_message_email = serializers.BooleanField(source='notify_new_message_email')
+    new_message_push = serializers.BooleanField(source='notify_new_message_push')
     email_language = serializers.ChoiceField(choices=[EMAIL_LANGUAGE_AUTO, *EMAIL_LANGUAGES])
     # What 'auto' currently resolves to, for the page to say so. Reported by
     # the frontend through SiteLanguageView, never written here.
@@ -122,7 +123,7 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['new_message_email', 'email_language', 'site_language']
+        fields = ['new_message_email', 'new_message_push', 'email_language', 'site_language']
 
 
 class PublicUserProfileSerializer(serializers.ModelSerializer):
