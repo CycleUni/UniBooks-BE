@@ -1337,3 +1337,26 @@ def test_deleting_an_account_drops_its_push_devices(user):
 
 def test_auth_config_hides_fcm_until_it_is_fully_set_up(api, db):
     assert api.get("/api/v1/auth/config/").json()["fcm"] is None
+
+
+def test_change_password_ends_other_sessions_and_keeps_this_one(api, user):
+    other_device = issue_tokens(user)
+    this_device = issue_tokens(user)
+
+    resp = api.post(
+        "/api/v1/auth/password/",
+        {"old_password": PASSWORD, "new_password": "a-brand-new-strong-password-9"},
+        content_type="application/json",
+        HTTP_AUTHORIZATION=f"Bearer {this_device['access']}",
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == "acct.passwordUpdated"
+    for old in (other_device, this_device):
+        assert api.post(
+            "/api/v1/auth/refresh/", {"refresh": old["refresh"]}, content_type="application/json",
+        ).status_code == 401
+    assert api.post(
+        "/api/v1/auth/refresh/", {"refresh": body["refresh"]}, content_type="application/json",
+    ).status_code == 200

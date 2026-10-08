@@ -633,7 +633,12 @@ class ChangePasswordView(views.APIView):
 
         user.set_password(new_password)
         user.save(update_fields=['password'])
-        return Response({"code": "acct.passwordUpdated"})
+        # A new password is what someone who suspects a leak reaches for, so
+        # every other session ends here. This device gets a fresh pair back
+        # instead of being signed out with the rest.
+        revoke_all_tokens_for_user(user.id)
+        tokens = issue_tokens(user)
+        return Response({"code": "acct.passwordUpdated", "access": tokens["access"], "refresh": tokens["refresh"]})
 
 
 class RemovePasswordView(views.APIView):
