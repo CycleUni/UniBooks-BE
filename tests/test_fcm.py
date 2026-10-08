@@ -50,12 +50,12 @@ def _fake_post(send_responses):
         if "oauth2" in url:
             return _response(200, {"access_token": "access-1", "expires_in": 3600})
         return next(sends)
-    return mock.patch("core.fcm.requests.post", side_effect=post)
+    return mock.patch("core.fcm._session.post", side_effect=post)
 
 
 def test_not_configured_sends_nothing():
     with override_settings(FCM_PROJECT_ID="", FCM_SERVICE_ACCOUNT_JSON=""), \
-            mock.patch("core.fcm.requests.post") as post:
+            mock.patch("core.fcm._session.post") as post:
         assert fcm.is_configured() is False
         assert fcm.send_data_message(["t"], {"title": "x"}) == (0, [])
     post.assert_not_called()
@@ -115,7 +115,7 @@ def test_other_rejections_do_not_mark_the_token_dead(service_account_json):
 
 def test_failing_to_authenticate_does_not_raise(service_account_json):
     with override_settings(FCM_PROJECT_ID="proj", FCM_SERVICE_ACCOUNT_JSON=service_account_json), \
-            mock.patch("core.fcm.requests.post", return_value=_response(401)):
+            mock.patch("core.fcm._session.post", return_value=_response(401)):
         assert fcm.send_data_message(["tok"], {"title": "x"}) == (0, [])
 
 

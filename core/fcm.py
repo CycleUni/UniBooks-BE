@@ -12,6 +12,7 @@ behaves exactly as it did before push existed.
 """
 
 import base64
+import functools
 import json
 import logging
 import threading
@@ -38,6 +39,10 @@ TOKEN_REFRESH_MARGIN_SECONDS = 300
 
 _token_lock = threading.Lock()
 _cached_token = {"value": None, "expires_at": 0.0}
+# One pool of kept-alive connections to Google for every thread: a fresh
+# requests.post per device paid a TLS handshake each time. urllib3's pool is
+# thread-safe for this use.
+_session = requests.Session()
 
 
 def _service_account():
@@ -49,6 +54,12 @@ def _service_account():
     raw = (getattr(settings, "FCM_SERVICE_ACCOUNT_JSON", "") or "").strip()
     if not raw or not getattr(settings, "FCM_PROJECT_ID", ""):
         return None
+    return _parse_service_account(raw)
+
+
+@functools.lru_cache(maxsize=4)
+def _parse_service_account(raw):
+    """Parsed once per key: this ran, base64 and JSON, for every push."""
     try:
         if not raw.startswith("{"):
             raw = base64.b64decode(raw).decode("utf-8")
@@ -85,12 +96,24 @@ def _signed_assertion(account, now):
     return (signing_input + b"." + _b64url(signature)).decode()
 
 
+def _fresh_cached_token(now):
+    if _cached_token["value"] and now < _cached_token["expires_at"] - TOKEN_REFRESH_MARGIN_SECONDS:
+        return _cached_token["value"]
+    return None
+
+
 def _access_token(account):
+    # Checked before the lock too: a valid token is the common case, and no
+    # thread should wait behind another thread's refresh just to read it.
+    token = _fresh_cached_token(time.time())
+    if token:
+        return token
     with _token_lock:
         now = time.time()
-        if _cached_token["value"] and now < _cached_token["expires_at"] - TOKEN_REFRESH_MARGIN_SECONDS:
-            return _cached_token["value"]
-        resp = requests.post(
+        token = _fresh_cached_token(now)
+        if token:
+            return token
+        resp = _session.post(
             account.get("token_uri") or DEFAULT_TOKEN_URI,
             data={
                 "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -145,7 +168,7 @@ def send_data_message(tokens, data):
             "webpush": {"headers": {"TTL": str(MESSAGE_TTL_SECONDS)}},
         }}
         try:
-            resp = requests.post(url, json=body, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+            resp = _session.post(url, json=body, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
         except requests.RequestException:
             logger.exception("FCM: send failed")
             continue
