@@ -11,9 +11,11 @@ The ThrottleStore interface lets another store (a Redis INCR, say) be
 swapped in without touching views.
 """
 
+import ipaddress
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import connection
 from rest_framework.throttling import ScopedRateThrottle
 
@@ -84,6 +86,21 @@ def purge_throttle_counters():
 
 
 class ScopedThrottle(ScopedRateThrottle):
+    def get_ident(self, request):
+        """The caller's address, from the header our edge proxy sets.
+
+        Never X-Forwarded-For: DRF's default reads it whole when NUM_PROXIES
+        is unset, and a client choosing a new value per request had a fresh
+        login/reset/register bucket every time. See settings.CLIENT_IP_HEADER.
+        """
+        header = settings.CLIENT_IP_HEADER
+        value = request.META.get('HTTP_' + header.upper().replace('-', '_'), '').strip()
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            # No proxy in front (local dev), or not an address at all.
+            return request.META.get('REMOTE_ADDR') or ''
+
     def allow_request(self, request, view):
         # ScopedRateThrottle's own setup, then the store in place of
         # SimpleRateThrottle's cache history.

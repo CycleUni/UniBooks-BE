@@ -347,6 +347,16 @@ AUTH_USER_MODEL = "accounts.User"
 # own environment; production never does, and nor do the tests.
 RELAX_THROTTLES = env.bool("RELAX_THROTTLES", default=False)
 
+# Where rate limits read the client's address from (core.throttling). DRF's
+# default trusts the whole client-sent X-Forwarded-For when NUM_PROXIES is
+# unset, so a random value per request would get a fresh bucket every time.
+# Railway's edge overwrites X-Real-IP with the caller's address (taken from
+# CF-Connecting-IP when the hop is Cloudflare), whatever the client sent.
+# A request without it (no proxy in front, local dev) is counted by its socket
+# address. Empty means the default: on Railway the socket is the edge's, shared
+# by every user, so there is no setting that should turn the header off.
+CLIENT_IP_HEADER = env.str("CLIENT_IP_HEADER", default="") or "X-Real-IP"
+
 
 def _throttle(enforced, relaxed):
     return relaxed if RELAX_THROTTLES else enforced

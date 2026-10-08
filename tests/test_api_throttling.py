@@ -155,3 +155,35 @@ def test_postgres_store_purges_day_old_counters(db):
 
     assert purge_throttle_counters() == 1
     assert list(ThrottleCounter.objects.values_list("key", flat=True)) == ["new"]
+
+
+def test_a_new_x_forwarded_for_per_request_does_not_reset_the_login_limit(api, db):
+    # DRF's default identity is the whole client-sent X-Forwarded-For when
+    # NUM_PROXIES is unset, so each spoofed value used to get a fresh bucket.
+    payload = {"email": "nobody@example.com", "password": "wrong-password"}
+    codes = [
+        api.post("/api/v1/auth/token/", payload, content_type="application/json",
+                 HTTP_X_FORWARDED_FOR=f"203.0.113.{i}").status_code
+        for i in range(6)
+    ]
+    assert codes[-1] == 429
+
+
+def test_the_edge_set_client_ip_gets_its_own_bucket(api, db):
+    payload = {"email": "nobody@example.com", "password": "wrong-password"}
+    for _ in range(5):
+        api.post("/api/v1/auth/token/", payload, content_type="application/json", HTTP_X_REAL_IP="198.51.100.1")
+    blocked = api.post("/api/v1/auth/token/", payload, content_type="application/json", HTTP_X_REAL_IP="198.51.100.1")
+    other = api.post("/api/v1/auth/token/", payload, content_type="application/json", HTTP_X_REAL_IP="198.51.100.2")
+    assert blocked.status_code == 429
+    assert other.status_code == 401
+
+
+def test_a_malformed_client_ip_header_falls_back_to_the_socket(api, db):
+    payload = {"email": "nobody@example.com", "password": "wrong-password"}
+    codes = [
+        api.post("/api/v1/auth/token/", payload, content_type="application/json",
+                 HTTP_X_REAL_IP=f"not-an-ip-{i}").status_code
+        for i in range(6)
+    ]
+    assert codes[-1] == 429
