@@ -9,7 +9,7 @@ from rest_framework.response import Response
 
 from catalog.book_search import book_search_q
 from orders.models import Order
-from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_order
+from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, notify_platform_cancel, platform_cancel_order
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminOrderSerializer
@@ -92,6 +92,13 @@ class AdminOrderForceCancelView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        platform_cancel_order(order, reason, request.user)
+        cancelled = platform_cancel_order(order, reason, request.user)
+        if cancelled is None:
+            # Finished by one of the parties after the check above.
+            return Response(
+                {"error": {"code": "admin.errOrderAlreadyFinal"}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        notify_platform_cancel(cancelled, request.user)
 
-        return Response(AdminOrderSerializer(order).data)
+        return Response(AdminOrderSerializer(cancelled).data)

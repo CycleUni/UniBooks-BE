@@ -20,6 +20,7 @@ from messaging.models import Conversation
 from accounts.serializers import prefetch_verified_school
 
 from ..models import Order, Review
+from ..services import lock_order, release_reservation
 from ..serializers import OrderSerializer, OrderStatusUpdateSerializer, visible_conversations
 
 logger = logging.getLogger(__name__)
@@ -253,9 +254,22 @@ class OrderViewSet(viewsets.ModelViewSet):
     MEETUP_EDITABLE_STATUSES = ('accepted',)
 
     def update(self, request, *args, **kwargs):
+        # The whole check-then-write runs under the order's lock (and its
+        # listing's, see orders.services.lock_order): validated against an
+        # unlocked copy, a buyer's cancel and a seller's handover could both
+        # pass and both commit. Chat notices are network calls, so they wait
+        # until the transaction — and its locks — are over.
+        self._after_commit = []
+        with transaction.atomic():
+            response = self._locked_update(request, partial=kwargs.pop('partial', False))
+        for notify in self._after_commit:
+            notify()
+        return response
+
+    def _locked_update(self, request, partial):
+        instance = lock_order(self.get_object())
         new_status = request.data.get('status')
         if new_status:
-            instance = self.get_object()
             denied = self._check_transition_permission(instance, new_status, request.user)
             if denied is not None:
                 return denied
@@ -263,12 +277,14 @@ class OrderViewSet(viewsets.ModelViewSet):
             # Editing the meetup on its own, with no status change. This PATCH
             # used to pass unchecked: the buyer could rewrite the seller's
             # time and place, on an order in any status.
-            instance = self.get_object()
             if request.user != instance.seller:
                 return Response({"error": {"code": "order.errSellerOnly"}}, status=status.HTTP_403_FORBIDDEN)
             if instance.status not in self.MEETUP_EDITABLE_STATUSES:
                 return Response({"error": {"code": "order.errMeetupNotEditable"}}, status=status.HTTP_400_BAD_REQUEST)
-        return super().update(request, *args, **kwargs)
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         listing = serializer.validated_data['listing']
@@ -301,70 +317,61 @@ class OrderViewSet(viewsets.ModelViewSet):
             conv.save(update_fields=['latest_message_body', 'updated_at'])
 
     def perform_update(self, serializer):
-        old_status = serializer.instance.status if serializer.instance else None
-        old_meetup_time = serializer.instance.meetup_time if serializer.instance else None
-        old_meetup_location = serializer.instance.meetup_location if serializer.instance else ''
+        # Runs inside update()'s transaction, with the order and its listing
+        # already locked.
+        old_status = serializer.instance.status
+        old_meetup_time = serializer.instance.meetup_time
+        old_meetup_location = serializer.instance.meetup_location
         new_status = serializer.validated_data.get('status', old_status)
 
-        with transaction.atomic():
-            if new_status == 'accepted' and old_status != 'accepted':
-                # Several buyers can hold pending orders on one listing. Lock
-                # the listing row for the check-then-reserve so two accepts
-                # racing each other cannot both reserve it — the second one
-                # must see 'reserved' and be refused.
-                listing = Listing.objects.select_for_update().get(pk=serializer.instance.listing_id)
-                if listing.status != 'active':
-                    raise serializers.ValidationError({"status": "checkout.errListingUnavailable"})
+        if new_status == 'accepted' and old_status != 'accepted':
+            # Several buyers can hold pending orders on one listing; the
+            # listing lock makes this check-then-reserve safe, so of two
+            # racing accepts the second sees 'reserved' and is refused.
+            listing = serializer.instance.listing
+            if listing is None or listing.status != 'active':
+                raise serializers.ValidationError({"status": "checkout.errListingUnavailable"})
 
-            order = serializer.save()
+        order = serializer.save()
 
-            # If meetup_time was changed, clear previous reminder so a new one can be sent
-            if 'meetup_time' in serializer.validated_data and serializer.validated_data['meetup_time'] != old_meetup_time:
-                clear_fields = []
-                for field in ('buyer_reminder_sent_at', 'seller_reminder_sent_at', 'meetup_reminder_sent_at'):
-                    if getattr(order, field) is not None:
-                        setattr(order, field, None)
-                        clear_fields.append(field)
-                if clear_fields:
-                    order.save(update_fields=clear_fields)
+        # If meetup_time was changed, clear previous reminder so a new one can be sent
+        if 'meetup_time' in serializer.validated_data and serializer.validated_data['meetup_time'] != old_meetup_time:
+            clear_fields = []
+            for field in ('buyer_reminder_sent_at', 'seller_reminder_sent_at', 'meetup_reminder_sent_at'):
+                if getattr(order, field) is not None:
+                    setattr(order, field, None)
+                    clear_fields.append(field)
+            if clear_fields:
+                order.save(update_fields=clear_fields)
 
-            if new_status == 'completed' and order.completed_at is None:
-                order.completed_at = timezone.now()
-                order.save(update_fields=['completed_at'])
+        if new_status == 'completed' and order.completed_at is None:
+            order.completed_at = timezone.now()
+            order.save(update_fields=['completed_at'])
 
-            # Handle listing status changes. Only an order on a listing that
-            # still exists has one to change: an order whose listing was
-            # deleted is already completed or cancelled (the seller cannot
-            # delete with an open order, and a platform deletion cancels them).
+        # Handle listing status changes. Only an order on a listing that
+        # still exists has one to change: an order whose listing was
+        # deleted is already completed or cancelled (the seller cannot
+        # delete with an open order, and a platform deletion cancels them).
+        if new_status == 'cancelled':
+            release_reservation(order, old_status)
+        elif order.listing is not None and new_status in ('accepted', 'completed'):
             listing = order.listing
-            if listing is not None:
-                if new_status == 'cancelled':
-                    # Only undo a reservation this order actually holds. A
-                    # pending order never reserved anything, and a seller who
-                    # has since marked the listing sold or removed must not
-                    # have it flipped back to active by a buyer withdrawing a
-                    # stale request.
-                    if old_status in ('accepted', 'handed_over') and listing.status == 'reserved':
-                        listing.status = 'active'
-                        listing.save(update_fields=['status'])
-                elif new_status == 'accepted':
-                    listing.status = 'reserved'
-                    listing.save(update_fields=['status'])
-                elif new_status == 'completed':
-                    listing.status = 'sold'
-                    listing.save(update_fields=['status'])
+            listing.status = 'reserved' if new_status == 'accepted' else 'sold'
+            listing.save(update_fields=['status'])
 
         # No cache bookkeeping needed here: the listing.save() calls above fire
         # post_save, and listings.models.invalidate_listing_caches bumps every
         # affected generation (detail, lists, and the book page).
 
         if old_status != new_status:
-            self._send_meetup_notification(order, old_status, new_status)
+            self._after_commit.append(lambda: self._send_meetup_notification(order, old_status, new_status))
         elif order.meetup_time != old_meetup_time or order.meetup_location != old_meetup_location:
             # The seller edited the agreed time/place. The chat's meetup card
             # shows the order's current details; this tells the buyer they
             # changed and makes an open conversation refetch them.
-            send_order_notification(order, 'order.notify.meetup_updated', sender=order.seller)
+            self._after_commit.append(
+                lambda: send_order_notification(order, 'order.notify.meetup_updated', sender=order.seller)
+            )
 
     def _send_meetup_notification(self, order, old_status, new_status):
         """Send appropriate notification based on status transition."""

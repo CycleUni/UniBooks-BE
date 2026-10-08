@@ -320,3 +320,53 @@ def test_conversation_carries_the_orders_meetup_details(api, order, buyer_header
     row = next(r for r in rows if r["id"] == str(conv.id))
     assert row["order_meetup_location"] == "Library"
     assert datetime.datetime.fromisoformat(row["order_meetup_time"]) == order.meetup_time
+
+
+# ---------------------------------------------------------------------
+# Status changes are checked against the locked row, not a stale copy
+# ---------------------------------------------------------------------
+
+
+def test_transition_is_validated_against_the_locked_order(api, order, seller_header, monkeypatch):
+    # The buyer cancels between the seller's read and the seller's write. The
+    # handover used to be validated against the read and commit anyway,
+    # leaving a handed-over order on a listing put back on sale.
+    import orders.views.orders as order_views
+    from orders.services import lock_order as real_lock_order
+
+    order.status = "accepted"
+    order.save(update_fields=["status"])
+    Listing.objects.filter(pk=order.listing_id).update(status="reserved")
+
+    def buyer_cancels_first(o):
+        Order.objects.filter(pk=o.pk).update(status="cancelled")
+        Listing.objects.filter(pk=o.listing_id).update(status="active")
+        return real_lock_order(o)
+
+    monkeypatch.setattr(order_views, "lock_order", buyer_cancels_first)
+    sent = []
+    monkeypatch.setattr(order_views, "send_order_notification", lambda o, key, **kw: sent.append(key))
+
+    resp = _patch_status(api, order, "handed_over", seller_header)
+
+    # The simulated cancel shares the request's transaction, so the rollback
+    # undoes it too; what matters is that the handover was refused.
+    assert resp.status_code == 400
+    assert resp.json()["status"] == ["order.errInvalidTransition"]
+    order.refresh_from_db()
+    assert order.status != "handed_over"
+    assert sent == []
+
+
+def test_failed_transition_rolls_back_and_sends_nothing(api, order, seller_header, monkeypatch):
+    import orders.views.orders as order_views
+    sent = []
+    monkeypatch.setattr(order_views, "send_order_notification", lambda o, key, **kw: sent.append(key))
+    Listing.objects.filter(pk=order.listing_id).update(status="sold")
+
+    resp = _patch_status(api, order, "accepted", seller_header)
+
+    assert resp.status_code == 400
+    order.refresh_from_db()
+    assert order.status == "pending"
+    assert sent == []

@@ -690,3 +690,70 @@ def test_non_staff_cannot_delete_listing_via_admin(api, normal_header, listing):
     resp = api.delete(f"/api/v1/admin/listings/{listing.id}/", **normal_header)
     assert resp.status_code == 403
     assert Listing.objects.filter(id=listing.id).exists()
+
+
+def test_force_cancel_of_an_accepted_order_puts_the_listing_back_on_sale(api, staff_header, order):
+    Order.objects.filter(pk=order.pk).update(status="accepted")
+    Listing.objects.filter(pk=order.listing_id).update(status="reserved")
+
+    resp = api.post(
+        f"/api/v1/admin/orders/{order.id}/force_cancel/",
+        {"reason": "fraud suspected"},
+        content_type="application/json",
+        **staff_header,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+    assert Listing.objects.get(pk=order.listing_id).status == "active"
+
+
+def test_force_cancel_leaves_a_sold_listing_alone(api, staff_header, order):
+    Listing.objects.filter(pk=order.listing_id).update(status="sold")
+    resp = api.post(
+        f"/api/v1/admin/orders/{order.id}/force_cancel/",
+        {"reason": "fraud suspected"},
+        content_type="application/json",
+        **staff_header,
+    )
+    assert resp.status_code == 200
+    assert Listing.objects.get(pk=order.listing_id).status == "sold"
+
+
+def test_admin_delete_that_fails_tells_nobody_and_cancels_nothing(api, staff_header, order, monkeypatch):
+    import adminapi.views.listings as admin_listings
+    notified = []
+    monkeypatch.setattr(admin_listings, "notify_platform_cancel", lambda o, actor: notified.append(o.id))
+
+    def boom(listing):
+        raise RuntimeError("storage down")
+
+    monkeypatch.setattr(admin_listings, "delete_listing", boom)
+
+    with pytest.raises(RuntimeError):
+        api.delete(
+            f"/api/v1/admin/listings/{order.listing_id}/",
+            {"reason": "counterfeit textbook"},
+            content_type="application/json",
+            **staff_header,
+        )
+
+    order.refresh_from_db()
+    assert order.status == "pending"
+    assert notified == []
+
+
+def test_admin_delete_notifies_after_the_delete(api, staff_header, order, monkeypatch):
+    import adminapi.views.listings as admin_listings
+    notified = []
+    monkeypatch.setattr(admin_listings, "notify_platform_cancel", lambda o, actor: notified.append(o.id))
+
+    resp = api.delete(
+        f"/api/v1/admin/listings/{order.listing_id}/",
+        {"reason": "counterfeit textbook"},
+        content_type="application/json",
+        **staff_header,
+    )
+
+    assert resp.status_code == 204
+    assert notified == [order.id]

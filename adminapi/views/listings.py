@@ -13,7 +13,7 @@ from core.models import AuditEvent
 from listings.models import Listing
 from listings.utils import delete_listing
 from orders.models import ACTIVE_ORDER_STATUSES
-from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, platform_cancel_order
+from orders.services import PLATFORM_CANCEL_REASON_MIN_LENGTH, notify_platform_cancel, platform_cancel_order
 
 from ..permissions import IsRegionManager
 from ..serializers import AdminListingSerializer
@@ -175,9 +175,15 @@ class AdminListingDetailView(generics.RetrieveUpdateAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         with transaction.atomic():
-            for order in open_orders:
-                platform_cancel_order(order, reason, request.user)
+            cancelled = [
+                c for c in (platform_cancel_order(order, reason, request.user) for order in open_orders)
+                if c is not None
+            ]
             self._delete(request, instance)
+        # Only once the deletion has committed: told first, a failed delete
+        # would leave both parties holding a cancellation that rolled back.
+        for order in cancelled:
+            notify_platform_cancel(order, request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def _delete(self, request, instance):

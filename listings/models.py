@@ -2,7 +2,7 @@ import logging
 import uuid
 from urllib.parse import urlparse
 
-from django.db import models
+from django.db import models, transaction
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.contrib.postgres.indexes import GinIndex
@@ -97,39 +97,45 @@ class Listing(models.Model):
         return f"Listing {self.id} for {self.book.title} by {self.seller.email}"
 
     def delete(self, *args, **kwargs):
-        """Delete the listing record and its associated R2 photos.
+        """Delete the listing record and, once that commits, its R2 photos.
 
-        When a listing is deleted, its uploaded photos should be removed from
-        object storage (R2 or local FileSystemStorage) so orphaned files don't
-        accumulate. Photo deletion failures are logged but do not prevent the
-        database record from being removed — a stale object in the bucket is
-        less harmful than an undeletable listing row.
+        Uploaded photos are removed from object storage (R2 or local
+        FileSystemStorage) so orphaned files don't accumulate. The removal
+        waits for the commit: a delete inside a transaction that then rolls
+        back (an admin deletion cancelling open orders first, say) must not
+        leave a listing whose photos are already gone. Outside a transaction
+        on_commit runs at once. Failures are logged, never raised — a stale
+        object in the bucket is less harmful than an undeletable listing row.
         """
-        if self.photos:
-            for photo_url in self.photos:
-                try:
-                    # Extract the R2 key (path portion) from the full URL.
-                    # Photo URLs have the form:
-                    #   https://<custom_domain>/listings/<uuid>.<ext>
-                    # The R2 key is: listings/<uuid>.<ext>
-                    parsed = urlparse(photo_url)
-                    key = parsed.path.lstrip('/')
-                    # Local dev serves uploads under MEDIA_URL; that prefix is
-                    # part of the URL, not of the storage key, and leaving it
-                    # on made every dev-mode delete a silent miss.
-                    media_url = (settings.MEDIA_URL or '/').strip('/')
-                    if media_url and key.startswith(media_url + '/'):
-                        key = key[len(media_url) + 1:]
-                    default_storage.delete(key)
-                    logger.info("Deleted photo %s for listing %s", key, self.id)
-                except Exception:
-                    logger.warning(
-                        "Failed to delete photo %s for listing %s (listing will be deleted anyway)",
-                        photo_url, self.id,
-                        exc_info=True,
-                    )
+        photos = list(self.photos or [])
+        listing_id = self.id
+        result = super().delete(*args, **kwargs)
+        if photos:
+            transaction.on_commit(lambda: _delete_listing_photos(photos, listing_id))
+        return result
 
-        return super().delete(*args, **kwargs)
+
+def _delete_listing_photos(photo_urls, listing_id):
+    for photo_url in photo_urls:
+        try:
+            # Photo URLs have the form https://<custom_domain>/listings/<uuid>.<ext>;
+            # the R2 key is the path, listings/<uuid>.<ext>.
+            key = urlparse(photo_url).path.lstrip('/')
+            # Local dev serves uploads under MEDIA_URL; that prefix is
+            # part of the URL, not of the storage key, and leaving it
+            # on made every dev-mode delete a silent miss.
+            media_url = (settings.MEDIA_URL or '/').strip('/')
+            if media_url and key.startswith(media_url + '/'):
+                key = key[len(media_url) + 1:]
+            default_storage.delete(key)
+            logger.info("Deleted photo %s for listing %s", key, listing_id)
+        except Exception:
+            logger.warning(
+                "Failed to delete photo %s for listing %s (listing will be deleted anyway)",
+                photo_url, listing_id,
+                exc_info=True,
+            )
+
 
 @receiver([post_save, post_delete], sender=Listing)
 def invalidate_listing_caches(sender, instance, **kwargs):
