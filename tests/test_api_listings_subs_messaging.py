@@ -779,3 +779,64 @@ def test_deleting_a_conversation_does_not_move_it_in_the_other_partys_inbox(api,
     conv.refresh_from_db()
     assert conv.buyer_deleted_at is not None
     assert conv.updated_at == before
+
+
+def _patch_listing_status(api, listing, seller, value):
+    return api.patch(
+        f"/api/v1/listings/{listing.id}/",
+        {"status": value},
+        content_type="application/json",
+        **bearer(seller),
+    )
+
+
+@pytest.mark.parametrize("value", ["sold", "removed", "active"])
+def test_seller_may_set_their_own_listing_status(api, listing, seller, value):
+    resp = _patch_listing_status(api, listing, seller, value)
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.status == value
+
+
+def test_seller_cannot_reserve_by_hand(api, listing, seller):
+    resp = _patch_listing_status(api, listing, seller, "reserved")
+    assert resp.status_code == 400
+    assert resp.json()["status"] == ["listing.errStatusNotAllowed"]
+    listing.refresh_from_db()
+    assert listing.status == "active"
+
+
+@pytest.mark.parametrize("value", ["active", "sold", "removed"])
+def test_seller_cannot_change_a_listing_an_order_holds(api, listing, seller, value):
+    # Setting it back to active let a second buyer be accepted while the
+    # first one's meetup was still on.
+    Listing.objects.filter(pk=listing.pk).update(status="reserved")
+    resp = _patch_listing_status(api, listing, seller, value)
+    assert resp.status_code == 400
+    listing.refresh_from_db()
+    assert listing.status == "reserved"
+
+
+def test_editing_a_reserved_listing_resending_its_status_still_works(api, listing, seller):
+    # The edit form sends the status back unchanged with every other field.
+    Listing.objects.filter(pk=listing.pk).update(status="reserved")
+    resp = api.patch(
+        f"/api/v1/listings/{listing.id}/",
+        {"status": "reserved", "price": 150},
+        content_type="application/json",
+        **bearer(seller),
+    )
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.price == 150
+
+
+def test_new_listing_cannot_start_sold(api, seller, book):
+    resp = api.post(
+        "/api/v1/listings/",
+        {"book": book.id, "price": 100, "condition": "new", "status": "sold"},
+        content_type="application/json",
+        **bearer(seller),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["fields"]["status"] == ["listing.errStatusNotAllowed"]

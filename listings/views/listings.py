@@ -3,6 +3,7 @@ from rest_framework import views, status
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticatedOrReadOnly
 from django.core.cache import cache
+from django.db import transaction
 from listings.models import Listing
 from listings.serializers import ListingSerializer, with_seller_stats
 from listings.utils import delete_listing
@@ -256,9 +257,18 @@ class ListingDetailView(views.APIView):
         return Response(response_data)
 
     def patch(self, request, pk):
+        # Under the listing's lock, re-read: the serializer saves every field
+        # of the copy it was given, so an edit read before an order's accept
+        # committed would write 'active' back over 'reserved'.
+        with transaction.atomic():
+            return self._patch(request, pk)
+
+    def _patch(self, request, pk):
         listing = self.get_object(request, pk, require_seller=True)
         if not listing:
              return Response(status=status.HTTP_404_NOT_FOUND)
+        list(Listing.objects.select_for_update().filter(pk=listing.pk).values_list('pk'))
+        listing = self.get_object(request, pk, require_seller=True)
         
         if listing.admin_locked:
             return Response({"error": {"code": "listing.errAdminLocked", "message": "This listing has been locked by UniBooks and cannot be modified."}}, status=status.HTTP_403_FORBIDDEN)

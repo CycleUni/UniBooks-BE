@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
@@ -115,9 +116,15 @@ class ReportActionView(generics.UpdateAPIView):
         report = serializer.save()
         # Nothing to take down if the seller has deleted the listing since.
         if report.status == 'actioned' and report.listing is not None:
+            # Locked as an admin removal is (adminapi.views.listings): without
+            # the lock the seller could PATCH the listing straight back to active.
             listing = report.listing
             listing.status = 'removed'
-            listing.save(update_fields=['status'])
+            listing.admin_locked = True
+            listing.admin_lock_reason = f'report: {report.reason}'
+            listing.locked_by = self.request.user
+            listing.locked_at = timezone.now()
+            listing.save(update_fields=['status', 'admin_locked', 'admin_lock_reason', 'locked_by', 'locked_at'])
 
         from core.models import AuditEvent
         AuditEvent.objects.create(

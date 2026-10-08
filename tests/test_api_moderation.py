@@ -186,6 +186,9 @@ def test_staff_action_actioned_takes_down_listing(api, listing, reporter, staff_
     listing.refresh_from_db()
     assert report.status == "actioned"
     assert listing.status == "removed"
+    # Locked, or the seller could PATCH it straight back to active.
+    assert listing.admin_locked is True
+    assert listing.locked_at is not None
 
 
 def test_staff_dismiss_leaves_listing_untouched(api, listing, reporter, staff_header):

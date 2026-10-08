@@ -93,6 +93,25 @@ class ListingSerializer(serializers.ModelSerializer):
             'admin_locked', 'admin_lock_reason', 'locked_by', 'locked_at',
         )
 
+    # What a seller may set by hand. 'reserved' belongs to the order flow (an
+    # accepted order holds it), so it is never picked, and a listing an order
+    # holds is not the seller's to change: setting it back to active let a
+    # second buyer be accepted while the first one's meetup was still on.
+    SELLER_SETTABLE_STATUSES = ('active', 'sold', 'removed')
+
+    def validate_status(self, value):
+        current = self.instance.status if isinstance(self.instance, Listing) else None
+        if current is None:
+            # A new listing goes on sale; nothing else makes sense to create.
+            if value != 'active':
+                raise serializers.ValidationError('listing.errStatusNotAllowed')
+            return value
+        if value == current:
+            return value
+        if current == 'reserved' or value not in self.SELLER_SETTABLE_STATUSES:
+            raise serializers.ValidationError('listing.errStatusNotAllowed')
+        return value
+
     def get_fields(self):
         fields = super().get_fields()
         # Category slugs are unique per region, not globally (Taiwan and Hong
