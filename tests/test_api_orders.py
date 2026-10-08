@@ -167,7 +167,7 @@ def test_duplicate_review_returns_clean_400_not_500(api, buyer, seller, listing,
         **buyer_header,
     )
     assert resp.status_code == 400
-    assert "already reviewed" in str(resp.json())
+    assert resp.json()["order"] == "order.errAlreadyReviewed"
 
 
 def test_review_of_others_order_returns_clean_400_not_500(api, buyer, seller, listing, db):
@@ -186,7 +186,7 @@ def test_review_of_others_order_returns_clean_400_not_500(api, buyer, seller, li
         **_auth_header(outsider),
     )
     assert resp.status_code == 400
-    assert "own orders" in str(resp.json())
+    assert resp.json()["order"] == "order.errReviewNotYours"
 
 
 def test_review_of_non_completed_order_returns_clean_400_not_500(api, order, buyer_header):
@@ -198,7 +198,7 @@ def test_review_of_non_completed_order_returns_clean_400_not_500(api, order, buy
         **buyer_header,
     )
     assert resp.status_code == 400
-    assert "completed" in str(resp.json())
+    assert resp.json()["order"] == "order.errReviewNeedsCompleted"
 
 
 # ---------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import logging
 
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
@@ -47,23 +48,29 @@ class ReviewViewSet(viewsets.ModelViewSet):
         order = serializer.validated_data['order']
         is_no_show = serializer.validated_data.get('is_no_show', False)
 
-        # Validations
+        # Codes, not English: the review dialog shows whatever comes back,
+        # in the user's language only if it is a dictionary key.
         if self.request.user not in [order.buyer, order.seller]:
-            raise serializers.ValidationError({"detail": "You can only review your own orders."})
+            raise serializers.ValidationError({"order": "order.errReviewNotYours"})
 
         if is_no_show and order.status != 'cancelled':
-            raise serializers.ValidationError({"detail": "No-show reports are only for cancelled orders."})
+            raise serializers.ValidationError({"order": "order.errNoShowNeedsCancelled"})
 
         if not is_no_show and order.status != 'completed':
-            raise serializers.ValidationError({"detail": "Reviews are only for completed orders."})
+            raise serializers.ValidationError({"order": "order.errReviewNeedsCompleted"})
 
         reviewee = order.seller if self.request.user == order.buyer else order.buyer
 
         # Check if already reviewed
         if Review.objects.filter(order=order, reviewer=self.request.user).exists():
-            raise serializers.ValidationError({"detail": "You have already reviewed this order."})
+            raise serializers.ValidationError({"order": "order.errAlreadyReviewed"})
 
-        serializer.save(
-            reviewer=self.request.user,
-            reviewee=reviewee
-        )
+        try:
+            with transaction.atomic():
+                serializer.save(
+                    reviewer=self.request.user,
+                    reviewee=reviewee
+                )
+        except IntegrityError:
+            # A second submit racing past the check above (a double click).
+            raise serializers.ValidationError({"order": "order.errAlreadyReviewed"})
