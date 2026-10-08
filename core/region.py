@@ -81,46 +81,50 @@ def get_region(request):
     if not active_regions:
         return None
     
-    candidates = []
-    
-    query_region = request.GET.get('region')
-    if query_region:
-        candidates.append(query_region.upper())
-        
-    header_region = request.headers.get('X-Region')
-    if header_region:
-        candidates.append(header_region.upper())
-        
-    cookie_region = request.COOKIES.get('region')
-    if cookie_region:
-        candidates.append(cookie_region.upper())
-        
-    # Priority 4: Verified regions of authenticated user (only if exactly one)
-    if hasattr(request, 'user') and request.user.is_authenticated:
-        if hasattr(request.user, 'verified_regions'):
-            # Only use if exactly one verified region
-            # (If not evaluated, evaluating is needed. Usually a queryset.)
-            regions = list(request.user.verified_regions.all())
-            if len(regions) == 1:
-                candidates.append(regions[0].code.upper())
-        
-    ip_region = ip_country(request)
-    if ip_region:
-        candidates.append(ip_region)
-        
-    candidates.append(DEFAULT_REGION_CODE.upper())
-    
     resolved = None
-    for code in candidates:
+    for code in _region_candidates(request):
         if code in active_regions:
             resolved = active_regions[code]
             break
-            
+
     if not resolved:
         resolved = list(active_regions.values())[0]
 
     request._cached_region = resolved
     return resolved
+
+def _region_candidates(request):
+    """The region codes get_region tries, in order, produced one at a time.
+
+    Lazily, so the verified-regions query runs only when nothing before it
+    (the ?region= the app adds to every call, a header or a cookie) already
+    named an active region — which was every request from a signed-in user.
+    """
+    query_region = request.GET.get('region')
+    if query_region:
+        yield query_region.upper()
+
+    header_region = request.headers.get('X-Region')
+    if header_region:
+        yield header_region.upper()
+
+    cookie_region = request.COOKIES.get('region')
+    if cookie_region:
+        yield cookie_region.upper()
+
+    # Priority 4: the authenticated user's verified region, if exactly one.
+    if hasattr(request, 'user') and request.user.is_authenticated:
+        if hasattr(request.user, 'verified_regions'):
+            regions = list(request.user.verified_regions.all()[:2])
+            if len(regions) == 1:
+                yield regions[0].code.upper()
+
+    ip_region = ip_country(request)
+    if ip_region:
+        yield ip_region
+
+    yield DEFAULT_REGION_CODE.upper()
+
 
 def resolve_region(request):
     """
