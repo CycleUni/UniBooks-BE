@@ -5,7 +5,8 @@ from urllib.parse import urlparse
 from django.db import models, transaction
 from django.conf import settings
 from django.core.files.storage import default_storage
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import GinIndex, OpClass
+from django.db.models.functions import Upper
 
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
@@ -81,16 +82,9 @@ class Listing(models.Model):
             # The sitemap pages through a region's active listings in id
             # order (listings/sitemap.py).
             models.Index(fields=['region', 'status', 'id'], name='listing_region_status_id_idx'),
-            GinIndex(
-                name='listing_course_trgm_idx',
-                fields=['course_name'],
-                opclasses=['gin_trgm_ops']
-            ),
-            GinIndex(
-                name='listing_professor_trgm_idx',
-                fields=['professor_name'],
-                opclasses=['gin_trgm_ops']
-            )
+            # UPPER(column), matching icontains — see catalog.models.Book.
+            GinIndex(OpClass(Upper('course_name'), name='gin_trgm_ops'), name='listing_course_upper_trgm_idx'),
+            GinIndex(OpClass(Upper('professor_name'), name='gin_trgm_ops'), name='listing_prof_upper_trgm_idx'),
         ]
 
     def __str__(self):

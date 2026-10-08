@@ -1,5 +1,6 @@
 from django.db import models
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import GinIndex, OpClass
+from django.db.models.functions import Upper
 
 class Book(models.Model):
     region = models.ForeignKey('core.Region', on_delete=models.CASCADE, related_name='books')
@@ -37,12 +38,14 @@ class Book(models.Model):
         constraints = [
             models.UniqueConstraint(fields=['region', 'isbn13'], name='book_region_isbn13_uniq'),
         ]
+        # On UPPER(column), because that is what Django's icontains compares
+        # (UPPER(col::text) LIKE UPPER('%q%')); a trigram index on the bare
+        # column, which these replaced, could not serve it, and every
+        # keyword search scanned the whole table.
         indexes = [
-            GinIndex(
-                name='book_trgm_idx',
-                fields=['title', 'authors', 'isbn13'],
-                opclasses=['gin_trgm_ops', 'gin_trgm_ops', 'gin_trgm_ops']
-            )
+            GinIndex(OpClass(Upper('title'), name='gin_trgm_ops'), name='book_title_upper_trgm_idx'),
+            GinIndex(OpClass(Upper('authors'), name='gin_trgm_ops'), name='book_authors_upper_trgm_idx'),
+            GinIndex(OpClass(Upper('isbn13'), name='gin_trgm_ops'), name='book_isbn13_upper_trgm_idx'),
         ]
 
     def __str__(self):
