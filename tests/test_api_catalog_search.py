@@ -3,6 +3,7 @@
 from unittest import mock
 
 import pytest
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client
@@ -32,9 +33,15 @@ def api():
 
 @pytest.fixture
 def user(db):
-    return User.objects.create_user(
+    u = User.objects.create_user(
         email="catalog-user@example.com", first_name="Catalog", last_name="User", password=PASSWORD
     )
+    # Creating a book needs a seller verified in the region, as listing does.
+    from accounts.models import RegionVerification
+    RegionVerification.objects.update_or_create(
+        user=u, region_id='TW', defaults={'edu_email': u.email, 'verified_at': timezone.now()},
+    )
+    return u
 
 
 @pytest.fixture
@@ -163,15 +170,19 @@ def test_book_detail_non_numeric_id_returns_clean_404(api, db):
 
 
 def test_manual_book_create_parses_source(api, auth_header, db):
-    resp = api.post(
-        "/api/v1/books/manual/",
-        {"isbn13": "9780131103627", "title": "Google Book", "source": "google_api"},
-        content_type="application/json",
-        **auth_header,
-    )
+    record = {"title": "The C Programming Language", "authors": "Kernighan, Ritchie"}
+    with mock.patch("catalog.views.get_google_books_by_isbn", return_value=record):
+        resp = api.post(
+            "/api/v1/books/manual/",
+            {"isbn13": "9780131103627", "title": "Google Book", "source": "google_api"},
+            content_type="application/json",
+            **auth_header,
+        )
     assert resp.status_code == 201
     book = Book.objects.get(isbn13="9780131103627")
     assert book.source == "google_api"
+    # The catalogue's record, not what the seller sent.
+    assert book.title == "The C Programming Language"
 
     resp2 = api.post(
         "/api/v1/books/manual/",
@@ -1158,3 +1169,41 @@ def test_google_plain_search_ignores_volumes_without_the_isbn(db):
 ])
 def test_isbn_forms(isbn, forms):
     assert isbn_forms(isbn) == forms
+
+
+@pytest.mark.parametrize("claimed", ["google_api", "listed", "preseed"])
+def test_manual_book_create_cannot_claim_a_source_it_lacks(api, auth_header, db, claimed):
+    # Any source but manual keeps a book out of the admin review queue.
+    with mock.patch("catalog.views.get_google_books_by_isbn", return_value=None):
+        resp = api.post(
+            "/api/v1/books/manual/",
+            {"isbn13": "9780131103627", "title": "Made up", "source": claimed},
+            content_type="application/json",
+            **auth_header,
+        )
+    assert resp.status_code == 201
+    book = Book.objects.get(isbn13="9780131103627")
+    assert book.source == "manual"
+    assert book.title == "Made up"
+
+
+def test_manual_book_create_without_isbn_is_manual(api, auth_header, db):
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"title": "No ISBN", "source": "google_api"},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 201
+    assert Book.objects.get(title="No ISBN").source == "manual"
+
+
+def test_manual_book_create_needs_a_verified_seller(api, db):
+    stranger = User.objects.create_user(email="unverified@example.com", first_name="Un", last_name="Verified", password=PASSWORD)
+    resp = api.post(
+        "/api/v1/books/manual/",
+        {"title": "X"},
+        content_type="application/json",
+        HTTP_AUTHORIZATION=f"Bearer {issue_tokens(stranger)['access']}",
+    )
+    assert resp.status_code == 403

@@ -384,6 +384,9 @@ REST_FRAMEWORK = {
         'verify-request': _throttle('3/hour', '60/hour'),
         'search': _throttle('60/min', '600/min'),
         'listing_create': _throttle('10/hour', '1000/hour'),
+        # Manual book rows from the sell page; one per listing of a book the
+        # catalogue doesn't have yet, so it tracks listing_create.
+        'book_create': _throttle('20/hour', '1000/hour'),
         'refresh_token': _throttle('10/min', '60/min'),
         'password_change': _throttle('5/min', '60/min'),
         # Push-device register/remove: once per visit per browser in normal use.

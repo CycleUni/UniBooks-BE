@@ -1,3 +1,5 @@
+import logging
+
 from django.db.models import Max, Min
 from rest_framework import views, status
 from rest_framework.response import Response
@@ -20,6 +22,10 @@ from django.core.cache import cache
 from core.cache import BOOK_DETAIL_CACHE_TTL, versioned_key, region_versioned_key
 from core.region import get_region
 from core.authentication import OptionalJWTAuthentication
+from core.permissions import IsVerifiedInRegion
+from core.throttling import ScopedThrottle
+
+logger = logging.getLogger(__name__)
 
 
 class BookDetailView(views.APIView):
@@ -195,8 +201,39 @@ class BookDetailView(views.APIView):
         return Response(response_data)
 
 
+def _vetted_catalogue_record(claimed_source, isbn13):
+    """The catalogue's own record behind a claimed source, or None.
+
+    The sell page sends the source of the search result the book came from,
+    and anything but 'manual' keeps a book out of the admin review queue —
+    so the claim is checked rather than trusted. The lookup is the one the
+    search just made, so it is normally a cache hit.
+    """
+    # The per-ISBN lookup that backs each catalogue source a seller may claim.
+    lookup = {
+        'google_api': get_google_books_by_isbn,
+        'openlibrary_api': get_open_library_book_by_isbn,
+        'isbnnet_api': get_isbnnet_book_by_isbn,
+    }.get(claimed_source)
+    if lookup is None or not isbn13:
+        return None
+    try:
+        return lookup(isbn13)
+    except Exception:
+        # Rate-limited or down: the book is filed as manual and reviewed.
+        logger.warning("Could not vet %s source for ISBN %s", claimed_source, isbn13, exc_info=True)
+        return None
+
+
 class ManualBookCreateView(views.APIView):
-    permission_classes = [IsAuthenticated]
+    # Only someone who can list in the region creates its books, and not
+    # without limit: each one is a catalogue row anyone searching sees.
+    permission_classes = [IsAuthenticated, IsVerifiedInRegion]
+    throttle_classes = [ScopedThrottle]
+    throttle_scope = 'book_create'
+
+    def get_target_region(self, request):
+        return get_region(request)
 
     def post(self, request):
         data = request.data.copy()
@@ -235,12 +272,16 @@ class ManualBookCreateView(views.APIView):
                 serializer = BookSerializer(existing_book)
                 return Response(serializer.data, status=status.HTTP_200_OK)
 
+        source = 'manual'
+        record = _vetted_catalogue_record(data.get('source'), data.get('isbn13'))
+        if record:
+            # The catalogue's title and authors, not the seller's: a vouched-
+            # for source on text nobody vouched for is what the check is for.
+            source = data['source']
+            data['title'] = record.get('title') or data.get('title')
+            data['authors'] = record.get('authors') or data.get('authors', '')
         serializer = BookSerializer(data=data)
         if serializer.is_valid():
-            source = data.get('source', 'manual')
-            valid_sources = dict(Book.SOURCE_CHOICES).keys()
-            if source not in valid_sources:
-                source = 'manual'
             serializer.save(source=source, region=region)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
