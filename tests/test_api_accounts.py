@@ -1360,3 +1360,33 @@ def test_change_password_ends_other_sessions_and_keeps_this_one(api, user):
     assert api.post(
         "/api/v1/auth/refresh/", {"refresh": body["refresh"]}, content_type="application/json",
     ).status_code == 200
+
+
+def test_a_quote_in_the_name_cannot_add_a_recipient_to_the_activation_mail(api, db, mailoutbox):
+    # The recipient was built as '"{name}" <{email}>' by hand, so a name with
+    # a quote and a comma read as a second address — and the mail carries
+    # the activation token.
+    from email.utils import getaddresses
+
+    resp = api.post(
+        "/api/v1/auth/register/",
+        {"email": "victim@example.com", "first_name": 'x" <attacker@evil.example>, "y',
+         "last_name": "z", "password": "a-strong-password-for-tests-9"},
+        content_type="application/json",
+    )
+
+    assert resp.status_code == 201
+    assert len(mailoutbox) == 1
+    addresses = [addr for _name, addr in getaddresses(mailoutbox[0].to)]
+    assert addresses == ["victim@example.com"]
+
+
+def test_edu_verification_refuses_more_than_one_address(api, auth_header):
+    resp = api.post(
+        "/api/v1/auth/verify/request/",
+        {"edu_email": "attacker@gmail.com, someone@ntu.edu.tw"},
+        content_type="application/json",
+        **auth_header,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "acct.errEduEmail"

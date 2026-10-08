@@ -1,5 +1,6 @@
 import logging
 import threading
+from email.utils import formataddr
 
 from django.utils.translation import gettext_lazy as _
 
@@ -13,6 +14,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.conf import settings
 from django.utils import timezone
 
@@ -101,13 +103,13 @@ def _link_email(lang, kind, link):
     return subject, body
 
 
-def _send_verification_email(subject, message, recipient_email, log_context):
+def _send_verification_email(subject, message, name, address, log_context):
     """Best-effort send: the verification token is already stored by the
     caller before this runs, so a transient Mailjet/SMTP failure shouldn't
     fail the whole request — log for ops visibility and degrade gracefully.
 
     Never logs `message` (it embeds the verification/activation token — a
-    bearer credential good for 24h) or `recipient_email` (PII) — only the
+    bearer credential good for 24h) or the address (PII) — only the
     caller-supplied context label and, on failure, the exception.
     """
     try:
@@ -116,7 +118,10 @@ def _send_verification_email(subject, message, recipient_email, log_context):
             subject=subject,
             body=message,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[recipient_email],
+            # formataddr quotes the display name. Built by hand as
+            # '"{name}" <{address}>', a name containing a quote and a comma
+            # could add a second recipient, and the mail carries a token.
+            to=[formataddr((name, address))],
         )
         msg.send(fail_silently=False)
         if hasattr(msg, 'anymail_status'):
@@ -146,8 +151,7 @@ class RegisterView(views.APIView):
             subject, message = _link_email(resolve_language(request), 'activation', verify_link)
 
             name = f"{user.last_name}{user.first_name}".strip() or "User"
-            recipient = f'"{name}" <{user.email}>'
-            _send_verification_email(subject, message, recipient, f"registration for user {user.id}")
+            _send_verification_email(subject, message, name, user.email, f"registration for user {user.id}")
 
             return Response({"code": "auth.registerSuccess"}, status=status.HTTP_201_CREATED)
         return Response({"error": {"code": "auth.errValidation", "fields": serializer.errors}}, status=status.HTTP_400_BAD_REQUEST)
@@ -164,6 +168,12 @@ class RequestEduVerificationView(views.APIView):
             return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
             
         edu_email = edu_email.strip().lower()
+        # One plain address. The campus check reads only the domain after the
+        # last @, so "me@gmail.com, x@ntu.edu.tw" passed it.
+        try:
+            validate_email(edu_email)
+        except DjangoValidationError:
+            return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
         if not _is_valid_edu_email(edu_email):
             return Response({"error": {"code": "acct.errEduEmail"}}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -185,8 +195,7 @@ class RequestEduVerificationView(views.APIView):
         subject, message = _link_email(resolve_language(request), 'eduVerification', verify_link)
 
         name = f"{request.user.last_name}{request.user.first_name}".strip() or "User"
-        recipient = f'"{name}" <{edu_email}>'
-        _send_verification_email(subject, message, recipient, f"edu verification for user {request.user.id}")
+        _send_verification_email(subject, message, name, edu_email, f"edu verification for user {request.user.id}")
 
         return Response({"code": "acct.sentVerification"}, status=status.HTTP_200_OK)
 
@@ -725,7 +734,7 @@ class RequestPasswordResetView(views.APIView):
 
         subject, message = _link_email(resolve_language(request), 'passwordReset', reset_link)
 
-        _send_verification_email(subject, message, user.email, f"password reset for user {user.id}")
+        _send_verification_email(subject, message, '', user.email, f"password reset for user {user.id}")
 
         return Response({"code": "acct.passwordResetSent"})
 
@@ -749,7 +758,7 @@ def send_email_change_verification(request, user, new_email):
     link = f"{settings.FRONTEND_URL}/account/settings?email_change_token={token}"
     subject, message = _link_email(resolve_language(request), 'emailChange', link)
 
-    _send_verification_email(subject, message, new_email, f"email change for user {user.id}")
+    _send_verification_email(subject, message, '', new_email, f"email change for user {user.id}")
 
 
 class ConfirmEmailChangeView(views.APIView):
