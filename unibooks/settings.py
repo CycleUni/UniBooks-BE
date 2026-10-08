@@ -49,6 +49,9 @@ EDGE_CHAT_URL = env.str("EDGE_CHAT_URL", default="http://localhost:8787")
 # ISBNnet Resolver (Cloudflare Worker microservice for exact-ISBN lookups):
 # local dev default, must be overridden in prod.
 ISBNNET_RESOLVER_URL = env.str("ISBNNET_RESOLVER_URL", default="http://localhost:8789")
+# Sent as X-Resolver-Secret; the Worker refuses lookups without it once its
+# own RESOLVER_SECRET is set. Set this one first, then the Worker's.
+ISBNNET_RESOLVER_SECRET = env.str("ISBNNET_RESOLVER_SECRET", default="")
 
 # Must match the `appId` path segment the frontend uses when it builds
 # CFEdgeChat room URLs (`/ws/<app_id>/<room_id>`, `/api/<app_id>/<room_id>/...`

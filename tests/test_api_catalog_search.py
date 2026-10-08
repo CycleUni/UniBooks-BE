@@ -1207,3 +1207,23 @@ def test_manual_book_create_needs_a_verified_seller(api, db):
         HTTP_AUTHORIZATION=f"Bearer {issue_tokens(stranger)['access']}",
     )
     assert resp.status_code == 403
+
+
+def test_isbnnet_lookup_sends_the_resolver_secret(settings, db):
+    from django.core.cache import cache
+    cache.clear()
+    settings.ISBNNET_RESOLVER_SECRET = "resolver-test-secret"
+    with mock.patch("catalog.services.isbn_net.requests.get") as get:
+        get.return_value = mock.Mock(status_code=404)
+        get_isbnnet_book_by_isbn("9786264048668")
+    assert get.call_args.kwargs["headers"]["X-Resolver-Secret"] == "resolver-test-secret"
+
+
+def test_isbnnet_lookup_without_a_secret_sends_no_header(settings, db):
+    from django.core.cache import cache
+    cache.clear()
+    settings.ISBNNET_RESOLVER_SECRET = ""
+    with mock.patch("catalog.services.isbn_net.requests.get") as get:
+        get.return_value = mock.Mock(status_code=404)
+        get_isbnnet_book_by_isbn("9786264048669")
+    assert "X-Resolver-Secret" not in get.call_args.kwargs["headers"]
