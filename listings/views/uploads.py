@@ -155,8 +155,12 @@ class ListingUploadDeleteView(views.APIView):
             # cross-backend exact-membership lookup: `contains` is unsupported
             # on SQLite). Exact membership is then confirmed in Python, so a
             # substring collision can't authorise a delete.
-            candidates = Listing.objects.filter(seller=request.user, photos__icontains=url)
-            if any(url in (listing.photos or []) for listing in candidates):
+            candidates = Listing.objects.filter(photos__icontains=url)
+            holders = [listing for listing in candidates if url in (listing.photos or [])]
+            # Every listing showing it must be the caller's: one that adopted
+            # someone else's photo before that was refused does not make it
+            # theirs to delete.
+            if holders and all(listing.seller_id == request.user.id for listing in holders):
                 default_storage.delete(key)
                 return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -231,11 +231,12 @@ class ListingSerializer(serializers.ModelSerializer):
             return school.localized_name(lang)
         return school.name
 
-    def _promote_photos(self, validated_data):
+    def _promote_photos(self, validated_data, instance=None):
         """Move freshly-uploaded `tmp/` photos to their permanent keys.
 
-        Scoped to the requesting user so a listing can't adopt someone else's
-        pending upload — see listings.utils.promote_tmp_photos.
+        Scoped to the requesting user and to the listing's own photos, so a
+        listing can't adopt someone else's upload, pending or permanent — see
+        listings.utils.promote_tmp_photos.
         """
         if 'photos' not in validated_data:
             return
@@ -244,7 +245,8 @@ class ListingSerializer(serializers.ModelSerializer):
         if user is None or not user.is_authenticated:
             raise serializers.ValidationError('listing.errInvalidPhotos')
         validated_data['photos'] = promote_tmp_photos(
-            validated_data['photos'], user.id, request=request
+            validated_data['photos'], user.id, request=request,
+            kept_urls=tuple(instance.photos or []) if instance is not None else (),
         )
 
     def create(self, validated_data):
@@ -252,5 +254,5 @@ class ListingSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        self._promote_photos(validated_data)
+        self._promote_photos(validated_data, instance)
         return super().update(instance, validated_data)

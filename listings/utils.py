@@ -30,11 +30,17 @@ def tmp_key_prefix(user_id):
     return f"{TMP_LISTING_PREFIX}/{user_id}/"
 
 
-def promote_tmp_photos(photo_urls, user_id, request=None):
+def promote_tmp_photos(photo_urls, user_id, request=None, kept_urls=()):
     """Move any `tmp/` photos into their permanent keys and return the URLs
     rewritten to match.
 
-    Raises ValidationError rather than degrading, in both failure modes:
+    A URL that is already permanent is accepted only if it is in `kept_urls`
+    — the photos the listing already has. Anything else is someone else's
+    photo: adopting it let a seller delete it through
+    ListingUploadDeleteView (which trusts the seller's own listings), or by
+    deleting their own listing.
+
+    Raises ValidationError rather than degrading, in every failure mode:
 
     - A tmp key that isn't the caller's own is refused, so a listing can't
       adopt (and, via the copy+delete below, destroy) someone else's pending
@@ -58,7 +64,12 @@ def promote_tmp_photos(photo_urls, user_id, request=None):
 
         match = _TMP_KEY_RE.match(key)
         if not match:
-            updated_urls.append(url)  # already permanent, leave alone
+            if url not in kept_urls:
+                logger.warning(
+                    "Refused permanent photo %s for user %s (not on this listing)", key, user_id
+                )
+                raise serializers.ValidationError('listing.errPhotoNotOwned')
+            updated_urls.append(url)  # already on this listing, leave alone
             continue
 
         if match.group('user_id') != str(user_id):

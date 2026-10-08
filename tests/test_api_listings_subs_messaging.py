@@ -840,3 +840,103 @@ def test_new_listing_cannot_start_sold(api, seller, book):
     )
     assert resp.status_code == 400
     assert resp.json()["error"]["fields"]["status"] == ["listing.errStatusNotAllowed"]
+
+
+# ---------------------------------------------------------------------
+# A listing cannot adopt someone else's permanent photo
+# ---------------------------------------------------------------------
+
+
+def _own_listing(user, book):
+    return Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=user, price=50, condition="new",
+    )
+
+
+def test_patch_refuses_another_sellers_permanent_photo(api, buyer, listing, book, stored_file):
+    # Adopting it was step one of deleting it: the upload-delete endpoint
+    # trusts any photo on the caller's own listing.
+    from django.core.files.storage import default_storage
+
+    key = stored_file("listings/victim.jpg")
+    listing.photos = [_media_url(key)]
+    listing.save(update_fields=["photos"])
+    mine = _own_listing(buyer, book)
+
+    resp = api.patch(
+        f"/api/v1/listings/{mine.id}/",
+        {"photos": [_media_url(key)]},
+        content_type="application/json",
+        **bearer(buyer),
+    )
+
+    assert resp.status_code == 400
+    mine.refresh_from_db()
+    assert mine.photos == []
+    assert default_storage.exists(key)
+
+
+def test_create_refuses_a_permanent_photo(api, buyer, book, stored_file):
+    key = stored_file("listings/victim-create.jpg")
+    resp = api.post(
+        "/api/v1/listings/",
+        {"book": book.id, "price": 10, "condition": "new", "photos": [_media_url(key)]},
+        content_type="application/json",
+        **bearer(buyer),
+    )
+    assert resp.status_code == 400
+
+
+def test_patch_keeps_the_listings_own_photos(api, seller, listing, stored_file):
+    # The edit form sends the current photos back with every save.
+    key = stored_file("listings/own-kept.jpg")
+    listing.photos = [_media_url(key)]
+    listing.save(update_fields=["photos"])
+
+    resp = api.patch(
+        f"/api/v1/listings/{listing.id}/",
+        {"photos": [_media_url(key)], "price": 120},
+        content_type="application/json",
+        **bearer(seller),
+    )
+
+    assert resp.status_code == 200
+    listing.refresh_from_db()
+    assert listing.photos == [_media_url(key)]
+
+
+def test_a_photo_shared_from_before_the_fix_survives_both_delete_paths(
+    api, buyer, listing, book, stored_file, django_capture_on_commit_callbacks
+):
+    from django.core.files.storage import default_storage
+
+    key = stored_file("listings/shared-legacy.jpg")
+    listing.photos = [_media_url(key)]
+    listing.save(update_fields=["photos"])
+    mine = _own_listing(buyer, book)
+    Listing.objects.filter(pk=mine.pk).update(photos=[_media_url(key)])
+
+    resp = api.delete(f"/api/v1/listings/uploads/delete/?url={_media_url(key)}", **bearer(buyer))
+    assert resp.status_code == 403
+    assert default_storage.exists(key)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        Listing.objects.get(pk=mine.pk).delete()
+    assert default_storage.exists(key), "the other listing still shows it"
+
+
+def test_listing_delete_removes_only_listing_keys(seller, book, stored_file, django_capture_on_commit_callbacks):
+    from django.core.files.storage import default_storage
+
+    own = stored_file("listings/own-on-delete.jpg")
+    chat = stored_file("chat/someone-elses.jpg")
+    victim = Listing.objects.create(
+        region_id='TW', currency_id='TWD', book=book, seller=seller, price=1, condition="new",
+        photos=[_media_url(own), _media_url(chat)],
+    )
+
+    with django_capture_on_commit_callbacks(execute=True):
+        victim.delete()
+
+    assert not default_storage.exists(own)
+    assert default_storage.exists(chat)

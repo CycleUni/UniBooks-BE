@@ -110,6 +110,13 @@ class Listing(models.Model):
         photos = list(self.photos or [])
         listing_id = self.id
         result = super().delete(*args, **kwargs)
+        # A photo another listing still shows is not this one's to remove.
+        # Listings could once adopt any permanent photo URL, so rows that
+        # share one may exist from before that was refused.
+        photos = [
+            url for url in photos
+            if not Listing.objects.filter(photos__icontains=url).exists()
+        ]
         if photos:
             transaction.on_commit(lambda: _delete_listing_photos(photos, listing_id))
         return result
@@ -127,6 +134,11 @@ def _delete_listing_photos(photo_urls, listing_id):
             media_url = (settings.MEDIA_URL or '/').strip('/')
             if media_url and key.startswith(media_url + '/'):
                 key = key[len(media_url) + 1:]
+            # Only listing photos: a chat or ad image a listing pointed at
+            # belongs to someone else.
+            if not key.startswith('listings/'):
+                logger.warning("Skipped non-listing key %s on listing %s", key, listing_id)
+                continue
             default_storage.delete(key)
             logger.info("Deleted photo %s for listing %s", key, listing_id)
         except Exception:
