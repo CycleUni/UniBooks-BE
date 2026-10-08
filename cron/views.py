@@ -4,6 +4,7 @@ from collections import defaultdict
 from zoneinfo import ZoneInfo
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.mail import send_mail
 from django.db.models import Count, F, Max, Q
 from django.utils import timezone
@@ -29,6 +30,28 @@ MAX_REMIND_ORDERS_PER_RUN = 50
 # the past and never reminded. Five minutes of overlap covers the drift; the
 # meetup_reminder_sent_at check keeps the overlap from sending twice.
 MEETUP_REMINDER_LOOKAHEAD = timezone.timedelta(minutes=65)
+
+
+# Longer than any run takes; the lock is released when the run ends, so this
+# only matters for a worker killed mid-run.
+CRON_RUN_LOCK_TIMEOUT = 15 * 60
+
+
+def run_alone(name, run):
+    """Run `run()` unless another run of `name` is still going.
+
+    Both senders mark a row only after its mail is out, so two runs that
+    overlap (a scheduler retry, a manual trigger beside the schedule) used to
+    read the same unmarked rows and both send. cache.add is atomic on Redis,
+    which every deployed environment has.
+    """
+    key = f'cron:running:{name}'
+    if not cache.add(key, 1, CRON_RUN_LOCK_TIMEOUT):
+        return Response({"status": "skipped", "reason": "already_running"})
+    try:
+        return run()
+    finally:
+        cache.delete(key)
 
 
 class HasCronSecret(BasePermission):
@@ -65,10 +88,10 @@ class WaitlistNotifyView(views.APIView):
     throttle_scope = 'cron'
 
     def get(self, request):
-        return self._run()
+        return run_alone('WaitlistNotifyView', self._run)
 
     def post(self, request):
-        return self._run()
+        return run_alone('WaitlistNotifyView', self._run)
 
     def _run(self):
         now = timezone.now()
@@ -194,10 +217,10 @@ class MeetupReminderView(views.APIView):
     throttle_scope = 'cron'
 
     def get(self, request):
-        return self._run()
+        return run_alone('MeetupReminderView', self._run)
 
     def post(self, request):
-        return self._run()
+        return run_alone('MeetupReminderView', self._run)
 
     def _run(self):
         now = timezone.now()

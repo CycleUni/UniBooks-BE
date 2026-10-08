@@ -804,3 +804,28 @@ def test_meetup_reminder_does_not_push_again_on_a_rerun(api, db, seller, mailout
 
     pushes.assert_not_called()
 
+
+
+@pytest.mark.parametrize("path, name", [
+    ("/api/cron/waitlist-notify/", "WaitlistNotifyView"),
+    ("/api/cron/meetup-reminder/", "MeetupReminderView"),
+])
+def test_a_run_started_while_another_is_going_skips(api, db, path, name, mailoutbox):
+    # Both senders mark rows only after sending, so overlapping runs used to
+    # read the same unmarked rows and send everything twice.
+    from django.core.cache import cache
+    cache.add(f"cron:running:{name}", 1, 60)
+    try:
+        resp = api.get(path, **cron_auth())
+    finally:
+        cache.delete(f"cron:running:{name}")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "skipped", "reason": "already_running"}
+    assert mailoutbox == []
+
+
+def test_the_run_lock_is_released_afterwards(api, db):
+    from django.core.cache import cache
+    api.get("/api/cron/waitlist-notify/", **cron_auth())
+    assert cache.get("cron:running:WaitlistNotifyView") is None
