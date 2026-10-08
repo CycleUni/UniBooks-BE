@@ -156,10 +156,13 @@ def invalidate_listing_caches(sender, instance, **kwargs):
     listing stops being advertised as available without any cache bookkeeping
     at the order call site.
     """
-    bump_cache_version('listing_list')
+    # Only the listing's own region: its lists and book pages are the only
+    # ones it appears in.
+    bump_cache_version('listing_list', region_code=instance.region_id)
     bump_cache_version(f'listing:{instance.pk}')
     # A book's detail page embeds its listings, so a sold or deleted listing
     # must invalidate it too — otherwise buyers keep seeing, and messaging
-    # sellers about, an item that is already gone. Deliberately one shared
-    # generation rather than per-book; see catalog.views.BookDetailView.
-    bump_cache_version('book_detail')
+    # sellers about, an item that is already gone. Deliberately one
+    # generation per region rather than per book; see
+    # catalog.views.BookDetailView.
+    bump_cache_version('book_detail', region_code=instance.region_id)

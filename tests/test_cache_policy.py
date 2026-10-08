@@ -158,6 +158,32 @@ def test_book_detail_cache_key_varies_by_language():
     assert key_en != key_zh
 
 
+def test_a_regional_bump_leaves_other_regions_cached():
+    # Every order accept or completion saves a listing; that used to empty
+    # every region's listing and book caches.
+    from types import SimpleNamespace
+    from core.cache import bump_cache_version, region_versioned_key
+
+    tw, hk = SimpleNamespace(code="TW"), SimpleNamespace(code="HK")
+    tw_before = region_versioned_key(tw, "listing_list", "en", "1")
+    hk_before = region_versioned_key(hk, "listing_list", "en", "1")
+
+    bump_cache_version("listing_list", region_code="TW")
+
+    assert region_versioned_key(tw, "listing_list", "en", "1") != tw_before
+    assert region_versioned_key(hk, "listing_list", "en", "1") == hk_before
+
+
+def test_a_shared_bump_still_reaches_every_region():
+    from types import SimpleNamespace
+    from core.cache import bump_cache_version, region_versioned_key
+
+    hk = SimpleNamespace(code="HK")
+    before = region_versioned_key(hk, "book_detail", "en", "1")
+    bump_cache_version("book_detail")
+    assert region_versioned_key(hk, "book_detail", "en", "1") != before
+
+
 def test_generation_never_goes_backwards_after_eviction():
     """A counter evicted from Redis must not restart low enough to re-issue a
     generation that older, still-unexpired entries were written under —

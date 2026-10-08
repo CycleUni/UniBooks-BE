@@ -92,8 +92,15 @@ def cache_version(namespace):
         return 0
 
 
-def bump_cache_version(namespace):
-    """Invalidate every key in `namespace` at once."""
+def bump_cache_version(namespace, region_code=None):
+    """Invalidate every key in `namespace` at once.
+
+    With `region_code`, only that region's keys: a listing saved in Taiwan
+    has no business emptying Hong Kong's listing and book caches, and every
+    order accept or completion saves one. Without it, every region's.
+    """
+    if region_code is not None:
+        namespace = _regional_namespace(region_code, namespace)
     key = f"cachever:{namespace}"
     try:
         cache.incr(key)
@@ -108,11 +115,22 @@ def bump_cache_version(namespace):
         logger.exception("Cache backend error bumping generation for %s", namespace)
 
 
+def _regional_namespace(region_code, namespace):
+    return f"{region_code}:{namespace}"
+
+
 def region_versioned_key(region, namespace, *parts):
-    """Cache key inside `namespace`'s current generation, specific to a region."""
+    """Cache key inside `namespace`'s current generation, specific to a region.
+
+    It carries two generations: the namespace's own, bumped for every region
+    at once, and the region's, bumped by a write that only dirties that region
+    (bump_cache_version with region_code).
+    """
     # Prefix with region code to ensure strict hard-isolation of caches per region.
     suffix = "_".join(str(part) for part in parts)
-    return f"{region.code}_{namespace}_v{cache_version(namespace)}_{suffix}"
+    shared = cache_version(namespace)
+    regional = cache_version(_regional_namespace(region.code, namespace))
+    return f"{region.code}_{namespace}_v{shared}.{regional}_{suffix}"
 
 def versioned_key(namespace, *parts):
     """Cache key inside `namespace`'s current generation."""
